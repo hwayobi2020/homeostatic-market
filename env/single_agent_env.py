@@ -131,19 +131,18 @@ class HomeostaticFinancialEnv(gym.Env):
         action = np.clip(action, 0.0, 1.0)
         invest_ratio = float(action[0])
 
-        # 1. 자산 수익률 생성 (GBM)
-        asset_return = self.np_random.normal(self.asset_mu, self.asset_sigma)
+        # 1. 시장 수익률 생성 (GBM) — 에이전트와 시장이 같은 수익률을 공유
+        market_return = self.np_random.normal(self.asset_mu, self.asset_sigma)
 
-        # 2. 포트폴리오 수익률
-        portfolio_return = invest_ratio * asset_return
+        # 2. 포트폴리오 수익률 (투자 비율만큼 시장 수익률에 노출)
+        portfolio_return = invest_ratio * market_return
 
         # 3. 구매력 업데이트
         self.purchasing_power *= (1.0 + portfolio_return)
         self.purchasing_power -= self.metabolism_rate * self.purchasing_power
 
-        # 4. 시장 평균 구매력 업데이트 (남들은 시장 평균 수익률로 투자 중)
+        # 4. 시장 평균 구매력 업데이트 (남들은 시장 수익률 100% 노출)
         if self.enable_social:
-            market_return = self.np_random.normal(self.asset_mu, self.asset_sigma)
             self.market_avg_pp *= (1.0 + market_return)
             self.market_avg_pp -= self.metabolism_rate * self.market_avg_pp
 
@@ -155,7 +154,7 @@ class HomeostaticFinancialEnv(gym.Env):
                 self._hvol_idx += 1
             else:
                 # 실현 변동성 계산
-                self._return_buffer.append(asset_return)
+                self._return_buffer.append(market_return)
                 if len(self._return_buffer) >= self.hvol_window:
                     recent = self._return_buffer[-self.hvol_window:]
                     self.current_hvol = float(np.std(recent) * np.sqrt(252) * 100)
@@ -172,31 +171,27 @@ class HomeostaticFinancialEnv(gym.Env):
             social_position = 1.0
             social_deviation = 0.0
 
-        # 8. 계층적 reward
-        if survival_stress > self.survival_threshold:
-            # 1층 지배: 생존 위협
+        # 8. Reward
+        if self.enable_social:
+            # 사회적 항상성만 (대칭)
+            reward = -self.social_weight * abs(social_deviation)
+            reward_layer = "social"
+        else:
+            # 생존 항상성만
             reward = -survival_stress
             reward_layer = "survival"
-        else:
-            if self.enable_social:
-                # 2층 지배: 사회적 항상성 (대칭 — 비대칭 행동이 출현하는지 관찰)
-                reward = -self.social_weight * abs(social_deviation)
-                reward_layer = "social"
-            else:
-                # 2층 비활성: 1층만
-                reward = -survival_stress
-                reward_layer = "survival"
 
         # 9. 종료 조건
         self.current_step += 1
-        terminated = self.purchasing_power <= self.death_threshold
+        terminated = False  # 사회적 항상성만 쓸 때는 사망 없음
+        if not self.enable_social:
+            terminated = self.purchasing_power <= self.death_threshold
+            if terminated:
+                reward -= 10.0
         truncated = self.current_step >= self.max_steps
 
-        if terminated:
-            reward -= 10.0
-
         # 기록
-        self.last_return = asset_return
+        self.last_return = market_return
         self.last_action = invest_ratio
         self._pp_buffer.append(self.purchasing_power)
 
@@ -204,7 +199,7 @@ class HomeostaticFinancialEnv(gym.Env):
         self.history["observed_purchasing_power"].append(self._get_observed_pp())
         self.history["actions"].append(invest_ratio)
         self.history["rewards"].append(reward)
-        self.history["asset_returns"].append(asset_return)
+        self.history["asset_returns"].append(market_return)
         self.history["deviations"].append(survival_deviation)
         self.history["reward_layer"].append(reward_layer)
 
