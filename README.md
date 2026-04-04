@@ -1,154 +1,199 @@
 # Homeostatic Financial Agent
 
-**Investment Behavior Emerges from Social Homeostasis Without Behavioral Injection**
+**"돈을 잃지 않으려는 마음"에서 투자 행동이 출현하는가?**
 
-## Abstract
+---
 
-We propose a reinforcement learning framework where an agent's sole objective is maintaining its relative socioeconomic position (social homeostasis), with no explicit investment rules injected. Unlike traditional Agent-Based Models that hardcode behavioral biases (e.g., loss aversion, herding), our model places a fully symmetric reward function on the agent and lets environmental pressure (wealth growth of peer groups) drive investment behavior to emerge naturally.
+## 1. 이 프로젝트가 던지는 질문
 
-Using Fed Distributional Financial Accounts (DFA) data as peer-group benchmarks and S&P 500 as the investment vehicle, we show that:
-- Realistic investment behavior emerges from homeostasis alone
-- The agent achieves Sharpe 0.66 with MDD -16.7% out-of-sample (2019-2025)
-- Wealth inequality dynamics are structurally reproduced without injection
+사람은 왜 투자할까? 돈을 벌고 싶어서? 남들보다 뒤처지기 싫어서? 아니면 그냥 가진 걸 잃기 싫어서?
 
-## Paper Outline
+행동재무학(Behavioral Finance)은 인간의 투자 행동을 설명하기 위해 **손실 회피(Loss Aversion)**, **군집 행동(Herding)**, **과잉 자신감(Overconfidence)** 같은 심리적 편향을 모델에 직접 넣어왔다. "인간은 이렇게 비합리적이다"라는 규칙을 수학에 주입하는 방식이다.
 
-### 1. Introduction
-- Behavioral finance injects biases (loss aversion, FOMO) into utility functions
-- We ask: can these behaviors **emerge** from a simpler principle?
-- Homeostasis as the minimal cognitive architecture (Maturana & Varela, autopoiesis)
-- Key distinction: **bias injection into math vs. environmental pressure**
+우리는 다른 질문을 한다:
 
-### 2. Related Work
-- Homeostatic RL: Yoshida et al. (2024) - integrated behaviors emerge from homeostasis
-- Keeping Up with the Joneses: Gali (1994) - relative consumption in utility (injection approach)
-- Aspiration Adaptation Theory: Selten (1998) - dynamic reference points
-- Agent-Based Models in finance: behavioral rules as parameters
+> **아무런 행동 규칙도 넣지 않고, "지금 나의 사회적 위치를 유지하라"는 단 하나의 목표만 주면, 투자 행동이 저절로 나타나는가?**
 
-### 3. Model
+이것이 **항상성(Homeostasis)** 프레임워크다. 체온을 36.5도로 유지하려는 것처럼, 사회적 구매력을 유지하려는 "항상성 회로"만으로 현실적인 투자 행동이 출현(emergence)할 수 있는지를 실험한다.
 
-#### 3.1 Social Homeostasis Framework
-- Agent maintains relative position among peer wealth group
-- Reward: `-|purchasing_power - setpoint|` (fully symmetric)
-- No loss aversion, no asymmetric penalties
+---
 
-#### 3.2 Percentile-Specific Metabolism
-- Each wealth percentile faces different "metabolic pressure"
-- **Top 1%**: Fed DFA Total Net Worth growth (~6.3%/yr)
-- **Middle 50-90th**: Fed DFA Total Net Worth growth (~5.2%/yr)
-- **Bottom 50%**: Average Hourly Earnings growth (~3.2%/yr)
-- Key insight: metabolism is not M2 (monetary inflation) but **peer-group wealth growth**
+## 2. 핵심 아이디어: 편향은 수학이 아니라 환경에 있다
 
-#### 3.3 Environment Design
-- Step = 1 quarter (matches DFA publication cycle)
-- S&P 500 quarterly returns as investment vehicle
-- T-bill returns for uninvested portion
-- DFA data lagged 1 quarter (publication delay, no data leakage)
-- Rolling features shifted 1 period (no look-ahead bias)
+기존 접근과 우리 접근의 결정적 차이:
 
-#### 3.4 RL Algorithm
-- PPO (Proximal Policy Optimization)
-- State: [purchasing_power, sp_1q_lag, sp_2q_lag, metabolism_1q_lag, tbill, last_action]
-- Action: investment ratio [0, 1]
-- Train: 2006-2018, Test: 2019-2025
+| | 기존 행동재무학 | 우리 모델 |
+|---|---|---|
+| 손실 회피 | 효용 함수에 비대칭 가중치 주입 (예: $\lambda = 2.25$) | **보상 함수는 완전 대칭**. 비대칭 행동이 출현하는지 관찰 |
+| 투자 동기 | "수익 극대화" 또는 "효용 극대화" | **"내 사회적 위치를 유지하라"** (항상성) |
+| 행동의 원천 | 연구자가 규칙을 설계 | **환경 압력**에서 행동이 출현 |
 
-### 4. Results
+보상 함수: `reward = -|내 구매력 - 기준점|`
 
-#### 4.1 Top 1% Agent (Out-of-Sample 2019-2025)
+올라가도 벌, 내려가도 벌. 완전히 대칭이다. 그런데 **이 대칭적 규칙에서 비대칭적 행동이 출현한다.**
 
-| Metric | Homeostatic RL | Buy & Hold | LightGBM | Profit-Max RL |
-|--------|---------------|------------|----------|---------------|
-| Return | +8.4%/yr | +15.7%/yr | +7.6%/yr | +11.5%/yr |
-| Volatility | 9.1% | 17.2% | 11.8% | 18.6% |
-| Sharpe | **0.66** | 0.80 | 0.45 | 0.53 |
-| MDD | **-16.7%** | -24.8% | -20.3% | -31.7% |
-| Avg Position | 50% | 100% | 56% | 85% |
-| Final PP | **1.04** | - | - | - |
+---
 
-- Agent successfully maintains Top 1% position (PP > 1.0)
-- Lower return than B&H but significantly better risk management
-- Outperforms LightGBM and Profit-Max RL on risk-adjusted basis
+## 3. "기초대사"라는 개념
 
-#### 4.2 Emergent Behaviors (No Injection)
-- **Market timing**: Agent reduces allocation before downturns (2020 Q1: 28%)
-- **Regime adaptation**: 45% when metabolism < 0, 52% when > 0
-- **Risk management**: MDD reduced by 1/3 vs Buy & Hold
-- **Inequality reproduction**: Top invests heavily, Bottom cannot invest at all
+생물은 가만히 있어도 에너지를 소모한다 (기초대사). 아무것도 안 하면 굶어죽는다. 그래서 먹이를 찾아야 한다.
 
-#### 4.3 Key Finding: Bias is in the Environment, Not the Math
-- Symmetric reward function produces asymmetric behavior
-- "Loss aversion" emerges from environmental pressure, not utility function
-- Aligns with ecological/evolutionary economics rather than behavioral economics
+금융에서도 마찬가지다. **가만히 있으면 구매력이 줄어든다.** 주변 사람들의 자산이 올라가기 때문이다.
 
-### 5. Discussion
-- Homeostatic framework as alternative to behavioral bias injection
-- Implications for understanding wealth inequality as emergent phenomenon
-- Limitations: single asset, quarterly granularity, US market only
+그런데 "주변 사람들"이 누구냐에 따라 기초대사가 다르다:
 
-### 6. Conclusion
-- Investment behavior can emerge from social homeostasis alone
-- Environmental pressure (peer-group wealth growth) is sufficient to drive realistic behavior
-- The framework provides a biologically-grounded alternative to behavioral finance
+| 계층 | 기초대사 (연간) | 출처 | 의미 |
+|---|---|---|---|
+| **상위 1%** | ~6.3% | Fed DFA 순자산 성장률 | 주변 부자들의 자산이 이 속도로 늘어남 |
+| **중간층 (50-90%)** | ~5.2% | Fed DFA 순자산 성장률 | 중산층 자산 성장 속도 |
+| **하위 50%** | ~3.2% | 시간당 평균 임금 상승률 | 자산이 거의 없어 임금이 기준 |
 
-## Project Structure
+**상위 1%에 머무르려면 연 6.3% 이상 자산을 불려야 한다.** 이 속도를 못 따라가면 순위가 떨어진다. 이것이 이 모델에서 "투자를 강제하는 환경 압력"이다. 인간에게 "투자하라"고 가르치지 않아도, 환경이 투자를 요구한다.
+
+---
+
+## 4. 실험 설계
+
+### 강화학습 프레임워크
+
+- **State**: 내 실질 구매력, 직전 분기 S&P 수익률, 직전 분기 기초대사, 국채 금리, 이전 투자 비율
+- **Action**: S&P 500 투자 비율 [0%, 100%]. 나머지는 3개월 국채(T-bill)에 투자.
+- **Reward**: `-|내 구매력 - 1.0|` (완전 대칭. 올라가도 벌, 내려가도 벌.)
+- **Environment**: 매 분기, S&P 수익률만큼 자산이 변하고, 기초대사(주변 사람들의 자산 성장률)만큼 실질 구매력이 깎인다.
+- **Algorithm**: PPO (Proximal Policy Optimization)
+
+### 데이터
+
+| 데이터 | 출처 | 주기 | FRED 코드 |
+|---|---|---|---|
+| S&P 500 | Yahoo Finance | 일별 | ^GSPC |
+| 상위 1% 순자산 | Fed DFA | 분기 | WFRBLT01026 |
+| 중간층 순자산 | Fed DFA | 분기 | WFRBLN40080 |
+| 시간당 임금 | BLS (FRED) | 월별 | CES0500000003 |
+| 3개월 국채 | FRED | 일별 | DTB3 |
+
+### 데이터 무결성
+
+- DFA 데이터는 발표 지연(약 3개월)이 있으므로 **1분기 lag** 적용
+- 모든 rolling 피쳐는 **1기간 shift** (현재 분기 수익률이 피쳐에 포함되지 않도록)
+- 학습: 2006~2018 (50분기), 테스트: 2019~2025 (27분기, out-of-sample)
+
+---
+
+## 5. 실험 결과
+
+### 5.1 상위 1% 에이전트 (Out-of-Sample, 2019~2025)
+
+| 지표 | 항상성 에이전트 | Buy & Hold | LightGBM | 수익극대화 RL |
+|---|---|---|---|---|
+| 연 수익률 | +8.4% | +15.7% | +7.6% | +11.5% |
+| 변동성 | **9.1%** | 17.2% | 11.8% | 18.6% |
+| Sharpe Ratio | **0.66** | 0.80 | 0.45 | 0.53 |
+| 최대 낙폭 (MDD) | **-16.7%** | -24.8% | -20.3% | -31.7% |
+| 평균 투자 비율 | 50% | 100% | 56% | 85% |
+| 최종 구매력 (PP) | **1.04** | - | - | - |
+
+- **수익률은 Buy & Hold보다 낮지만, 변동성은 절반, 최대 낙폭은 2/3 수준**
+- 같은 데이터로 학습한 LightGBM(Sharpe 0.45)과 수익극대화 RL(Sharpe 0.53)보다 위험 조정 성과가 우수
+- **최종 구매력 1.04 = 상위 1%의 자산 성장 속도를 따라잡았다 (순위 유지 성공)**
+
+### 5.2 출현한 행동들 (주입 없이)
+
+**시장 타이밍:**
+- 2020년 Q1 코로나 폭락: 투자 비율을 28%로 축소
+- 2021년 상승장: 점진적으로 100%까지 확대
+- 2022년 하락장: 47~73% 범위로 방어
+
+**기초대사 반응:**
+- 주변 자산이 줄어드는 분기(기초대사 < 0): 평균 45% 투자
+- 주변 자산이 느는 분기(기초대사 > 0): 평균 52% 투자
+
+**수익극대화 RL과의 차이:**
+- 수익극대화 RL은 85% 투자, MDD -31.7%로 Buy & Hold와 거의 동일
+- **항상성 없이 수익만 추구하면 결국 Buy & Hold와 같아진다**
+
+### 5.3 불평등 구조의 출현
+
+같은 모델, 같은 보상 함수, 기초대사만 다르게 했을 때:
+
+| 계층 | 투자 비율 | 이유 |
+|---|---|---|
+| 상위 1% | 50% | 기초대사(6.3%)를 따라잡으려면 적극 투자 필요 |
+| 중간층 | ~50% | 비슷한 압력 |
+| 하위 50% | **0%** | 기초대사(3.2%)가 국채 금리(~3%)로 충분히 커버됨 |
+
+**부자는 투자하고, 가난한 사람은 투자하지 않는 구조가 대칭적 보상 함수에서 자연스럽게 출현했다.** 이는 불평등 확대의 메커니즘을 행동 규칙의 주입 없이 설명한다.
+
+---
+
+## 6. 이론적 배경
+
+- **Maturana & Varela (1984)** — 자기생산(Autopoiesis). "사는 것이 곧 아는 것이다." 생명체는 자기 자신을 유지하려는 조직 그 자체이며, 인식은 이 자기유지 과정에서 출현한다.
+- **Yoshida et al. (2024)** — 항상성 강화학습(Homeostatic Reinforcement Learning). 체온, 혈당 등 내부 상태의 항상성 유지만을 목표로 학습시켰더니, 걷기, 먹이찾기 등 복합 행동이 출현.
+- **Damasio** — 신체표지 가설(Somatic Marker Hypothesis). 감정(신체 상태의 변화)이 의사결정을 편향시키며, 이는 항상성 유지와 직결.
+- **Selten (1998)** — 열망 적응 이론(Aspiration Adaptation Theory). 성공/실패의 기준선이 경험에 따라 적응적으로 변화.
+- **Gali (1994)** — "Keeping Up with the Joneses". 상대적 소비를 효용 함수에 주입하는 접근 (본 연구와 대비됨).
+
+---
+
+## 7. 프로젝트 구조
 
 ```
 homeostatic-market/
 ├── env/
-│   ├── single_agent_env.py           # Original 2-layer environment
-│   ├── real_data_env.py              # Real S&P 500 + M2 environment
-│   ├── weekly_env.py                 # Weekly step environment
-│   ├── weekly_env_adaptive.py        # Adaptive setpoint experiment
-│   ├── weekly_env_percentile.py      # Weekly percentile environment
-│   └── quarterly_env_percentile.py   # Quarterly percentile (current)
+│   ├── single_agent_env.py              # 초기 2층 항상성 환경
+│   ├── real_data_env.py                 # 실제 S&P 500 + M2 환경
+│   ├── weekly_env.py                    # 주간 단위 환경
+│   ├── weekly_env_adaptive.py           # 적응적 기준점 실험
+│   ├── weekly_env_percentile.py         # 주간 분위별 환경
+│   └── quarterly_env_percentile.py      # 분기 분위별 환경 (현재 사용)
 ├── sim/
-│   ├── run_experiment.py             # Phase 1 experiments
-│   ├── run_lag_comparison.py         # Observation lag experiments
-│   ├── run_dual_homeostasis.py       # 1-layer vs 2-layer comparison
-│   ├── run_contrarian.py             # Contrarian strategy test
-│   ├── run_real_data.py              # Real market data evaluation
-│   └── run_lgbm.py                   # LightGBM comparison
+│   ├── run_experiment.py                # Phase 1 실험
+│   ├── run_lag_comparison.py            # 관측 지연 실험
+│   ├── run_dual_homeostasis.py          # 1층 vs 2층 비교
+│   ├── run_contrarian.py               # 역발상 전략 실험
+│   ├── run_real_data.py                 # 실제 시장 데이터 평가
+│   └── run_lgbm.py                      # LightGBM 비교 실험
 ├── analysis/
-│   └── stylized_facts.py            # Statistical analysis tools
-├── data/                            # Market data (S&P, DFA, CPI, M2, T-bill)
-├── models/                          # Trained PPO models
-├── plots/                           # Visualizations
-└── docs/                           # Documentation
+│   └── stylized_facts.py               # 통계 분석 도구
+├── data/                                # 시장 데이터
+├── models/                              # 학습된 PPO 모델
+├── plots/                               # 시각화 결과
+└── docs/                                # 기술 문서
 ```
 
-## Data Sources
+---
 
-| Data | Source | Frequency | FRED Code |
-|------|--------|-----------|-----------|
-| S&P 500 | Yahoo Finance | Daily | ^GSPC |
-| Top 1% Net Worth | Fed DFA | Quarterly | WFRBLT01026 |
-| 50-90th Net Worth | Fed DFA | Quarterly | WFRBLN40080 |
-| Average Hourly Earnings | BLS via FRED | Monthly | CES0500000003 |
-| 3-Month T-Bill | FRED | Daily | DTB3 |
-| M2 Money Supply | FRED | Weekly | WM2NS |
-| VIX | CBOE via Yahoo | Daily | ^VIX |
-| CPI | BLS via FRED | Monthly | CPIAUCSL |
+## 8. 향후 과제
 
-## Theoretical Background
+- 중간층, 하위 50% 에이전트 분기 모델 학습 및 비교
+- 분위별 에이전트 앙상블(보팅) 전략
+- 다른 시장(한국 KOSPI 등)에서 일반화 검증
+- 다중 에이전트 환경: 에이전트들의 집합 행동에서 시장 패턴(fat tail, volatility clustering) 출현 여부
+- 논문 작성
 
-- **Maturana & Varela (1984)** - Autopoiesis: "to live is to know"
-- **Yoshida et al. (2024)** - Homeostatic RL: integrated behaviors emerge from homeostasis
-- **Damasio** - Somatic Marker Hypothesis
-- **Selten (1998)** - Aspiration Adaptation Theory
-- **Gali (1994)** - Keeping Up with the Joneses
+---
 
-## Requirements
+## 9. 설치 및 실행
 
+```bash
+pip install gymnasium stable-baselines3 torch numpy pandas pandas-datareader yfinance lightgbm scikit-learn matplotlib python-docx
 ```
-gymnasium
-stable-baselines3
-torch
-numpy
-pandas
-pandas-datareader
-yfinance
-lightgbm
-scikit-learn
-matplotlib
-python-docx
+
+```python
+# 분기 단위 Top 1% 에이전트 학습 예시
+from stable_baselines3 import PPO
+from stable_baselines3.common.vec_env import DummyVecEnv
+from env.quarterly_env_percentile import QuarterlyPercentileEnv
+
+config = {
+    'data_path': 'data/quarterly_percentile_train.csv',
+    'episode_length': 20,
+    'social_weight': 1.0,
+    'percentile': 'top1',
+}
+
+env = DummyVecEnv([lambda: QuarterlyPercentileEnv(config)])
+model = PPO('MlpPolicy', env, learning_rate=3e-4, verbose=0)
+model.learn(total_timesteps=500_000)
 ```
