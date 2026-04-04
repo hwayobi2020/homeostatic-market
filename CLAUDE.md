@@ -76,8 +76,37 @@
 - 수익극대화 RL: Sharpe 0.53, MDD -31.7% (B&H와 거의 동일)
 - 항상성 없이 수익만 추구하면 B&H와 비슷해짐
 
+## news/ — NYT 경제 헤드라인 센티먼트 파이프라인
+- `news/crawl_nyt.py` — NYT Article Search API로 1990~2025년 경제/금융 헤드라인 수집
+  - 체크포인트 기반 (중단 후 재시작 가능)
+  - Rate Limit 자동 대응 (12초 간격, 429 시 65초 대기)
+  - 환경변수 NYT_API_KEY 또는 코드 내 직접 입력
+  - 출력: `news/nyt_headlines.csv`
+- `news/score_sentiment.py` — FinBERT로 헤드라인 센티먼트 스코어링 → 분기별 집계
+  - headline + abstract 결합하여 정보량 증대
+  - 배치 처리 + 체크포인트 지원
+  - 출력: `news/nyt_headlines_scored.csv`, `news/quarterly_sentiment.csv`
+  - quarterly_sentiment.csv를 환경의 observation에 병합 예정
+
+### 3분위 + VIX + M2 결과 (2026-04-04)
+- 학습: 1990~2018 (113분기), 테스트: 2019~2025 (27분기)
+- 데이터: S&P500, T-bill, VIX, M2(분기말 2주전, leak 없음), DFA 3분위(1분기 lag)
+- 환경: quarterly_env_percentile.py, 데이터: quarterly_3pct_train/test.csv
+
+| 분위 | 수익률 | 변동성 | Sharpe | Sortino | Calmar | MDD | 비중 | PP |
+|---|---|---|---|---|---|---|---|---|
+| Top 1% | +8.8% | 12.6% | 0.53 | 0.47 | 0.43 | -20.6% | 65% | 1.06 |
+| 90-99th | +10.9% | 10.8% | 0.78 | 0.85 | 0.98 | -11.1% | 34% | 1.33 |
+| 50-90th | +8.4% | 8.3% | 0.71 | 3.13 | 6.02 | -1.4% | 15% | 1.00 |
+| B&H | +15.7% | 17.2% | 0.80 | 0.63 | 0.63 | -24.8% | 100% | - |
+
+- M2 추가로 성능 대폭 개선 (90-99th Sortino 0.31→0.85, MDD -20.6%→-11.1%)
+- 90-99th: Sortino, Calmar에서 Buy & Hold 초과
+- 50-90th: Sortino 3.13, MDD -1.4% — 거의 무손실
+- 기초대사<0(자산하락기) 시 투자 크게 축소 (Top1 26%, 90-99th 14%)
+
 ## 다음 단계
-- Middle, Bottom 50% 분기 모델 학습 및 비교
-- 앙상블: 분위별 에이전트 보팅 전략
+- NYT 헤드라인 센티먼트 스코어링 → 환경 observation에 병합
+- 시드 변경 robustness 검증
 - 다른 시장(KOSPI 등) 일반화 검증
 - 논문 구체화
