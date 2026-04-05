@@ -28,10 +28,10 @@ class QuarterlyPercentileEnv(gym.Env):
         self.percentile = config.get("percentile", "top1")
         self.metabolism_col = f"{self.percentile}_quarterly_growth"
 
-        # State: [pp, sp_1q_lag, sp_2q_lag, metabolism_1q_lag, tbill, vix, m2, last_action]
+        # State: [pp, sp_1q_lag, sp_2q_lag, metabolism_1q_lag, tbill, vix, m2, sent_m1, sent_m2, sent_m3, last_action]
         self.observation_space = spaces.Box(
-            low=np.array([0.0, -np.inf, -np.inf, -np.inf, 0.0, 0.0, -np.inf, 0.0], dtype=np.float32),
-            high=np.array([np.inf, np.inf, np.inf, np.inf, np.inf, np.inf, np.inf, 1.0], dtype=np.float32),
+            low=np.array([0.0, -np.inf, -np.inf, -np.inf, 0.0, 0.0, -np.inf, -np.inf, -np.inf, -np.inf, 0.0], dtype=np.float32),
+            high=np.array([np.inf, np.inf, np.inf, np.inf, np.inf, np.inf, np.inf, np.inf, np.inf, np.inf, 1.0], dtype=np.float32),
         )
         self.action_space = spaces.Box(
             low=np.array([0.0], dtype=np.float32),
@@ -101,6 +101,9 @@ class QuarterlyPercentileEnv(gym.Env):
         metab_col = f"{self.percentile}_1q_lag"
         vix = float(row["vix_quarterly_avg"]) / 100.0 if "vix_quarterly_avg" in row else 0.2
         m2 = float(row["m2_quarterly_growth"]) if "m2_quarterly_growth" in row else 0.0
+        s1 = float(row["sent_m1"]) if "sent_m1" in row else 0.0
+        s2 = float(row["sent_m2"]) if "sent_m2" in row else 0.0
+        s3 = float(row["sent_m3"]) if "sent_m3" in row else 0.0
         return np.array([
             self.purchasing_power,
             float(row["sp_1q_lag"]),
@@ -109,6 +112,7 @@ class QuarterlyPercentileEnv(gym.Env):
             float(row["tbill_quarterly_return"]),
             vix,
             m2,
+            s1, s2, s3,
             self.last_action,
         ], dtype=np.float32)
 

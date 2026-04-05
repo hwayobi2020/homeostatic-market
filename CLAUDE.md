@@ -105,8 +105,16 @@
 - 50-90th: Sortino 3.13, MDD -1.4% — 거의 무손실
 - 기초대사<0(자산하락기) 시 투자 크게 축소 (Top1 26%, 90-99th 14%)
 
+### FRBSF News Sentiment 추가 (2026-04-05)
+- FRBSF Daily News Sentiment Index (1980~2026.03, 일별 16,871개)
+- 24개 미국 신문 경제 기사 어휘 분석 기반
+- 분기별 3개 월말 평균으로 집계: sent_m1, sent_m2, sent_m3
+- 분기말에 해당 분기 전체 월별 센티먼트를 보고 투자 결정 (leak 없음)
+- observation: 8차원 → 11차원 (pp, sp_1q, sp_2q, metab, tbill, vix, m2, s1, s2, s3, action)
+- 학습 중단 → 다음 세션에서 재실행 예정
+
 ## 다음 단계
-- NYT 헤드라인 센티먼트 스코어링 → 환경 observation에 병합
+- FRBSF 센티먼트 포함 3분위 학습 실행 및 평가
 - 시드 변경 robustness 검증
 - 다른 시장(KOSPI 등) 일반화 검증
 - 논문 구체화
