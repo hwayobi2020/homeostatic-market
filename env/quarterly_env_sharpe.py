@@ -1,9 +1,9 @@
 """
-분기 단위 분위별 항상성 환경.
+분기 단위 Differential Sharpe Ratio 환경.
 
-매 step = 1분기. DFA 발표 주기와 일치.
-기초대사 = 분위별 순자산 성장률 or 임금 성장률 (1분기 lag 적용 완료)
-observation 정규화 적용 (z-score, 학습 데이터 기준)
+보상 함수: Moody & Saffell (2001)의 미분 샤프 지수.
+매 step마다 현재 행동이 누적 Sharpe를 올리는 방향인지 평가.
+항상성이 아닌 위험 조정 수익 극대화.
 """
 
 import gymnasium as gym
@@ -12,46 +12,42 @@ import pandas as pd
 from gymnasium import spaces
 
 
-class QuarterlyPercentileEnv(gym.Env):
-    metadata = {"render_modes": ["human"]}
+# 학습 데이터 기준 정규화 통계 (z-score) — 항상성 환경과 동일
+NORM_STATS = {
+    "sp_1q_lag":              (0.0231, 0.0742),
+    "sp_2q_lag":              (0.0451, 0.1098),
+    "tbill_quarterly_return": (0.0064, 0.0053),
+    "vix_quarterly_avg":      (19.187, 7.278),
+    "m2_quarterly_growth":    (0.0132, 0.0088),
+    "sent_m1":                (0.0437, 0.1853),
+    "sent_m2":                (0.0616, 0.1785),
+    "sent_m3":                (0.0526, 0.1797),
+    "top1_1q_lag":            (0.0174, 0.0279),
+    "next9_1q_lag":           (0.0149, 0.0195),
+    "mid_1q_lag":             (0.0120, 0.0124),
+}
 
-    # 학습 데이터 기준 정규화 통계 (z-score)
-    NORM_STATS = {
-        "sp_1q_lag":              (0.0231, 0.0742),
-        "sp_2q_lag":              (0.0451, 0.1098),
-        "tbill_quarterly_return": (0.0064, 0.0053),
-        "vix_quarterly_avg":      (19.187, 7.278),
-        "m2_quarterly_growth":    (0.0132, 0.0088),
-        "sent_m1":                (0.0437, 0.1853),
-        "sent_m2":                (0.0616, 0.1785),
-        "sent_m3":                (0.0526, 0.1797),
-        "top1_1q_lag":            (0.0174, 0.0279),
-        "next9_1q_lag":           (0.0149, 0.0195),
-        "mid_1q_lag":             (0.0120, 0.0124),
-    }
+
+class QuarterlySharpeEnv(gym.Env):
+    metadata = {"render_modes": ["human"]}
 
     def __init__(self, config: dict | None = None):
         super().__init__()
         config = config or {}
 
-        data_path = config.get("data_path", "data/quarterly_percentile_train.csv")
+        data_path = config.get("data_path", "data/quarterly_3pct_train.csv")
         self.data = pd.read_csv(data_path)
         self.n_quarters = len(self.data)
-        self.episode_length = config.get("episode_length", 40)  # 10년
-        self.social_weight = config.get("social_weight", 1.0)
-        self.setpoint = 1.0
+        self.episode_length = config.get("episode_length", 40)
 
-        # 비대칭 보상 가중치
-        # loss_weight: pp < setpoint일 때 패널티 배수 (기본 1.0 = 대칭)
-        # gain_weight: pp > setpoint일 때 패널티 배수 (기본 1.0 = 대칭)
-        self.loss_weight = config.get("loss_weight", 1.0)
-        self.gain_weight = config.get("gain_weight", 1.0)
+        # Differential Sharpe decay rate
+        self.eta = config.get("eta", 0.05)
 
+        # 어떤 분위의 기초대사 컬럼을 observation에 넣을지
         self.percentile = config.get("percentile", "top1")
-        self.metabolism_col = f"{self.percentile}_quarterly_growth"
 
-        # State: 11차원 (모두 정규화됨)
-        # [pp_norm, sp_1q, sp_2q, metab, tbill, vix, m2, s1, s2, s3, last_action]
+        # State: 항상성 환경과 동일 구조 (비교 공정성)
+        # [pp, sp_1q, sp_2q, metab, tbill, vix, m2, s1, s2, s3, last_action]
         self.observation_space = spaces.Box(
             low=-np.inf * np.ones(11, dtype=np.float32),
             high=np.inf * np.ones(11, dtype=np.float32),
@@ -65,12 +61,16 @@ class QuarterlyPercentileEnv(gym.Env):
         self.current_step = 0
         self.start_idx = 0
         self.last_action = 0.0
+
+        # Differential Sharpe 상태
+        self.A = 0.0  # 수익률 이동평균
+        self.B = 0.0  # 수익률² 이동평균
+
         self.history = self._empty_history()
 
     def _normalize(self, key, value):
-        """z-score 정규화."""
-        if key in self.NORM_STATS:
-            mean, std = self.NORM_STATS[key]
+        if key in NORM_STATS:
+            mean, std = NORM_STATS[key]
             return (value - mean) / max(std, 1e-8)
         return value
 
@@ -80,7 +80,7 @@ class QuarterlyPercentileEnv(gym.Env):
             "actions": [],
             "rewards": [],
             "sp_returns": [],
-            "metabolisms": [],
+            "portfolio_returns": [],
         }
 
     def reset(self, seed=None, options=None):
@@ -88,6 +88,8 @@ class QuarterlyPercentileEnv(gym.Env):
         self.purchasing_power = 1.0
         self.current_step = 0
         self.last_action = 0.0
+        self.A = 0.0
+        self.B = 0.0
         max_start = self.n_quarters - self.episode_length
         self.start_idx = self.np_random.integers(0, max(1, max_start))
         self.history = self._empty_history()
@@ -104,19 +106,26 @@ class QuarterlyPercentileEnv(gym.Env):
         row = self.data.iloc[idx]
         sp_ret = float(row["sp_quarterly_return"])
         tb_ret = float(row["tbill_quarterly_return"])
-        metabolism = float(row[self.metabolism_col])
 
-        # 구매력 업데이트
+        # 포트폴리오 수익률
         port_ret = invest_ratio * sp_ret + (1.0 - invest_ratio) * tb_ret
-        self.purchasing_power *= (1.0 + port_ret)
-        self.purchasing_power /= (1.0 + metabolism)
 
-        # Reward: 항상성 (비대칭 가중치 적용)
-        deviation = self.purchasing_power - self.setpoint
-        if deviation < 0:
-            reward = -self.social_weight * self.loss_weight * abs(deviation)
+        # 구매력 업데이트 (기초대사 없음 — Sharpe 환경은 순수 수익 기준)
+        self.purchasing_power *= (1.0 + port_ret)
+
+        # Differential Sharpe Ratio
+        delta_A = port_ret - self.A
+        delta_B = port_ret ** 2 - self.B
+
+        denom = self.B - self.A ** 2
+        if denom > 1e-8:
+            reward = (self.B * delta_A - 0.5 * self.A * delta_B) / (denom ** 1.5)
         else:
-            reward = -self.social_weight * self.gain_weight * abs(deviation)
+            reward = port_ret  # 초기 몇 step은 단순 수익률
+
+        # 이동평균 업데이트
+        self.A += self.eta * delta_A
+        self.B += self.eta * delta_B
 
         self.current_step += 1
         self.last_action = invest_ratio
@@ -125,7 +134,7 @@ class QuarterlyPercentileEnv(gym.Env):
         self.history["actions"].append(invest_ratio)
         self.history["rewards"].append(reward)
         self.history["sp_returns"].append(sp_ret)
-        self.history["metabolisms"].append(metabolism)
+        self.history["portfolio_returns"].append(port_ret)
 
         return self._get_obs(), reward, False, self.current_step >= self.episode_length, {}
 
@@ -134,15 +143,13 @@ class QuarterlyPercentileEnv(gym.Env):
         row = self.data.iloc[idx]
         metab_col = f"{self.percentile}_1q_lag"
 
-        # 원본 값
         raw_vix = float(row["vix_quarterly_avg"]) if "vix_quarterly_avg" in row else 19.2
         raw_m2 = float(row["m2_quarterly_growth"]) if "m2_quarterly_growth" in row else 0.013
         raw_s1 = float(row["sent_m1"]) if "sent_m1" in row else 0.0
         raw_s2 = float(row["sent_m2"]) if "sent_m2" in row else 0.0
         raw_s3 = float(row["sent_m3"]) if "sent_m3" in row else 0.0
 
-        # 정규화
-        pp_norm = self.purchasing_power - 1.0  # setpoint 대비 deviation
+        pp_norm = self.purchasing_power - 1.0
         return np.array([
             pp_norm,
             self._normalize("sp_1q_lag", float(row["sp_1q_lag"])),
