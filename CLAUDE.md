@@ -113,8 +113,44 @@
 - observation: 8차원 → 11차원 (pp, sp_1q, sp_2q, metab, tbill, vix, m2, s1, s2, s3, action)
 - 학습 중단 → 다음 세션에서 재실행 예정
 
+## Phase 4: HWM Reward + max(M2, Tbill) 기초대사 (2026-04-09)
+- High Water Mark reward: PP가 새 고점이면 보상, 빠지면 패널티
+  - reward = PP - HWM. 기준점이 올라가기만 함.
+  - "올리고 → 지키고" 패턴 출현
+- 기초대사 = max(M2 증가율, T-bill 수익률) = 기회비용
+  - M2만: 음수 가능 → 채권 도피 문제
+  - max(M2, Tbill): 항상 양수, 시장 레짐에 따라 자동 전환
+- 월간 환경 (DFA 분기 의존성 제거)
+- Data leak 수정: sp_return → sp_next_return (다음 달 수익이 투자 결과)
+  - M2: 월말 2주 전 기준 (주간 발표 2주 lag 반영)
+  - 센티먼트, VIX: 일별 발표 → 이번 달 OK
+- 학습: 1990~2020 (368M), 테스트: 2021~2025 (62M), 50K step
+
+### 최종 결과 (No-Leak, 2021~2025 OOS)
+| 기초대사 | Return | Vol | Sharpe | Sortino | MDD | Weight |
+|---|---|---|---|---|---|---|
+| max(M2,Tb)+0% | +4.8% | 2.6% | 1.86 | 2.12 | -2.2% | 15% |
+| max(M2,Tb)+2% | +7.6% | 6.1% | 1.24 | 1.28 | -8.8% | 42% |
+| max(M2,Tb)+4% | +8.1% | 7.2% | 1.11 | 1.11 | -11.4% | 50% |
+| 50/50 | +7.6% | 7.5% | 1.02 | 0.97 | -12.6% | 50% |
+| S&P B&H | +11.5% | 15.0% | 0.81 | 0.75 | -24.8% | 100% |
+
+- 모든 프리미엄에서 50/50과 B&H를 Sharpe/Sortino/MDD에서 초과
+- +2%: 50/50과 비슷한 비중(42%)인데 Sharpe 1.24 vs 1.02
+- 예측이 아닌 리스크 관리(HWM drawdown 최소화)가 성과의 원천
+
+### 기타 실험 결과
+- S&P vs NDX 비율 배분: 항상 S&P 선호 (변동성 기피)
+- 3자산(S&P/NDX/Cash): 바벨 전략 출현 (NDX+Cash, S&P 무시)
+- 3인덱스(S&P/NDX/Russell): Russell을 전술적으로 사용 (반등기)
+- 롱/숏: 숏 거의 안 씀 (장기 우상향 학습)
+- ent_coef=0.1: S&P/Tbill에서 Sharpe 3.05 근데 사실상 채권
+- 비대칭 reward (Loss 3x contra): Sharpe 0.92 (NDX, Expanding Window)
+- 메타 에이전트(LGBM/RL): 데이터 부족으로 단일 에이전트 고정에 수렴
+- Expanding Window vs 고정 분할: Expanding이 더 정직하지만 성과 낮음
+- DFA 기초대사: 시장 수익률 순환 구조 문제 발견
+
 ## 다음 단계
-- FRBSF 센티먼트 포함 3분위 학습 실행 및 평가
-- 시드 변경 robustness 검증
-- 다른 시장(KOSPI 등) 일반화 검증
+- Validation set 분리 (체리피킹 방지)
+- 다른 시장 검증
 - 논문 구체화
