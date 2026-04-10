@@ -150,6 +150,51 @@
 - Expanding Window vs 고정 분할: Expanding이 더 정직하지만 성과 낮음
 - DFA 기초대사: 시장 수익률 순환 구조 문제 발견
 
+## Phase 5: 평정심 모델 + MoE (2026-04-10)
+- HWM을 1.0에 고정 (업데이트 안 함) → "평정심(Equanimity) 모델"
+  - reward = min(0, PP - 1.0): 구매력이 초기값 밑이면 패널티, 위면 0
+  - HWM ratchet 문제 해결: 고점이 올라가지 않으니 변동성 기피 없음
+  - 생물학 항상성과 일치: 체온 36.5도가 37도 찍었다고 기준이 37도로 안 올라감
+- 기초대사 = max(M2, Tbill) + premium
+- SB3 PPO, 200K step, seed=42, ent_coef=0.1
+- 데이터: monthly_noleak (sp_next_return), 1990-2020 학습, 2021-2025 테스트
+
+### 평정심 모델 Premium Sweep 결과 (No-Leak, 2021~2025 OOS)
+| Premium | Return | Vol | Sharpe | Sortino | MDD | Weight |
+|---|---|---|---|---|---|---|
+| +0% | +9.8% | 9.6% | 1.02 | 0.97 | -9.2% | 0.59 |
+| +1% | +9.8% | 9.5% | 1.04 | 0.92 | -9.2% | 0.57 |
+| +2% | +9.3% | 9.8% | 0.96 | 0.84 | -9.2% | 0.65 |
+| +3% | +12.8% | 10.8% | 1.17 | 1.04 | -8.6% | 0.73 |
+| +4% | +11.5% | 15.0% | 0.81 | 0.75 | -24.8% | 1.00 (=B&H) |
+| +5% | +11.5% | 15.0% | 0.81 | 0.75 | -24.8% | 1.00 (=B&H) |
+| 50/50 | +7.6% | 7.5% | 1.02 | 0.97 | -12.6% | 0.50 |
+| B&H | +11.5% | 15.0% | 0.81 | 0.75 | -24.8% | 1.00 |
+
+- 0~1%: 50/50과 Sharpe 동등(1.02~1.04), MDD 개선 (-9.2% vs -12.6%)
+- +3%: Sharpe 1.17, Return +12.8% (B&H 초과!), MDD -8.6%
+- +4~5%: weight=1.0 수렴 (premium 과다 → B&H와 동일)
+- ⚠️ +3% 결과는 seed=42 단일 실행, 재현성 미검증
+
+### 비교: HWM 업데이트 ON (ratchet) vs OFF (평정심)
+- HWM ratchet: 투자 기피 (weight 0.21~0.54), Sharpe 최대 0.79 (+2%)
+- 평정심: 투자 적극 (weight 0.57~0.73), Sharpe 최대 1.17 (+3%)
+- ratchet은 "성공하면 기대가 높아진다" → 변동성 기피 → 보수적
+- 평정심은 "기준이 안 변한다" → 자유로운 투자 → 적극적
+
+### MoE 구조 (sim/run_moe.py)
+- Expert1 (HWM reward, min(0) cap) + Expert2 (Return reward) + Router (Diff Sharpe)
+- SB3 PPO 순차 학습 (Expert → freeze → Router)
+- Expert1 action 0.48 vs Expert2 action 0.79 차별화 확인 (premium 4%)
+- 미해결: Router가 Expert1을 잘 안 씀 (Diff Sharpe 수익 편향)
+- 미해결: Expert observation 불일치 (학습 시 last_action vs Router 환경에서 last_w)
+- 복사본: sim/run_equanimity.py (평정심 모델 실험용)
+
+### 다음 검증
+- seed 다양화 (+3% 재현성)
+- 연도별 breakdown (+3%의 2022 시장 타이밍 확인)
+- 평정심 모델로 MoE 재시도
+
 ## 다음 단계
 - Validation set 분리 (체리피킹 방지)
 - 다른 시장 검증
