@@ -217,7 +217,7 @@ class SingleRewardEnv(gym.Env):
             reward = min(0.0, self.pp - self.hwm)  # 양수면 0으로 cap
         else:
             reward = port_ret
-        if self.pp > self.hwm: self.hwm = self.pp
+        # hwm 업데이트 안 함 — 초기값 1.0 고정 (평정심 모델)
         self.step_idx += 1; self.last_action = w
         return self._obs(), reward, False, self.step_idx >= self.episode_length, {}
     def _obs(self):
