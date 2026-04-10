@@ -195,7 +195,7 @@ class SingleRewardEnv(gym.Env):
         self.episode_length = config.get("episode_length", 120)
         self.premium = config.get("premium", 0.02 / 12)
         self.reward_type = config.get("reward_type", "hwm")
-        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(10,), dtype=np.float32)
+        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(12,), dtype=np.float32)
         self.action_space = spaces.Box(low=np.array([0.0], dtype=np.float32), high=np.array([1.0], dtype=np.float32))
         self.pp = 1.0; self.hwm = 1.0; self.step_idx = 0; self.start_idx = 0; self.last_action = 0.5
     def reset(self, seed=None, options=None):
@@ -227,12 +227,13 @@ class SingleRewardEnv(gym.Env):
             float(row["ndx_1m"]), float(row["sp_1m"]),
             float(row["ndx_3m"]), float(row["vix"]) / 100,
             float(row["m2_3m"]), float(row["sentiment"]),
+            float(row["yield_curve"]), float(row["credit_spread"]),
             self.last_action, self.pp / max(self.hwm, 1e-8)], dtype=np.float32)
 
 
 if __name__ == "__main__":
-    TRAIN = "data/monthly_noleak_train.csv"
-    TEST = "data/monthly_noleak_test.csv"
+    TRAIN = "data/monthly_noleak_v2_train.csv"
+    TEST = "data/monthly_noleak_v2_test.csv"
     PREMIUM = 0.04  # +4%/yr
 
     # 1. Expert 학습
