@@ -190,12 +190,36 @@
 - 미해결: Expert observation 불일치 (학습 시 last_action vs Router 환경에서 last_w)
 - 복사본: sim/run_equanimity.py (평정심 모델 실험용)
 
-### 다음 검증
-- seed 다양화 (+3% 재현성)
-- 연도별 breakdown (+3%의 2022 시장 타이밍 확인)
-- 평정심 모델로 MoE 재시도
+### Seed 재현성 (+3%, train 1990-2020, test 2021-2025)
+- 5개 seed (42,123,777,0,99): 평균 Sharpe 1.09, min 0.98, max 1.17
+- 전부 B&H(0.81) 초과, 4/5가 50/50(1.02) 초과
+
+### Walk-Forward 검증 (13dim = v2+WTI, Premium 0%, ep=120)
+- 데이터 v2: yield_curve (10Y-2Y), credit_spread (BAA-AAA), wti_1m 추가
+- observation 13차원 (기존 10 + yield_curve + credit_spread + wti_1m)
+
+| Window | Test 기간 | Agent Sharpe | B&H Sharpe | 50/50 Sharpe | Agent MDD | B&H MDD | Weight |
+|---|---|---|---|---|---|---|---|
+| W1 | 2010-2014 | **1.12** | 1.03 | 1.04 | -10.8% | -17.0% | 0.66 |
+| W2 | 2015-2019 | 0.62 | 0.88 | 0.97 | -9.7% | -14.0% | 0.70 |
+| W3 | 2020-2025 | **0.87** | 0.84 | 1.00 | -12.9% | -24.8% | 0.70 |
+
+- W1, W3에서 B&H Sharpe 초과. MDD는 전 구간에서 B&H 대비 우수.
+- W2(2015-2019) 약점: 2018 Q4 하락 후 회복장 놓침.
+- 피쳐 추가 효과: v1(10dim) Sharpe 0.80 → v2(12dim) 0.98 → v2+WTI(13dim) 1.12 (W1 기준)
+
+### 주요 발견사항
+- episode_length=120(10년)이 핵심: 36개월이나 60개월은 위기 사이클 학습 불가 → B&H 수렴
+- 학습 데이터에 2000+2008 위기 필수 (최소 ~2009까지)
+- Premium 0%가 최적: premium 올리면 B&H로 수렴
+- reward = min(0, PP-1.0)에서 PP>1.0 구간은 gradient 없음 → bang-bang (0 or 1)
+- 센티먼트, M2, VIX, yield_curve, credit_spread, WTI가 의사결정에 사용됨
+
+### 다음 작업
+- 피쳐 추가: sp_3m/6m/12m 모멘텀, ICSA(실업수당), UMCSENT(소비자심리)
+- W2 개선 시도
+- MoE 재시도 (평정심 모델 기반)
 
 ## 다음 단계
-- Validation set 분리 (체리피킹 방지)
 - 다른 시장 검증
 - 논문 구체화
