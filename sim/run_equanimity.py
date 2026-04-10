@@ -214,7 +214,7 @@ class SingleRewardEnv(gym.Env):
         port_ret = w * next_ret + (1 - w) * tb_r
         self.pp *= (1 + port_ret); self.pp /= (1 + met)
         if self.reward_type == "hwm":
-            reward = min(0.0, self.pp - self.hwm)  # 양수면 0으로 cap
+            reward = min(0.0, self.pp - self.hwm)
         else:
             reward = port_ret
         # hwm 업데이트 안 함 — 초기값 1.0 고정 (평정심 모델)
