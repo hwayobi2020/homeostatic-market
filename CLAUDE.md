@@ -215,11 +215,85 @@
 - reward = min(0, PP-1.0)에서 PP>1.0 구간은 gradient 없음 → bang-bang (0 or 1)
 - 센티먼트, M2, VIX, yield_curve, credit_spread, WTI가 의사결정에 사용됨
 
-### 다음 작업
-- 피쳐 추가: sp_3m/6m/12m 모멘텀, ICSA(실업수당), UMCSENT(소비자심리)
-- W2 개선 시도
-- MoE 재시도 (평정심 모델 기반)
+## Phase 6: 레버리지 + MoE 실험 (2026-04-11)
+### 레버리지 (0~200%) 허용
+- port_ret = w * stock + (1-w) * tbill, w > 1이면 차입비용 tbill
+- W1: Return +19.8% (B&H +13.2% 초과), Sharpe 1.06, MDD -13.9%
+- W2, W3: MDD가 커져서 Calmar 하락. 레버리지는 하락장에서 불리
+- 항상성 reward가 "탐욕(레버리지)"과 "절제(낮은 노출)" 모두 학습함을 확인
+
+### MoE (Expert1:HWM + Expert2:lev2x + Router)
+- Router reward를 return으로 설정, Discrete(2) 선택
+- W1: Calmar 1.04, Return +19.9% (B&H +13.2% 초과)
+- W2, W3: 여전히 B&H에 밀림
+- 단순 규칙("Expert2가 lev 원하면 Expert1로 전환")이 오히려 W1에서 Calmar 1.24로 최고
+
+### Expert3 (Return reward) 추가
+- W1: Calmar 0.83 (Expert1 1.14 대비 약화)
+- W2, W3: Expert1보다 나음. HWM과 Return이 상호보완적
+
+## Phase 7: 피쳐 확장 + 예측력 검증 (2026-04-11)
+### 데이터 확장: v25 = v2 + 52주 고저 피쳐
+- 1989년부터 S&P, NDX 가격 fetch (yfinance)
+- sp_52wh_ratio, sp_52wl_ratio, sp_in_range (SP/NDX 각 3개씩)
+- CHF, JPY 환율도 시도했으나 오히려 성능 하락 (15dim → Sharpe 0.75로 악화)
+
+### 피쳐 중요도 분석 (W3 기준, permutation importance)
+- 최강: ndx_in_range (ΔSharpe +0.098), sp_in_range (+0.071)
+- 해로움: sentiment (-0.085), wti_1m (-0.032)
+- 중립: m2_3m, yield_curve, credit_spread (ΔSharpe ≈ 0)
+
+### Pruned 13dim (ndx_1m, sp_1m, vix, 52w*6, state*4)
+- W1: Sharpe 1.08, Return +13.6% (B&H 초과)
+- W2: Sharpe 0.72, Return +6.5% (여전히 B&H 못 이김)
+- W3: Sharpe 0.92, Return +13.1% (B&H 초과)
+- 19dim과 비교: 19dim이 W3에서 Calmar 0.96, 13dim Pruned이 가장 균형
+
+### 예측력 검증 (LGBM으로)
+- 1개월 방향 예측 AUC: W1 0.51, W2 0.63, W3 0.41 (거의 무의미)
+- 4자산 순위 예측 (S&P, NDX, RUT, TBILL):
+  - 1개월 Top-1 Acc: 20~38% (base 대비 미약)
+  - 3개월 Top-1 Acc: 32~45%, Spearman +0.19~+0.24
+  - **6개월: Spearman 최대 +0.41 (W2)**
+  - 12개월: Spearman 여전히 높지만 base rate 증가
+- **결론: 월간 예측은 불가능, 3-6개월 지평에서만 약한 신호**
+
+### 치명적 발견: AUC = 0.5 (예측력 없음)
+- Agent AUC (vs tbill): W1 0.49, W2 0.42, W3 0.51 — 거의 랜덤
+- 손실월에서도 오히려 비중 높임 (W1, W2): 에이전트가 모멘텀 따라감
+- W3만 손실월 비중 감소 (0.75 vs 수익월 0.82)
+- **"시장 예측 지능 출현"은 잘못된 해석. 실제로는 "낮은 노출 + 랜덤 전환"**
+
+### Kelly 공식 관점
+- p=0.5 대칭이면 배팅 0이 최적
+- 실제 S&P: Full Kelly 340~630%, Quarter Kelly 100~160%
+- 우리 에이전트 평균 80%는 Quarter Kelly의 절반 수준 (매우 보수적)
+
+## Phase 8: 분기/반기 Rebalancing 실험 (2026-04-11)
+### 분기 (3개월 결정): 13dim pruned, 6M gap
+- W1: Sharpe 1.48, Calmar 1.29 (월간 0.65 → 2배 개선)
+- W2: Sharpe 0.96 (월간 0.79보다 개선)
+- W3: Calmar 1.27 (B&H 0.79 초과, MDD -10.3% vs B&H -15.9%)
+- **예측 지평과 결정 지평을 맞춘 효과 확인**
+
+### 반기 (6개월 결정)
+- Training data 39H로 너무 적음 → 학습 부족
+- 10K step에서 Weight 0.56 (중간 비중), Return +6.2% (B&H +11.6%보다 낮음)
+- 200K step에서는 과적합 (Weight 1.00 수렴)
+- **6개월 rebalancing은 데이터 부족으로 RL 학습 어려움**
+
+### 버그 수정
+- make_quarterly, make_semiannual의 tbill/metabolism 시점 불일치
+  - sp_next_return: shift 0 = t+1 수익
+  - tbill: shift 0 = t 금리 → shift -1~-n이 되어야 sp와 동일 기간
+
+### 평가 지표 재정립
+- Sharpe → Calmar 주력 (loss-averse reward와 일치)
+- 추가: Sortino, UPI (Ulcer), Pain Ratio, Sterling, Shortfall
+- AUC (예측력 검증), Mean Weight (효율)
+- 항상성: Final PP, Min PP, Time below 1.0, 기초대사 초과율
 
 ## 다음 단계
+- 월간 결정 + LGBM 6개월 예측을 feature로 주입 (hybrid)
 - 다른 시장 검증
 - 논문 구체화
