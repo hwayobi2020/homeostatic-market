@@ -293,7 +293,75 @@
 - AUC (예측력 검증), Mean Weight (효율)
 - 항상성: Final PP, Min PP, Time below 1.0, 기초대사 초과율
 
-## 다음 단계
-- 월간 결정 + LGBM 6개월 예측을 feature로 주입 (hybrid)
-- 다른 시장 검증
-- 논문 구체화
+## Phase 9: Evolutionary Prospect Theory (2026-04-12~)
+
+### Motivation
+- 이전 Phase들의 "predictive intelligence 출현" 가설 기각 (AUC 0.5 확립)
+- 진짜 질문 전환: **"시장 진화는 어떤 loss aversion을 선택하는가?"**
+- Kahneman-Tversky 실험치 λ=2.25가 evolutionary optimum인가?
+
+### Setup
+- Action space: w_b ∈ [0,1], w_s ∈ [1-w_b, 2-w_b] (total ∈ [1,2], long-only)
+  - 4 corners: (1,0), (2,0), (0,1), (1,1) — linear utility에서 corner solution 성립
+- Reward: α·r⁺ + β·r⁻ (asymmetric linear, prospect theory-style)
+- Policy: Myopic analytic (각 state마다 4 corner 중 argmax E[R])
+  - μ = 0.006 (상수, 월간 equity premium)
+  - σ = VIX/100/√12 (관측)
+  - 차입비용 = metabolism = max(M2 growth, tbill)
+- Survival fitness: survival_steps × 100 + final_PP, death at PP < 0.95
+- Evolution: CMA-ES on (α, β) ∈ [1, 3]², popsize 100, 20 generations
+
+### 핵심 발견 (2026-04-12)
+**1. Evolved λ ≠ Kahneman 2.25**
+- Single 20yr train (1990-2010) + 10yr horizon → λ* = 1.04 (α=2.17, β=2.25)
+- Walk-forward 30 windows mean λ = 1.28, median 1.19 (Kahneman 2.25보다 훨씬 낮음)
+- **"생존 + 성장" 최적화에선 near-symmetric이 선호됨**
+
+**2. Procyclical loss aversion** (강한 empirical finding)
+- corr(evolved λ, train B&H return) = **-0.527** (p=0.003)
+- Bull train → low λ 진화 (aggressive) → 다음 bear에 즉사
+- Bear train → high λ 진화 (conservative) → 다음 bull 놓침
+- **Bubble-crash cycle의 behavioral micro-foundation 제공**
+
+**3. Fixed Kahneman (λ=2.25)의 실패**
+- Test 2010-2015에서: 100% bond 고정 → 0.07% 수익, Final PP 0.686
+- Step 11에 PP<0.95 (metabolism decay로 사망)
+- "Kahneman = evolutionary optimum"이라는 가설 empirical 기각
+
+**4. Evolved agent vs B&H (W1 test 2010-2015)**
+- Evolved (λ=1.04): +18.47% annual, Sharpe 1.02, Calmar 0.92
+- B&H: +14.11% annual, Sharpe 1.15, Calmar 0.83
+- Return/Calmar는 evolved 우위, Sharpe는 B&H 우위
+- Walk-forward 30 windows: Agent 평균 +3.75%/yr, B&H +9.53%/yr (compound)
+- 사망률 14/30 (47%)
+
+### Potential Paper
+**제목 후보**: *"Procyclical Loss Aversion: Why Market Evolution Rejects Kahneman's λ"*
+
+**Core thesis**:
+- 시장 진화는 **near-symmetric loss aversion** (λ≈1)을 선호
+- 인간의 λ≈2.25는 **다른 선택 압력**의 유산이지 시장 적응이 아님
+- 실제로 λ는 **procyclical**하게 움직임 → 투자자들이 스스로 bubble-crash 만듦
+- 이 procyclical dynamics가 computational으로 처음 demonstrated
+
+### Scripts (Phase 9)
+- `run_analytic_prospect_w1.py`: 1D λ grid search (linear utility → corner bang-bang 확인)
+- `run_survival_evolution_v2.py`: Walk-forward CMA-ES (30 windows, (α,β) 2D search)
+- `run_survival_single_test.py`: 20yr train + 5yr test, 10yr survival horizon
+- `run_survival_grid25.py`: 25-point action grid (4-corner approximation 개선)
+- `compare_walkforward_vs_bh.py`: Agent vs B&H 분석
+
+### 제한 사항 (향후 refinement)
+- Action space: 4 corner (또는 25 grid). 연속 최적화 미구현.
+- Linear prospect utility (Kahneman 원본은 power function)
+- Transaction cost 미포함
+- Single seed, no stability check across seeds
+- Short position 금지 (homeostatic 자해 방지 논리로 의도된 제약)
+
+## 다음 단계 (선택지)
+- [A] Action space 연속화 + 재검증 (robustness)
+- [B] Power utility 구현 (interior solution 가능성)
+- [C] Multi-seed × multi-period robustness
+- [D] Retail investor behavior 데이터와 비교 (external validation)
+- [E] Multi-agent ABM으로 확장 (진짜 Red Queen)
+- [F] 이대로 논문 draft 작성 (preliminary findings로 충분)
