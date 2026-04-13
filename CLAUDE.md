@@ -365,3 +365,119 @@
 - [D] Retail investor behavior 데이터와 비교 (external validation)
 - [E] Multi-agent ABM으로 확장 (진짜 Red Queen)
 - [F] 이대로 논문 draft 작성 (preliminary findings로 충분)
+
+## Phase 10: Sharpe Evolution, Feature Engineering, LGBM-μ (2026-04-13~)
+
+Phase 9의 "procyclical λ" 결과를 출발점으로 해서 **더 엄격한 setup**에서 alpha 생성 가능 여부 검증. 최종 결론: **현 data/horizon에서는 market timing 구조적 불가, static allocation이 optimal**.
+
+### Fold 구조 (Phase 10 표준)
+- Train 20년, Test 4.5년, Gap 6M, 총 3 folds:
+  - W1: 1991-01~2010-12 train / 2011-07~2015-12 test
+  - W2: 1996-01~2015-12 train / 2016-07~2020-12 test
+  - W3: 2001-01~2020-12 train / 2021-07~2025-12 test
+
+### 주요 실험 (chronological)
+
+**1. run_survival_3folds.py** (survival fitness, 25-grid leverage)
+- Evolved λ=β/α: W1=1.06, W2=1.23, W3=1.18 (Kahneman 2.25 훨씬 하회)
+- OOS 성능 불균일. W3에서 Sharpe 0.52 (B&H 0.84 미달).
+
+**2. run_sharpe_3folds_metafeat.py** (Sharpe fitness + metabolism as feature, 4D)
+- Borrow cost metabolism→tbill로 변경, PP deflation 제거
+- 4D: α₀, α₁·met_z, β₀, β₁·met_z
+- W1 ShEx +1.51 (B&H 1.30 초과!), W2/W3 약함
+- α₁<0, β₁>0 일관 → "high metabolism = defensive" 학습
+
+**3. run_sharpe_3folds_multifeat.py** (10D: metabolism + 3 NDX features)
+- 4 features: metabolism + ndx_52wh_ratio + ndx_in_range + ndx_return
+- W3 overfit 발견: MDD -56.6% (훈련 데이터에 심각히 과적합)
+- ndx_52wh_ratio ↔ ndx_in_range 상관 0.86 (중복)
+
+**4. run_sharpe_3folds_l2reg.py** (L2 regularization sweep)
+- λ_reg ∈ {0, 0.005, 0.02, 0.05, 0.1, 0.3, 1.0}
+- 최적 λ=0.05, mean ShEx 0.857 (2D baseline +0.165)
+- W3 MDD -56→-44%로 완화 (완전 해결은 아님)
+
+**5. run_sharpe_3folds_nolev.py** (no-leverage 21-grid)
+- Action: w_s ∈ [0,1], w_b = 1-w_s
+- Mean ShEx 0.868 (B&H 0.887과 동률 수준)
+- W1 agent = B&H (100% stock), W2/W3 소폭 열위/우위
+
+**6. run_feature_importance.py** (17 feature × 3 fold screening)
+- Top: ndx_52wh_ratio (+0.289), ndx_in_range (+0.156), ndx_return (+0.119)
+- 해로움: sentiment (-0.260), yield_curve (-0.534)
+- Phase 7 PPO ranking과 일관 (NDX cluster dominant)
+
+**7. data/build_v26.py + feature_importance_v26.py**
+- 신규 12 feature 추가: {sp, ndx, vix} × {3M, 6M} × {mean, std}
+- 29 candidate screening under new folds + 3M rebalancing + no-lev
+- Top: ndx_return (+0.749), ndx_3m_mean (+0.689, 신규), ndx_in_range (+0.673), ndx_6m_mean (+0.640, 신규)
+- **신규 ndx_3m_mean / ndx_6m_mean / vix_6m_mean 유의미** — 하지만 B&H 초과는 ndx_return만
+
+**8. run_sharpe_3folds_adaptive.py** (expanding window standardization)
+- W3 overfit 원인 진단: metabolism z-score가 2020 COVID 때 saturate (max z=12.47)
+- Train 고정 stats + Test 확장 window stats로 교체
+- W3 MDD -45→-26%로 회복, λ=0.005에서 mean ShEx 0.706 (B&H 0.692 대비 +0.014)
+
+**9. run_sharpe_3folds_lgbm_mu.py** (LGBM-predicted μ_t)
+- 이전 실험의 본질적 결점: μ=0.006 상수. Feature로 slope만 조절하고 prediction 없음.
+- LGBM: 31 features → 3M compound forward SP return 예측
+- LGBM OOS: W1 Spearman +0.16, W2 +0.20, W3 -0.03 (모든 R² 음수 = magnitude 캘리브레이션 실패)
+- **W2에서 dramatic 이득**: ShEx 1.036~1.209, AnnRet +22~26%, B&H +0.26~+0.44 초과
+- W1 악화 (-0.24 vs const-μ baseline): LGBM misleading 정보 주입
+- W3 유의차 없음 (signal 부재)
+
+### 3M 하락 이벤트 희소성 분석
+
+27 events (≤-10% over 3M) in 430 months (base rate 6.3%).
+- W1 test: **0건** (순수 bull market)
+- W2 test: 2건 (2018-09 Q4 selloff, 2019-12 코로나 직전)
+- W3 test: 1건 (2022-03 bear)
+
+**Test 161M 전체에 3 events**. 통계적 power 거의 없음.
+
+### 진단 결론
+
+**W2가 만성 실패였던 이유**:
+- W2 train (1996-2015)에 GFC 8건 포함 → agent가 "defensive"를 학습
+- W2 test (2016-2020)는 crash 2건만 → 방어가 bull market 놓침
+- LGBM-μ가 이 biased caution을 state-conditional signal로 무력화 → alpha 생성
+
+**하지만**:
+- R² 음수 = LGBM magnitude 신뢰 불가
+- Test 이벤트 3건으로 통계 검증 불가능
+- Regime mismatch (train-test) 매번 다름 → universal solution 없음
+
+### 최종 insights
+
+1. **Monthly data에서 3M 지평 alpha 생성은 rare event sparseness로 구조적 한계**
+2. **Sharpe 극대화 agent는 momentum chaser로 진화** (52w ratios α_f>0, β_f<0)
+3. **Buy-the-dip은 진화하지 않음** — Sharpe fitness + 3M rebalance가 mean reversion을 벌줌
+4. **Prediction 없이도 risk premium은 구조적으로 존재**. Static allocation (100% stock ± leverage)이 가만히 최적
+5. **"사고 팔고"는 positive drift 환경에서 손실** — timing은 본질적으로 비용
+6. **연구 질문 재정의**: "어떻게 이기나" → "왜 인간/agent는 static을 못 지키나" (원 homeostatic thesis로 회귀 가능)
+
+### 생성 스크립트 (Phase 10)
+- `data/build_v26.py` — 12 rolling stat feature 추가
+- `data/monthly_noleak_v26_train/test.csv` — v26 데이터
+- `sim/run_survival_3folds.py`
+- `sim/run_sharpe_3folds_metafeat.py`
+- `sim/run_sharpe_3folds_multifeat.py`
+- `sim/run_sharpe_3folds_l2reg.py`
+- `sim/run_sharpe_3folds_nolev.py`
+- `sim/run_feature_importance.py`
+- `sim/run_feature_importance_v26.py`
+- `sim/run_sharpe_3folds_adaptive.py`
+- `sim/run_sharpe_3folds_lgbm_mu.py`
+
+결과: `result/evolved_sharpe_*.csv`, `result/feature_importance_*.csv`, 로그 `result/_*_output.log`
+
+### Phase 10 결론 요약
+
+Phase 9까지는 evolved prospect theory 관점에서 "약한 positive finding" (procyclical λ). Phase 10에서 더 엄격한 setup으로 검증한 결과:
+
+- **Alpha generation은 signal이 없는 구간(W1, W3)에서 불가능**
+- **Signal이 있는 구간(W2)에서는 가능하지만 cherry-picking 불가피**
+- **연구의 진짜 finding은 negative**: "monthly stock market에서 3M 지평의 systematic alpha는 data 희소성 + regime heterogeneity로 구조적 불가능"
+
+다음 단계는 연구 접기 / behavioral angle 전환 / 다른 data source로 피벗 중 선택.
