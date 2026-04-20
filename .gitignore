@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 models/*.zip
+models/*.pt
 plots/*.png
 *.egg-info/
 .env

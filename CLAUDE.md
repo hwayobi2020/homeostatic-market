@@ -481,3 +481,497 @@ Phase 9까지는 evolved prospect theory 관점에서 "약한 positive finding" 
 - **연구의 진짜 finding은 negative**: "monthly stock market에서 3M 지평의 systematic alpha는 data 희소성 + regime heterogeneity로 구조적 불가능"
 
 다음 단계는 연구 접기 / behavioral angle 전환 / 다른 data source로 피벗 중 선택.
+
+## Phase 11: LGBM Signal + Selective Leverage + EA 구조 비판 (2026-04-17)
+
+### 이벤트 빈도 분석
+- `sim/_count_drops.py` → 3M 지평 기준:
+  - ≥+10% 상승: FULL 48건/430M (11.2%), test 23건/177M
+  - ≤-10% 하락: FULL 27건/430M (6.3%), test 4건/177M
+- test 구간 상승:하락 = 5:1 이상 → 구조적 bull-heavy
+
+### LGBM 3M ≥+10% 상승 예측기 (v26 31 features)
+- `sim/run_lgbm_up10_3m.py` → OOS AUC: W1 0.79 / W2 0.98 / W3 0.69
+- `sim/run_lgbm_up10_verify.py` → multi-seed (5 seeds): W2 AUC 0.972±0.007
+  - Permutation test: W1/W2 p<0.001, W3 p=0.033
+  - Non-overlapping AUC 과대평가 아님 확인
+  - TC 25bps 영향 -0.35%p (무시)
+- Trigger 분석 (`sim/_when_bull.py`):
+  - W1: 2010-08, 2011-08~12, 2012-05~06 (Euro 위기 직후)
+  - W2: 2020-03~06 (COVID 바닥 4개월, 3/4 hit)
+  - W3: 0건 trigger
+  - **패턴 = "post-panic reversion" (contrarian, not momentum)**
+- 피쳐 중요도: sp_6m_std (13%), vix (12%), vix_3m_mean (10%), tbill (8%)
+
+### LGBM 3M ≤-10% 하락 예측기 — 실패
+- `sim/run_lgbm_dn10_3m.py` → OOS AUC: W1 0.49 / W2 **0.21 (역방향)** / W3 0.62
+- Precision@모든 threshold = 0. 진짜 crash 1건도 못 맞춤.
+- **비대칭 결론: 상승 예측 가능, 하락 예측 불가능**
+- 원인: crash은 exogenous shock, VIX는 coincident/lagging
+
+### Selective leverage 전략 (baseline 100% S&P + signal 때 2x)
+- thr=0.20, lev=2x 결과 (OOS):
+  - W1: +19.58% Sharpe 1.13 (B&H +15.20% Sharpe 1.29)
+  - W2: +15.86% **Sharpe 0.89 > B&H 0.77**, MDD -20.0% (B&H 동일)
+  - W3: +12.84% = B&H (trigger 0건, 리스크 無)
+- thr=0.30, lev=2x → W1 Sharpe **1.325 > B&H 1.290**, MDD 동일
+
+### EA (evolutionary leverage policy) 실험
+- `sim/run_evo_leverage.py`, `sim/run_evo_leverage_v2.py`
+- 3 variant: A(p_up only), B(no p_up), C(full 6D)
+- 3 fitness: Calmar, AnnRet, LinExc
+
+#### Calmar/AnnRet fitness → p_up 역방향 학습
+- W1/W2 corr(p_up, w) = -0.85~-1.0
+- 원인 분석 (`sim/_why_invert.py`):
+  - Train OOF LGBM hit rate: W1 **47.7% (랜덤)**, W2 55.6%
+  - Train OOF에서 실제로 돈 잃음 (W1 LinExc -0.24, compound -119% vs B&H)
+  - **EA가 역방향 학습한 건 합리적 — train signal 자체가 약해서**
+  - "variance-poison"이라고 해석했으나 부분 오류. 진짜 원인은 OOF data 부족
+
+#### LinExc (path-free) fitness → p_up 정방향
+- W1/W2/W3 p_up 계수 +2.0 일관, corr +1.0
+- 하지만 mean_w = 1.83 (상시 고레버리지, 선택적이지 않음)
+- LinExc = Σ(w-1)·excess 형태 → 사실상 supervised regression의 loss와 동일
+
+### EA 구조 비판 (핵심 반성)
+1. **EA는 최적화 EA, 진화 아님**
+   - Train 전체 path → 1 scalar fitness, 234 sample을 1개 숫자로 요약
+   - LGBM은 242개 독립 sample로 per-sample 학습 → 200배 정보량 차이
+   - ES는 gradient-free optimizer일 뿐, Nelder-Mead와 구조적 동일
+2. **Phase 9 "procyclical λ" 재해석 필요**
+   - "λ가 procyclical하게 진화한다" → 실제론 "Calmar-argmax가 train regime 따라 달라진다"
+   - 이건 "진화" 발견이 아니라 "최적화 결과의 regime 의존성"
+3. **진짜 evolution으로 가려면**:
+   - N 개체 population이 시간 속에서 sequential selection (매 달 사망/번식)
+   - 개체별 PP tracking, death threshold, mutation
+   - LGBM도 expanding window로 매 시점 재학습 (live 환경 시뮬)
+   - 현재 코드 어디에도 이 구조 없음
+
+### Phase 11 생성 스크립트
+- `sim/run_lgbm_up10_3m.py` — 3M ≥+10% up classifier + selective leverage 전략
+- `sim/run_lgbm_up10_verify.py` — multi-seed, permutation, non-overlap, TC 검증
+- `sim/run_lgbm_dn10_3m.py` — 3M ≤-10% down classifier (실패)
+- `sim/run_evo_leverage.py` — EA leverage policy (초안, Calmar fitness)
+- `sim/run_evo_leverage_v2.py` — EA 3 variant × 3 fitness 비교
+- `sim/_count_drops.py` — 이벤트 빈도 분석 (임시)
+- `sim/_when_bull.py` — trigger 시점 분석 (임시)
+- `sim/_why_invert.py` — EA 역방향 학습 원인 분석 (임시)
+- 결과: `result/lgbm_up10_3m_preds.csv`, `result/lgbm_dn10_3m_preds.csv`, `result/evo_leverage_decisions.csv`
+
+### Phase 11 결론
+
+**유효한 발견:**
+- 3M 상승은 통계적으로 예측 가능 (permutation p<0.001), post-panic reversion 패턴
+- 3M 하락은 예측 불가능 (비대칭)
+- Selective leverage로 B&H 대비 return 초과 가능 (Sharpe는 fold-dependent)
+
+**무효화된 주장:**
+- "Variance-denominator가 signal을 파괴한다" → 부분 오류. Train OOF signal 약한 게 주원인
+- EA "진화" 결과 전부 → 최적화 EA로 재해석 필요
+
+**다음 단계:**
+- [A] Population-based temporal evolution 구현 (매 달 selection, 진짜 진화) → **Phase 12에서 구현 완료**
+- [B] LGBM expanding window (live simulation, train/test 분포 일치)
+- [C] Phase 9 procyclical λ를 진짜 evolution으로 재검증 → **Phase 12에서 부분 검증**
+
+## Phase 12: Population Evolution + MLP (2026-04-17)
+
+### 구조
+- **Layer 1 (Policy)**: CMA-ES(선형) → MLP(비선형) + gradient descent로 교체
+  - MLP: 8→16→1, features: p_up, vix, sp_1m, ndx_in_range, ndx_52wh_ratio, metabolism, tbill, sp_6m_mean
+  - Reward: α·relu(r_net) - β·relu(-r_net), r_net = w × (sp_next - metabolism)
+  - Online gradient update 시도했으나 효과 없음 (초기 batch 학습에 지배됨)
+- **Layer 2 (Evolution)**: population death/reproduction, 진짜 temporal selection
+  - Genotype: (α, β), α+β=3.25 고정 (Kahneman α=1, β=2.25 = 3.25)
+  - Death: PP < 0.50 → 사망
+  - Reproduction: 매 12개월, 상위 50% by Calmar가 번식
+  - Mutation σ=0.30, immigrant 10/년, pop cap 300
+- **Fold**: Warmup 120M + Evolution 120M + Gap 6M + Test ~54M (기존 3-fold)
+  - W1: warmup 91-00, evo 01-10 (닷컴+GFC), test 11-15
+  - W2: warmup 96-05, evo 06-15 (GFC), test 16-20
+  - W3: warmup 01-10, evo 11-20 (COVID), test 21-25
+
+### CMA-ES(선형) vs MLP(비선형) 비교
+- CMA-ES: w = sigmoid(θᵀz + b) × 2 → **선형 결합, feature 상호작용 못 잡음**
+- MLP: w = sigmoid(MLP(z)) × 2 → **비선형 가능, 하지만 timing 가치 미미**
+- CMA-ES theta 분석: **λ < 1 (gain-seeking)은 p_up 계수 +4.9 (정방향), λ > 1 (loss-averse)는 -1.5 (역방향)**
+  - 같은 signal을 보고도 성격에 따라 반대 행동
+  - loss-averse는 "p_up 높을 때 = VIX 높을 때 = 위험"으로 해석 → 투자 축소
+
+### 번식 기준별 진화 결과 (w ∈ [1, 2])
+
+**PP 기준 번식** → gain-seeking 선택 (λ 중앙값 0.4~0.6, 상시 max leverage, timing 無)
+**Sharpe 기준 번식** → loss-averse 선택 (λ 중앙값 2~8, 거의 현금에 갇힘, test 무가치)
+**Calmar 기준 번식** → **Kahneman 근방 수렴**:
+
+| Fold | λ 중앙값 | α 평균 | β 평균 |
+|---|---|---|---|
+| W1 (닷컴+GFC) | **2.87** | 1.19 | 2.06 |
+| W2 (GFC) | **1.76** | 1.50 | 1.75 |
+| W3 (COVID) | **1.25** | 1.61 | 1.64 |
+
+Crash 강도와 λ 양의 상관: 강한 crash → 높은 λ (procyclical, Phase 9 재확인)
+
+### MLP Evolution Test 성과 vs B&H (Calmar 기준)
+- Top 10/20% by Evo Calmar → Test Calmar가 static same-W보다 **낮음**
+- MLP의 연속적 w 조절이 MDD를 악화시킴 → timing이 해로움
+- 개별 agent 중 B&H 초과 다수 (W1 42%, W2 34%), 하지만 **사전 선택 불가**
+
+### LGBM Selective Leverage vs MLP Evolution (핵심 비교)
+
+| Fold | LGBM Calmar | MLP Evo Top10% Calmar | B&H Calmar |
+|---|---|---|---|
+| W1 (thr=0.2, 2x) | **1.305** | 1.056 | 1.063 |
+| W2 (thr=0.2, 2x) | **0.911** | 0.573 | 0.632 |
+| W3 (thr=0.15, 2x) | **0.481** | 0.309 | 0.431 |
+
+- **LGBM selective가 3 fold 전부 B&H Calmar 초과** (MDD 동일 or 개선 + Return 증가)
+- **MLP Evolution은 B&H Calmar 미달** (MDD 악화)
+- LGBM은 4~9% 시간만 trigger (binary), MLP는 연속 조절하다가 noise 타서 성과 악화
+
+### Phase 12 결론
+
+**1. Population temporal evolution은 작동한다**
+- Death/reproduction/mutation이 실제로 (α, β) 분포를 변화시킴
+- Calmar 번식에서 λ ≈ 1.3~2.9 (Kahneman 2.25 근방) 수렴 — Phase 9 최적화 EA(λ=1.04)와 다른 결과
+- Crash 강도 ↔ λ 양의 상관 재확인
+
+**2. MLP 비선형성은 timing 가치를 만들지 못한다**
+- Sparse signal (4~9% trigger)은 tree 모델의 조건부 분기가 자연스럽게 잡음
+- MLP는 연속적 w 조절로 noise를 타서 MDD 악화
+- Online gradient update도 효과 없음 (초기 batch에 지배)
+
+**3. 시장 timing의 핵심은 policy 구조가 아니라 LGBM의 예측력**
+- LGBM binary trigger (sparse, 정확) > MLP continuous weight (noisy, 부정확)
+- Static allocation + selective leverage가 optimal 구조
+
+**4. 진화의 의미 재정의**
+- "어떤 성격(α, β)이 살아남나"에 대한 답은 번식 기준에 따라 완전히 달라짐
+- PP 기준 → gain-seeker, Sharpe 기준 → 현금 은둔자, Calmar 기준 → Kahneman 근방
+- **진화가 λ를 결정하는 것이 아니라 fitness function이 λ를 결정** — Phase 11의 EA 비판과 동일한 구조적 문제
+
+### 생성 스크립트 (Phase 12)
+- `sim/run_population_evolution.py` — CMA-ES 선형 policy + population evolution
+- `sim/run_population_evolution_mlp.py` — MLP 비선형 policy + population evolution + online update
+- 결과: `result/pop_evo_*.csv`, `result/pop_evo_mlp_*.csv`
+
+## Phase 13: Neuroevolution (2026-04-17)
+
+### 핵심 아이디어
+- LGBM → p_up (feature extractor), 예측이 아니라 **시장 상태 지표**로 사용
+- Tiny MLP: [p_up, vix_z, metab_z, **PP**] → 4 hidden → w ∈ [0, 1] or [0, 2]
+- CMA-ES가 MLP 가중치 25개를 직접 진화 (gradient 불필요)
+- Fitness = **PP trajectory의 Calmar** (portfolio return Calmar 아님)
+- PP가 input → **항상성 feedback loop** — agent가 자기 상태를 보고 반응
+
+### PP-Calmar fitness의 중요성
+- Portfolio return Calmar → 현금 도피가 최적해 (MDD≈0 → Calmar→∞)
+- **PP-Calmar** → 현금이면 metabolism에 PP가 깎여서 벌받음
+- PP 기반이어야 항상성 구조와 일관
+
+### 주요 실험 결과
+
+#### w ∈ [0, 2], metabolism = max(m2, tbill), 분기 rebalancing
+| Fold | Neuroevo Calmar | Static same-W | B&H | Sharpe |
+|---|---|---|---|---|
+| W1 | **1.066** | 1.032 | 1.063 | **0.933** > 0.801 |
+| W2 | 0.411 | 0.627 | 0.632 | 0.656 |
+| W3 | **0.584** | 0.425 | 0.431 | **0.760** > 0.716 |
+
+- W1/W3에서 **Static same-W Calmar 초과** — timing value 출현
+- W3: MDD -24.4% vs static -34.2% (**10%p 개선**), w 분포 0.66~1.99
+- W2 실패 (timing이 MDD 악화)
+
+#### w ∈ [0, 1], metabolism = max(m2, tbill+2%), 분기 rebalancing
+| Fold | Neuroevo Calmar | Neuroevo Sharpe | B&H Calmar | B&H Sharpe |
+|---|---|---|---|---|
+| W1 | **1.138** | **0.994** | 1.063 | 0.801 |
+| W2 | 0.439 | 0.649 | 0.632 | 0.847 |
+| W3 | 0.417 | 0.699 | 0.431 | 0.716 |
+
+- W1: Calmar, Sharpe, Return(10.1% vs 9.5%) 모두 B&H 초과
+- Mean W = 0.95: **대부분 100% 투자, 특정 시점에만 15%까지 축소**
+- **기초대사 압력이 투자를 강제** (Mean W = 0.86~0.99) — Phase 1 원래 발견 재확인
+
+### 항상성에서 출현한 행동
+- PP가 위협받으면 비중 축소 (방어)
+- PP가 안정적이면 100% 투자 유지
+- 이 행동은 **가르치지 않았음** — PP input + PP-Calmar fitness에서 자발적 출현
+- Phase 1의 GBM 환경에서 나온 패턴이 **실제 시장 데이터에서 재현**
+
+### LGBM p_up의 올바른 위치
+- p_up은 **예측기가 아니라 feature** (기회 감지 지표)
+- 대부분 시점에서 기대수익 < 기초대사 → Kelly로 직접 쓰면 "투자하지 마" 결론
+- Phase 11 selective leverage는 "B&H 위에 얹는 α" 구조라서 작동한 것
+- Neuroevolution에서는 p_up이 4개 input 중 하나로 들어가서 MLP가 종합 판단
+
+### Phase 12 → 13 전환 과정 (실패에서 배운 것)
+1. LGBM이 비중을 직접 출력? → custom objective 문제 (target이 열려있음)
+2. 수익률 예측 → Kelly? → 월간 예측 불가, 3M 기대수익 < 기초대사
+3. Multiclass classification? → sample 부족
+4. Mamba? → tabular에서 tree 못 이김
+5. **→ 예측 포기, 상태 반응으로 전환 = Neuroevolution + PP feedback**
+
+### 기초대사 개선: max(m2, tbill, mich) (2026-04-18)
+- 기존 `max(m2, tbill+2%)` → `max(m2, tbill, mich/100/12)` — 임의 상수 제거
+- MICH = University of Michigan 1-year Inflation Expectation (FRED, 월별, 1978~)
+- 세 가지 구매력 침식 채널의 max:
+  - m2_growth: 유동성 팽창에 의한 구매력 희석
+  - tbill: 무위험 수익 기회비용
+  - mich: 경제 주체의 기대인플레이션
+- 대부분 기간 m2 > mich > tbill. 2022~2023 양적긴축 시 MICH가 max 담당 (m2 마이너스)
+- Leak 없음: MICH는 매월 중순~말 발표 → 월말 매핑 OK
+- 데이터: `data/monthly_noleak_v27_train/test.csv` (v26 + mich 컬럼)
+- 빌드: `data/build_v27.py`
+
+#### max(m2, tbill, mich) 결과 vs 기존
+| Fold | 기존(+2%) Calmar | 기존 Sharpe | 신규(mich) Calmar | 신규 Sharpe |
+|---|---|---|---|---|
+| W1 | 1.138 | 0.994 | **1.142** | **1.001** |
+| W2 | 0.439 | 0.649 | 0.482 | 0.699 |
+| W3 | 0.417 | 0.699 | 0.420 | 0.702 |
+
+- 전 fold 소폭 개선. 출현 행동 동일 (대부분 100%, 위험 시 축소)
+
+### 가계 투자자 수익률 데이터 (External Validation) (2026-04-18)
+
+#### 데이터 출처
+1. **FRED 가계 주식 실현수익률** (분기별, 1989~2025)
+   - `BOGZ1LM193064005Q`: 가계 주식+뮤추얼펀드 잔액 (Level)
+   - `BOGZ1FA193064005Q`: 가계 주식 순매수/매도 (Transactions)
+   - 실현수익률 = (Level[t] - Level[t-1] - Txn[t]) / Level[t-1]
+   - 저장: `data/household_investor_returns.csv` (146 rows)
+2. **FRED 가계 주식 비중** (분기별, 1990~2025)
+   - eq_pct = (주식+MF) / 총금융자산
+   - 저장: `data/household_equity_allocation.csv` (144 rows)
+3. **FINRA Margin Debt** (월별, 1997~2026)
+   - 저장: `data/finra_margin_monthly.csv` (351 rows)
+
+#### DALBAR 재현 결과
+- DALBAR 20년 (2005-2024): gap **-1.11%p**
+- FRED 가계 주식 수익률 20년: gap **-1.06%p** ← 거의 일치
+- 30년은 불일치 (1990년대 가계가 비S&P 주식에서 초과수익)
+- 2005년 이후 패시브 투자 확산으로 가계 포트폴리오가 S&P에 수렴 → gap이 순수 timing 비용 반영
+
+#### 가계 vs Agent 비교 포인트
+| 지표 | 가계 (20yr) | Agent W1 | B&H |
+|---|---|---|---|
+| 주식 수익률 | 7.51%/yr | 10.1%/yr | 9.5%/yr |
+| vs S&P gap | -1.06%p | **+0.6%p** | 0 |
+| 평균 비중 | 25% (전체 FA 대비) | 95% | 100% |
+| 위기 시 행동 | 패닉셀+느린 복귀 | PP 위협 시만 축소, 즉시 복귀 |
+
+#### FINRA Margin Debt 분석
+- corr(S&P YoY, Margin YoY) = +0.794 — 강한 procyclical
+- 닷컴: margin 하락속도 1.33x > S&P (capitulation)
+- COVID: margin 하락속도 1.72x > S&P (패닉)
+- GFC/2022: margin이 S&P보다 느리게 축소 (버티다가 폭발)
+- λ 역산은 불가 — 자발적 매도 vs 강제 margin call 분리 불가
+
+#### 사용 불가 데이터
+- DALBAR QAIB: 유료, raw time series 비공개
+- AAII Asset Allocation Survey: 회원 전용, 다운로드 차단
+- ICI 월별 Trends: 회원 전용
+
+### 위험회피계수 γ(t) (2026-04-18)
+- γ(t) = VRP / VolOfVol = (VIX² - RV²) / std(RV, 63일)
+- RV = 21일 trailing rolling std × √252
+- VRP = VIX²(implied variance) - RV²(realized variance)
+- VolOfVol = RV의 63일 rolling std
+- 전체 평균: γ(var)=0.56, γ(vol)=1.95 (Kahneman λ=2.25 근방)
+- VIX > RV인 월: 91% (대부분 VRP 양수)
+- 위기 시: GFC γ=+0.08 (VRP≈0), COVID γ=-0.03 (VRP 음수 = 공포 극대화)
+- Ian Martin (2017) "What is the Expected Return on the Market" → w = c/γ 공식 도출
+- 데이터: v28에 rv, vov, vrp, gamma 컬럼 추가
+- 빌드: v28 데이터 `data/monthly_noleak_v28_train/test.csv`
+
+### Expert 1: w = c/γ(t) (2026-04-18)
+- 순수 공식, ML 없음
+- c=1.0: W1 Sharpe 0.805 ≈ B&H 0.801, W2 MDD -15.0% (B&H -20.0%에서 5%p 개선)
+- c=0.5: 더 보수적, W2 MDD -11.4% (B&H 대비 8.6%p 개선)
+- γ 음수 시 w=0 문제 (COVID 반등 놓침)
+- 단독으로는 B&H 미달 — Expert 2와 조합 필요
+
+### Expert 2: LGBM 상승 예측기 + p_up 비중 (2026-04-18)
+- 기존 Phase 11 LGBM (3M ≥+10%, W2 AUC 0.98) 유지
+- Kelly sizing 시도 → binary switch로 수렴 (gain/loss 비대칭 때문), 포기
+- p_up 자체를 비중으로 → 평균 w=0.06, 너무 작음
+- Conviction scaling (p_up / max_train_p_up) 시도
+
+### Expert 3: 하락 예측기 — 실패 확정 (2026-04-18)
+- LGBM (v28, γ 포함): -10% threshold AUC 0.24~0.88 (불안정), -5% threshold AUC 0.46~0.54 (랜덤)
+- Mamba (63일 daily + 10 monthly features): AUC 0.31~0.65 (랜덤~역방향)
+- Mamba (63일 daily + 36 monthly features): AUC 0.24~0.62 (역방향~랜덤)
+- 공통 실패 패턴: 폭락 직후 공포 지표 상승 → "더 빠진다" 예측 → 실제로는 반등
+- **결론: crash는 exogenous shock. 어떤 모델/피쳐/해상도로도 예측 불가**
+- Expert 3 포기. γ 기반 Expert 1이 사후적 방어 역할 담당
+
+### Mamba 상승 예측기 (2026-04-18)
+- Mamba (63일 daily + 36 monthly): 상승 AUC W1 0.835, W2 0.726, W3 0.497
+- LGBM이 여전히 우월 (W2 AUC 0.98)
+- Expert 2는 기존 LGBM 유지
+
+### Phase 14: Mamba Weight Learner (2026-04-18) ← 현재
+
+#### 구조
+- 하위: Mamba(63일 daily [수익률, VIX]) → latent
+- 상위: latent + 월별 36개 피쳐 → w ∈ [0, 1]
+- Loss: policy optimization (label 없음, PP 기반)
+
+#### Loss 설계 변천
+1. v1: `-mean(pp_chg) + dd_weight * relu(-pp_chg)²` — per-sample mean, trajectory 무시
+2. v2: `-sum(log(1+port_ret) - log(1+metab)) + surv_w * mean(relu(1-PP)²)`
+   - log-sum = log(terminal PP) = Kelly criterion
+   - survival penalty: cumsum in log space → exp로 PP trajectory 복원 (gradient 안정)
+
+#### v1 sweep 결과 (per-sample mean loss)
+- **dd=2,big** (d_model=32, hid=64): W3 Sharpe 0.873, Calmar **1.067**, MDD **-6.7%**
+- dd=0: W3 Sharpe 0.791, Calmar 0.710, MDD -11.7% (가장 균형)
+- W2는 전 config에서 B&H 미달 (현금 도피 문제는 dd≤2에서 해결)
+
+#### v2 sweep 결과 (log-sum + cumsum survival)
+- **surv=1,big**: W3 Sharpe **0.922**, Calmar **1.008**, MDD **-10.0%**
+- log-sum,big: W3 Sharpe 0.865, Calmar 0.845, MDD -11.3%
+- W1: 전 config에서 Sharpe > B&H (0.801), 최고 surv=1,big,lr3e-4에서 0.855
+- W2: 전 config에서 B&H 미달 (W=0.88~0.91, 현금 도피 없음, timing 약함)
+
+#### 레버리지 없이(w∈[0,1]) 역대 최고 비교
+| 모델 | W1 Sharpe | W3 Sharpe | W3 Calmar | W3 MDD |
+|---|---|---|---|---|
+| **Mamba v2 surv=1,big** | 0.776 | **0.922** | **1.008** | **-10.0%** |
+| Mamba v1 dd=2,big | 0.805 | 0.873 | 1.067 | -6.7% |
+| Neuroevo v27 | 1.001 | 0.702 | 0.420 | -24.8% |
+| B&H | 0.801 | 0.716 | 0.431 | -24.8% |
+
+### 미해결 설계 문제
+1. **Fold 재정의 필요**: 현재 fold는 LGBM 3M prediction용. Mamba weight learner는 gap 불필요, 데이터량 부족 고려
+2. **Loss 설계**: log-sum + survival이 최종인지, λ 값 결정
+3. **MoE Router**: Expert 1(γ 공식) + Expert 2(LGBM) + Mamba를 어떻게 조합할지 미정
+4. **Mamba의 역할 재정의**: 예측기? 비중 결정기? 피쳐 압축기? 현재 비중 결정기로 단독 사용 중
+
+### 생성 스크립트 (Phase 13~14)
+- `sim/run_neuroevolution.py` — Tiny MLP + CMA-ES (Phase 13, v28 데이터)
+- `sim/run_mamba_down.py` — Mamba 예측기 (상승/하락 비교)
+- `sim/run_mamba_weight.py` — Mamba weight learner v1 (per-sample mean loss)
+- `sim/run_mamba_weight_sweep.py` — v1 hyperparameter sweep
+- `sim/run_mamba_weight_v2.py` — Mamba weight learner v2 (log-sum + survival)
+- `data/build_v27.py` — v27 (v26 + MICH)
+- `data/market_risk_aversion.csv` — γ(t) 시계열 (433 rows)
+- `data/household_investor_returns.csv` — 가계 투자자 수익률
+- `data/household_equity_allocation.csv` — 가계 주식 비중
+- `data/finra_margin_monthly.csv` — FINRA margin debt
+
+## Phase 15: Conditional Normalizing Flow — M2 ↔ Stock 시나리오 생성 (2026-04-20)
+
+### 목표 전환
+Phase 14까지의 "비중 학습/예측" 패러다임에서 **"M2 시나리오 → 주가 시나리오 생성"** 으로 완전 피벗.
+가역 조건부 flow(Conditional Masked Autoregressive Flow)로 `p(Stock | M2, macro)` 직접 학습.
+
+### 데이터 v29 → v30 (주별 재빌드)
+
+- 기존 v28(월별, 38 feature)에서 **주별**로 전환. M2 FRED `WM2NS` 실제 주간 발표 주기 정합.
+- v29: 10 컬럼 (M2, Stock, tbill, MICH, metab_max, metab_min)
+- v30: MICH 제거 + metab 2채널 재계산 `max/min(m2_growth, tbill_wr)`
+- 기간: train 1991-01-04 ~ 2015-12-25 (1,304주), test 2016-01-01 ~ 2025-12-26 (522주)
+- 52주 warmup은 1990년 구간으로 확보
+- Metabolism max 연율 ≈ 15.7%, 2001-09 M2 +156%/yr spike (9/11 Fed 대응, 실제 현상)
+- 빌드: `data/build_weekly_v29_minimal.py`, `data/build_weekly_v30.py`
+
+### 모델 구조: ConditionalTransformerFlow
+
+- **Causal autoregressive affine flow** (MAF 스타일)
+- Target X: `[B, L, 1]` — 주가 주간 log-return 시퀀스 (**raw**, 누적 안 함)
+- Condition C: `[B, L, 4]` — `[m2_growth, tbill_wr, metab_max, metab_min]` 전부 **raw**, z-score 표준화
+- Causal Transformer backbone (mamba_ssm 대체, GRU → Transformer 전환)
+- `log_scale` clamp `tanh·4` (±2는 주가 std 맞추기에 타이트)
+- 가역성 수치 검증: `max |x - x_rec|` ≈ 1e-6 (float32 반올림 수준)
+
+### Multi-step 확장
+- `MultiStepFlow(K, time_reverse=bool)` — K개 causal step 스택
+- `TimeReversedFlow` — 홀수 step에 시간축 flip 다양화
+- **단일 step의 한계 검증**: affine 1회로는 주가 fat-tail(kurt 7+, skew -1)을 N(0,1)로 못 밀어넣음. K=3로 확장 필요.
+
+### 주요 학습 기록
+
+#### Phase 1 K=1 (v29 cum, 3채널) — 기저 실험
+- Best epoch 97, Val NLL/step **−2.376**
+- Test z_mean +0.244 (bias 있음), PIT rank mean **0.701** (calibration 실패)
+- 생성 return kurtosis 51.7 vs real 7.3 (fat tail 과장)
+- **진단**: 단일 affine step 표현력 부족, condition cum 처리 비효율
+
+#### v30 raw + K=3 time-reverse (Phase 1.5)
+- 822k params, best epoch 35, Val NLL/step **−2.644**, PIT 0.590
+- Test NLL −2.248 (train-test gap 0.28)
+- 진전 있으나 여전히 skew 부호 반전, fat tail 과소
+
+#### Forecast K=3 (past P=52, future F=52, causal-only) ★
+- 822k params, best epoch 29, Val NLL/step **−2.680**
+- **PIT rank mean 0.446** (이상 0.5에 역사상 가장 가까움)
+- Gen return std 0.0231 vs real 0.0254 — 변동성 level 정확 매칭
+- **단**: Test NLL −1.855 (train-test gap 0.63으로 악화 — forecast가 test regime shift에 약함)
+- Kurt 3.93 vs real 6.75 (fat tail 여전히 과소)
+- Time-reverse 제거 대가 (pure causal K=3가 past-fixing 조건부 생성에 필수)
+
+### Conditional Generation 핵심 기법: Past-z Swap
+
+TimeReversed step과 past-fixing 양립 안 됨 (flipped 공간에서 past x가 future에 의존).
+해결:
+1. `x_full = [x_past, 0_padding]` → forward → `z_full`
+2. future z만 N(0, I) 새로 샘플
+3. `z_new = [z_full[:P], z_future_new]`
+4. inverse → `x_gen[:P]` 가역성으로 past 복원, `x_gen[P:]` 새 시나리오
+
+**단 time_reverse=False (pure causal)** 일 때만 작동. Smoke test `max |x_past - x_gen[:P]|` ≈ 2e-5 PASS.
+
+### Normalizing Flow 학습·평가 지표 정립
+- **Loss**: `NLL = 0.5‖z‖² + 0.5·L·log(2π) + log_det_J` (forward에서 `log_det_J = Σ s_t = log|det J_{z→x}|`)
+- 3계층 진단:
+  - A. Likelihood: Train/Val/Test NLL + train-test gap
+  - B. Marginal moments: mean/std/skew/kurt, vol clustering, leverage effect
+  - C. Conditional calibration: **PIT rank histogram vs Uniform(0,1)**, M2 counterfactual, COVID out-of-regime
+
+### Macro-axis 가설 검증 (2026-04-20)
+
+**가설**: "같은 M2에도 여러 주가 시나리오가 나오는데, 그 variation을 지배하는 잠재공간이 (tbill, mich)이다."
+
+**1차 오독 (내 실수)**: sp_return target으로 M2+macro 설명력 측정 → HAC 유의 X, LightGBM OOF R² 음수. 유저 정정 필요.
+
+**2차 정확 정의**: Target을 (tbill, mich) joint space로. sp_return 제외.
+- `analysis/macro_joint_space_audit.py`
+- **Phase-space scatter**: (tbill, mich) 2D 평면에 데이터가 **1D regime manifold** 따라 이동 (시각 확인). M2 rolling 색 칠하면 long-scale에서 방향성 뚜렷.
+- **CCA** (block bootstrap 유의성): M2 multi-scale history vs (tbill, mich) → canonical r = **0.56** (long scale, p < 0.001)
+- **KSG Mutual Information**: 52주에서 `I(M2; tbill, mich) = 1.76` nats, synergy +0.95 — **결합 공간이 개별 합보다 훨씬 큰 정보**
+- **결론**: 유저 가설 정량 지지. (tbill, metab) 채널이 단순 z-noise 아닌 **경제적 regime variation axis**로 활용 가능.
+
+### Gemini 조언 — 방법론 가드레일 확립
+Overlapping rolling window 분석엔 반드시:
+- **선형**: Newey-West HAC (이분산·자기상관 일치) + Wald joint test
+- **Tree/ML**: TimeSeriesSplit Out-of-Fold R² (in-sample 금지)
+- In-sample R² 91% 같은 수치는 거의 항상 overfit 환상임을 실증적으로 확인 (OOF −0.68까지 떨어짐)
+
+### 생성 파일 (Phase 15)
+- `sim/conditional_transformer_flow.py` — Flow 모델 + `MultiStepFlow` + `TimeReversedFlow` + `conditional_generate` + data loader
+- `sim/train_flow_phase1.py` — 학습 루프 (past-len, k-steps CLI, HAC·OOF 고려한 eval)
+- `data/build_weekly_v29_minimal.py`, `data/build_weekly_v30.py`
+- `data/weekly_v29_{train,test}.csv`, `data/weekly_v30_{train,test}.csv`
+- `analysis/macro_m2_rate_inflation.py` — M2 vs (tbill, mich) 기초 상관
+- `analysis/macro_axis_sp_explain.py`, `_hac.py` — sp target 설명력 (결론: 유저 가설과 무관한 질문)
+- `analysis/macro_joint_space_audit.py` — 정확한 가설 검증 (CCA + MI + phase plot)
+- `plots/phase_space_tbill_mich_m2_{1,13,52,104}w.png` — regime manifold 시각화
+- `models/flow_phase1_{,k3_v30_raw_,forecast_k3_}best.pt` — 학습된 체크포인트
+- `result/flow_phase1_*_final_eval.json`, `*_trainlog.csv`, `*_pit_ranks.npy`
+
+### 방법론 교훈 (영속적)
+
+1. **Overlapping window 통계검정엔 반드시 HAC + OOF**. 단순 OLS R²는 자기상관 팽창.
+2. **Tree 모델 in-sample R²는 거의 항상 환상** (시계열에서 특히).
+3. **"M2 → X 설명"에서 X를 뭐로 잡느냐가 본질**. Univariate vs multivariate joint target은 완전히 다른 질문.
+4. **가역 flow + time-reverse + past-fixing은 양립 불가** — causal-only 로 돌아가야 함.
+5. **Cum vs Raw 선택**: increment 변수(return, growth)는 cum이 자연스러운 궤적, rate 변수(yield)는 raw level 유지. 섞지 말 것.
+
+### 미해결 / 다음 단계
+- **X-1**: 학습된 forecast K=3 모델로 시나리오 생성 시각화 (원 목표 데모)
+- **X-2**: (tbill, metab) perturbation → 주가 variation 축 경제적 의미 확인
+- **X-3**: Manifold-constrained variation (1D regime arc 따라 움직이기)
+- **X-4**: Fat-tail 정복을 위한 Neural Spline Flow (RQ-spline) 또는 K=5+
