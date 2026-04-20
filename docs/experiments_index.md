@@ -84,14 +84,58 @@ sim/ 디렉토리의 실험 스크립트를 Phase별로 정리한 표.
 |---|---|---|
 | `run_semiannual.py` | 6개월 rebalancing, 13dim pruned | 실패 (데이터 부족, 39H) |
 
+### Phase 11 — LGBM Signal + Selective Leverage + EA 비판 (2026-04-17)
+
+#### Active (sim/ 루트)
+
+| 스크립트 | 역할 | 주요 결과 |
+|---|---|---|
+| `run_lgbm_up10_3m.py` | 3M ≥+10% 상승 예측 + selective leverage 전략 | OOS AUC W2 0.98, thr=0.2 lev=2x W2 Sharpe 0.89>B&H 0.77 |
+| `run_lgbm_up10_verify.py` | 검증 battery (multi-seed, permutation, non-overlap, TC) | p<0.001 (W1/W2), 5-seed stable |
+| `run_lgbm_dn10_3m.py` | 3M ≤-10% 하락 예측 (실패 기록) | AUC W2 0.21 (역방향), 하락 예측 불가 |
+| `run_evo_leverage_v2.py` | EA 3variant × 3fitness 비교 (Calmar/AnnRet/LinExc) | EA 구조 비판 근거. LinExc만 signal 정방향 |
+
+#### 임시 분석 (삭제 가능)
+
+| 스크립트 | 역할 |
+|---|---|
+| `_count_drops.py` | 이벤트 빈도 분석 (1M/3M/6M 상승·하락) |
+| `_when_bull.py` | LGBM trigger 시점·피쳐값 출력 |
+| `_why_invert.py` | EA 역방향 학습 원인 분석 (train OOF hit rate) |
+
+#### 대체됨
+
+| 스크립트 | 상태 |
+|---|---|
+| `run_evo_leverage.py` | `run_evo_leverage_v2.py`로 대체 |
+
+### Phase 12 — Population Evolution + MLP (2026-04-17)
+
+#### Active (sim/ 루트)
+
+| 스크립트 | 역할 | 주요 결과 |
+|---|---|---|
+| `run_population_evolution.py` | CMA-ES 선형 policy + population evolution | λ 분포 번식 기준 의존, gain-seeker(PP) vs Kahneman(Calmar) |
+| `run_population_evolution_mlp.py` | MLP 비선형 policy + population evolution + online update | MLP timing 가치 없음, LGBM selective에 열위 |
+
+### Phase 13 — Neuroevolution (2026-04-17)
+
+#### Active (sim/ 루트)
+
+| 스크립트 | 역할 | 주요 결과 |
+|---|---|---|
+| `run_neuroevolution.py` | Tiny MLP(4→4→1) + CMA-ES, PP-Calmar fitness | W1 Calmar 1.138>B&H, Sharpe 0.994>0.801. 항상성 반응 출현 |
+
 ## 총계
 
-- Active: 5 스크립트
-- Archived: 23 스크립트 (+ `__init__.py`)
-- 합: 28 + __init__ = 29 (sim/ 내 32개 중 `__init__.py` 제외)
+- Active: 12 스크립트 (기존 11 + Phase 13 1)
+- Archived: 23 스크립트
+- 임시: 3 스크립트 (`_` prefix)
+- 대체: 1 스크립트
 
 ## 참고
 
-- 모든 active 스크립트는 `data/monthly_noleak_v25_{train,test}.csv`를 사용.
+- Phase 11 스크립트는 `data/monthly_noleak_v26_{train,test}.csv` (31 features) 사용.
+- 기존 active 스크립트는 `data/monthly_noleak_v25_{train,test}.csv` 사용.
 - Archived 스크립트 일부는 구 버전 데이터(monthly_noleak, quarterly_3pct 등)를 참조할 수 있음.
 - 모델 파일은 `models/` 디렉토리에 평탄(flat)하게 저장되어 있으며, 어느 스크립트가 만든 것인지는 파일명 접미사로 추론.
