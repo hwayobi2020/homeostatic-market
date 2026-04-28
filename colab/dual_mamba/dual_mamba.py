@@ -331,7 +331,8 @@ class PriceGenerator(nn.Module):
     d_export > 0 이면 + import_proj(c_feat) 추가.
     """
 
-    D_COND_RAW = 6   # sp_return, m2_growth, m2v, cpi_yoy, vix, tbill_wr
+    # past_cond 6채널 중 sp_return (채널 0) 제외 — Target X autoregressive 와 중복 방지
+    D_COND_RAW = 5   # m2_growth, m2v, cpi_yoy, vix, tbill_wr
     D_COND_CUM = 2   # tbill_26w, excess_liq_26w
     D_TARGET   = 1   # sp_return
 
@@ -358,16 +359,20 @@ class PriceGenerator(nn.Module):
     @staticmethod
     def build_raw_condition(past_cond: torch.Tensor,
                              future_tbill: torch.Tensor) -> torch.Tensor:
-        """Stage 1 의 build_condition 과 동일한 방식 — past 6채널 + future (5 zero + tbill 시나리오).
+        """past_cond 6채널 [sp, m2_growth, m2v, cpi_yoy, vix, tbill_wr] 에서
+        sp_return (채널 0) 제외한 5채널만 사용. Target X 의 autoregressive 경로와 중복 방지.
 
-        return [B, L=104, 6]
+        past 5ch (관측) + future (4 zero pad + tbill_wr 시나리오) → [B, L=104, 5]
         """
-        B, P, D_past = past_cond.shape
+        B, P, D_past_orig = past_cond.shape
         Bf, F_len, _ = future_tbill.shape
-        assert B == Bf and D_past == PriceGenerator.D_COND_RAW
-        future_cond = past_cond.new_zeros(B, F_len, D_past)
-        future_cond[:, :, 5] = future_tbill[:, :, 0]   # tbill_wr 위치는 마지막 채널
-        return torch.cat([past_cond, future_cond], dim=1)
+        assert B == Bf and D_past_orig == 6, f"past_cond 채널 6 기대, got {D_past_orig}"
+        # sp_return (채널 0) 제외 → 5채널 (m2_growth, m2v, cpi_yoy, vix, tbill_wr)
+        past_no_sp = past_cond[:, :, 1:]                            # [B, P, 5]
+        future_cond = past_cond.new_zeros(B, F_len, PriceGenerator.D_COND_RAW)
+        # tbill_wr 은 past_no_sp 의 마지막 채널 (인덱스 4) → future 도 동일 위치
+        future_cond[:, :, 4] = future_tbill[:, :, 0]
+        return torch.cat([past_no_sp, future_cond], dim=1)          # [B, L, 5]
 
     def _build_cond(self, past_cond, future_tbill, past_cum, future_cum, c_feat):
         """[B, L=104, 6 + 2 (+d_export)] condition 빌드."""
