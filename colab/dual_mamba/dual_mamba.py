@@ -438,16 +438,26 @@ class PriceGenerator(nn.Module):
 class DualMambaPipeline(nn.Module):
     """Stage 1 + Bridge + Stage 2 통합 wrapper.
 
-    학습 모드: teacher_forcing — Bridge 입력에 관측값 사용 (Stage 1/2 gradient 단절).
+    학습 모드:
+        bridge_input_mode="obs"           : Bridge 입력에 관측 future_excess_liq 사용
+                                            (기존 동작, Stage 1/2 학습-추론 분포 mismatch 발생).
+        bridge_input_mode="sample_detach" : Bridge 입력에 Stage 1 generate sample 사용
+                                            (detach 로 Stage 1 gradient 단절, Stage 2 만 sample 분포에 적응).
     """
 
     def __init__(self, K: int = 2, d_model: int = 64, n_layers: int = 2,
                  window: int = 26, log_scale_clamp: float = 4.0,
-                 d_export: int = 0):
+                 d_export: int = 0,
+                 bridge_input_mode: str = "obs"):
         """d_export: Stage 1 c_feat → Stage 2 import_proj 출력 차원.
                      0 = raw 6 + cumulative 2 = 8ch (default), >0 = + c_feat 추가.
+        bridge_input_mode: "obs" (기존) | "sample_detach" (Stage 1 sample → Bridge, gradient 단절).
         """
         super().__init__()
+        if bridge_input_mode not in ("obs", "sample_detach"):
+            raise ValueError(
+                f"bridge_input_mode must be 'obs' or 'sample_detach', got {bridge_input_mode!r}"
+            )
         self.stage1 = MacroExpander(
             K=K, d_model=d_model, n_layers=n_layers,
             log_scale_clamp=log_scale_clamp,
@@ -460,6 +470,7 @@ class DualMambaPipeline(nn.Module):
         )
         self.window = window
         self.d_export = d_export
+        self.bridge_input_mode = bridge_input_mode
 
     def forward(self, batch: dict) -> dict:
         """teacher_forcing 학습 forward.
@@ -506,11 +517,28 @@ class DualMambaPipeline(nn.Module):
         nll1_per = 0.5 * z1_future.pow(2) + 0.5 * LOG2PI + ls1_future   # [B, F, 1]
         nll1 = nll1_per.mean()                                      # scalar (B*F*D 평균)
 
-        # ── Stage 1.5 (Bridge, teacher forcing) ──────────────────
+        # ── Stage 1.5 (Bridge) ───────────────────────────────────
+        # Bridge 입력 future_excess_liq 결정:
+        #   - "obs"          : 관측 ground truth (학습-추론 분포 mismatch 발생)
+        #   - "sample_detach": Stage 1 generate sample, detach (Stage 2 만 학습)
+        if self.bridge_input_mode == "obs":
+            future_excess_liq_for_bridge = batch["future_excess_liq_obs"]
+        elif self.bridge_input_mode == "sample_detach":
+            # Stage 1 generate (no_grad, sequential AR inverse). 매 step random z_future ~ N(0,1).
+            x1_sample = self.stage1.generate(
+                past_cond       = batch["past_cond"],
+                future_tbill    = batch["future_tbill"],
+                past_excess_liq = batch["past_excess_liq_obs"],
+                z_future        = None,
+            )                                                       # [B, L, 1] (no_grad context)
+            future_excess_liq_for_bridge = x1_sample[:, P:, :].detach()
+        else:
+            raise ValueError(f"Unknown bridge_input_mode: {self.bridge_input_mode}")
+
         future_raw_2ch = torch.cat([
-            batch["future_tbill"],            # [B, F, 1] tbill scenario
-            batch["future_excess_liq_obs"],   # [B, F, 1] 관측 (teacher forcing)
-        ], dim=-1)                            # [B, F, 2]
+            batch["future_tbill"],                # [B, F, 1] tbill scenario
+            future_excess_liq_for_bridge,         # [B, F, 1] obs or Stage 1 sample (detach)
+        ], dim=-1)                                # [B, F, 2]
         future_cum = self.bridge(
             past_buffer = batch["past_buffer_raw"],   # [B, 25, 2]
             future_seq  = future_raw_2ch,             # [B, F, 2]
