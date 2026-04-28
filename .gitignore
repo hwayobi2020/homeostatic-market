@@ -6,3 +6,8 @@ plots/*.png
 *.egg-info/
 .env
 ~$*
+
+# Dual-Mamba result artifacts (large binaries excluded, csv/json/log included)
+colab/dual_mamba/result/*.pt
+colab/dual_mamba/result/*.pth
+colab/dual_mamba/result/*.npz
