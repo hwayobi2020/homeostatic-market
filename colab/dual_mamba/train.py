@@ -182,6 +182,8 @@ def main():
     ap.add_argument("--d-model",     type=int, default=64)
     ap.add_argument("--n-layers",    type=int, default=2)
     ap.add_argument("--log-scale-clamp", type=float, default=4.0)
+    ap.add_argument("--d-export",    type=int, default=0,
+                    help="Stage 1 c_feat → Stage 2 import_proj 출력 차원. 0=cumulative-only, 4=B-3 옵션")
 
     # 윈도우
     ap.add_argument("--P",           type=int, default=P_DEFAULT)
@@ -257,6 +259,7 @@ def main():
     model = DualMambaPipeline(
         K=args.K, d_model=args.d_model, n_layers=args.n_layers,
         window=args.W, log_scale_clamp=args.log_scale_clamp,
+        d_export=args.d_export,
     ).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"[model] params = {n_params:,}, K={args.K}, d_model={args.d_model}, "

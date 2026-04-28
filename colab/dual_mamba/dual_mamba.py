@@ -245,6 +245,17 @@ class MacroExpander(nn.Module):
         c_full = torch.cat([past_cond, future_cond], dim=1)             # [B, L, 6]
         return c_full
 
+    def encode_condition(self, c_full: torch.Tensor) -> torch.Tensor:
+        """Stage 1 의 첫 번째 affine step c_encoder 출력 (Stage 2 export 용).
+
+        c_full : [B, L, 6]
+        return c_feat : [B, L, d_model]   (Mamba가 학습한 압축된 macro 컨텍스트)
+
+        Note: flow forward 안에서 동일 계산이 또 일어나므로 약간 중복 (Mamba 1회 추가).
+        """
+        first_step = self.flow.steps[0]
+        return first_step.c_mamba(first_step.c_proj(c_full))
+
     def forward(self,
                 past_cond: torch.Tensor,
                 future_tbill: torch.Tensor,
@@ -260,10 +271,12 @@ class MacroExpander(nn.Module):
             log_det_J  : [B]
             log_scale  : [B, L, 1]
             c_full     : [B, L, 6]      (Stage 1 condition, 진단용)
+            c_feat     : [B, L, d_model] (encoded condition, Stage 2 export 용)
         """
         c_full = self.build_condition(past_cond, future_tbill)
+        c_feat = self.encode_condition(c_full)
         z, log_det_J, log_scale = self.flow(X1_full, c_full)
-        return z, log_det_J, log_scale, c_full
+        return z, log_det_J, log_scale, c_full, c_feat
 
     @torch.no_grad()
     def generate(self,
@@ -305,55 +318,102 @@ class MacroExpander(nn.Module):
 # ══════════════════════════════════════════════════════════════════
 
 class PriceGenerator(nn.Module):
-    """과거 sp + 누적 항상성 condition (2채널) → 미래 sp_return 생성.
+    """과거 sp + raw macro/tbill 시퀀스 + 누적 항상성 → 미래 sp_return 생성.
 
-    구조 (사용자 원 설계 — 압축된 항상성 시나리오 노브):
-        Target    X2_full [B, L=104, 1]   sp_return (past observed teacher forcing + future)
-        Condition C2_full [B, L=104, 2]   = [tbill_26w, excess_liq_26w]
-            Past 52w  : 관측 26w mean (normalized)
-            Future 52w: Stage 1.5 Bridge 출력 (rolling mean)
+    구조 (8채널 condition):
+        Target    X2_full [B, L=104, 1]                  sp_return (past 관측 + future)
+        Condition C2_full [B, L=104, 6 + 2 (+d_export)]  = raw 6 + cumulative 2 (+ Stage 1 c_feat 4)
+            past 52w  : raw 6채널 (sp,m2_growth,m2v,cpi,vix,tbill_wr 관측) + cumulative 2채널 + (옵션 c_feat)
+            future 52w: raw 6채널 (5채널 0 padding + tbill_wr 사용자) + Bridge cumulative + (옵션 c_feat)
 
-    설계 명제: "오직 누적 항상성 스트레스 2채널만 주어졌을 때, 미래 sp_return 을 얼마나 잘 예측하나?"
-    Macro raw 채널 추가하면 명제 흐려짐 (B_6ch 와 cumulative-only 효과 분리 불가).
+    Stage 1 의 build_condition 과 동일한 방식으로 raw past_cond + future_tbill 사용.
+    d_export = 0 이면 raw 6 + cumulative 2 = 8채널 (default).
+    d_export > 0 이면 + import_proj(c_feat) 추가.
     """
 
-    D_COND   = 2   # tbill_26w, excess_liq_26w
-    D_TARGET = 1   # sp_return
+    D_COND_RAW = 6   # sp_return, m2_growth, m2v, cpi_yoy, vix, tbill_wr
+    D_COND_CUM = 2   # tbill_26w, excess_liq_26w
+    D_TARGET   = 1   # sp_return
 
     def __init__(self, K: int = 2, d_model: int = 64, n_layers: int = 2,
-                 log_scale_clamp: float = 2.0):
+                 log_scale_clamp: float = 2.0,
+                 d_stage1_feat: int = 64,    # Stage 1 c_feat 입력 차원
+                 d_export: int = 0,          # 0 = raw+cum 만, >0 = c_feat 추가
+                 ):
         super().__init__()
+        self.d_export = d_export
+        if d_export > 0:
+            self.import_proj = nn.Linear(d_stage1_feat, d_export)
+        else:
+            self.import_proj = None
+
+        d_cond_total = self.D_COND_RAW + self.D_COND_CUM + d_export
+        self.D_COND = d_cond_total
         self.flow = MultiStepMambaFlow(
-            K=K, d_cond=self.D_COND, d_target=self.D_TARGET,
+            K=K, d_cond=d_cond_total, d_target=self.D_TARGET,
             d_model=d_model, n_layers=n_layers,
             log_scale_clamp=log_scale_clamp,
         )
 
+    @staticmethod
+    def build_raw_condition(past_cond: torch.Tensor,
+                             future_tbill: torch.Tensor) -> torch.Tensor:
+        """Stage 1 의 build_condition 과 동일한 방식 — past 6채널 + future (5 zero + tbill 시나리오).
+
+        return [B, L=104, 6]
+        """
+        B, P, D_past = past_cond.shape
+        Bf, F_len, _ = future_tbill.shape
+        assert B == Bf and D_past == PriceGenerator.D_COND_RAW
+        future_cond = past_cond.new_zeros(B, F_len, D_past)
+        future_cond[:, :, 5] = future_tbill[:, :, 0]   # tbill_wr 위치는 마지막 채널
+        return torch.cat([past_cond, future_cond], dim=1)
+
+    def _build_cond(self, past_cond, future_tbill, past_cum, future_cum, c_feat):
+        """[B, L=104, 6 + 2 (+d_export)] condition 빌드."""
+        c_raw = self.build_raw_condition(past_cond, future_tbill)           # [B, L, 6]
+        c_cum = torch.cat([past_cum, future_cum], dim=1)                    # [B, L, 2]
+        c_full = torch.cat([c_raw, c_cum], dim=-1)                          # [B, L, 8]
+        if self.d_export > 0:
+            assert c_feat is not None, "c_feat required when d_export > 0"
+            c_extra = self.import_proj(c_feat)                              # [B, L, d_export]
+            c_full = torch.cat([c_full, c_extra], dim=-1)                   # [B, L, 8+d_export]
+        return c_full
+
     def forward(self,
+                past_cond: torch.Tensor,
+                future_tbill: torch.Tensor,
                 past_cum: torch.Tensor,
                 future_cum: torch.Tensor,
-                X2_full: torch.Tensor):
+                X2_full: torch.Tensor,
+                c_feat: torch.Tensor | None = None):
         """학습 forward.
 
-        past_cum   : [B, P, 2]    (관측 26w mean, normalized)
-        future_cum : [B, F, 2]    (Stage 1.5 Bridge 출력)
-        X2_full    : [B, L, 1]    (관측 sp_return past+future)
+        past_cond    : [B, P, 6]   raw 6채널 관측 (Stage 1 과 동일)
+        future_tbill : [B, F, 1]   tbill_wr 사용자 시나리오
+        past_cum     : [B, P, 2]   관측 26w mean
+        future_cum   : [B, F, 2]   Bridge 출력
+        X2_full      : [B, L, 1]   sp_return target
+        c_feat       : [B, L, d_stage1_feat] or None (d_export>0 시 필수)
         """
-        c_full = torch.cat([past_cum, future_cum], dim=1)                   # [B, L, 2]
+        c_full = self._build_cond(past_cond, future_tbill, past_cum, future_cum, c_feat)
         z, log_det_J, log_scale = self.flow(X2_full, c_full)
         return z, log_det_J, log_scale, c_full
 
     @torch.no_grad()
     def generate(self,
+                 past_cond: torch.Tensor,
+                 future_tbill: torch.Tensor,
                  past_cum: torch.Tensor,
                  future_cum: torch.Tensor,
                  past_sp: torch.Tensor,
+                 c_feat: torch.Tensor | None = None,
                  z_future: torch.Tensor | None = None) -> torch.Tensor:
         """추론. Past-z swap."""
         B, P, _ = past_sp.shape
         F_len = future_cum.shape[1]
 
-        c_full = torch.cat([past_cum, future_cum], dim=1)
+        c_full = self._build_cond(past_cond, future_tbill, past_cum, future_cum, c_feat)
         x_init = torch.cat(
             [past_sp, past_sp.new_zeros(B, F_len, self.D_TARGET)], dim=1
         )
@@ -377,7 +437,11 @@ class DualMambaPipeline(nn.Module):
     """
 
     def __init__(self, K: int = 2, d_model: int = 64, n_layers: int = 2,
-                 window: int = 26, log_scale_clamp: float = 4.0):
+                 window: int = 26, log_scale_clamp: float = 4.0,
+                 d_export: int = 0):
+        """d_export: Stage 1 c_feat → Stage 2 import_proj 출력 차원.
+                     0 = raw 6 + cumulative 2 = 8ch (default), >0 = + c_feat 추가.
+        """
         super().__init__()
         self.stage1 = MacroExpander(
             K=K, d_model=d_model, n_layers=n_layers,
@@ -387,8 +451,10 @@ class DualMambaPipeline(nn.Module):
         self.stage2 = PriceGenerator(
             K=K, d_model=d_model, n_layers=n_layers,
             log_scale_clamp=log_scale_clamp,
+            d_stage1_feat=d_model, d_export=d_export,
         )
         self.window = window
+        self.d_export = d_export
 
     def forward(self, batch: dict) -> dict:
         """teacher_forcing 학습 forward.
@@ -420,11 +486,11 @@ class DualMambaPipeline(nn.Module):
         X1_full = torch.cat(
             [batch["past_excess_liq_obs"], batch["future_excess_liq_obs"]], dim=1
         )                                                           # [B, L, 1]
-        z1, log_det_J_1, log_scale_1, c1_full = self.stage1(
+        z1, log_det_J_1, log_scale_1, c1_full, c_feat = self.stage1(
             past_cond    = batch["past_cond"],
             future_tbill = batch["future_tbill"],
             X1_full      = X1_full,
-        )
+        )                                                           # c_feat: [B, L, d_model]
 
         # NLL_1 (future portion only)
         z1_future = z1[:, P:, :]                                   # [B, F, 1]
@@ -450,9 +516,12 @@ class DualMambaPipeline(nn.Module):
             [batch["past_sp_obs"], batch["future_sp_obs"]], dim=1
         )                                                           # [B, L, 1]
         z2, log_det_J_2, log_scale_2, c2_full = self.stage2(
-            past_cum   = batch["past_cum_observed"],
-            future_cum = future_cum,
-            X2_full    = X2_full,
+            past_cond    = batch["past_cond"],
+            future_tbill = batch["future_tbill"],
+            past_cum     = batch["past_cum_observed"],
+            future_cum   = future_cum,
+            X2_full      = X2_full,
+            c_feat       = c_feat if self.d_export > 0 else None,
         )
 
         z2_future  = z2[:, P:, :]
@@ -500,10 +569,17 @@ class DualMambaPipeline(nn.Module):
         )                                                            # [B, F, 2]
         future_cum = self.bridge(past_buffer_raw, future_raw_2ch)   # [B, F, 2]
 
-        # Stage 2 (2 채널 condition: tbill_26w, excess_liq_26w)
+        # Stage 1 c_feat (for Stage 2 import_proj)
+        c_feat = None
+        if self.d_export > 0:
+            c1_full = self.stage1.build_condition(past_cond, future_tbill)
+            c_feat = self.stage1.encode_condition(c1_full)           # [B, L, d_model]
+
+        # Stage 2 (raw 6 + cumulative 2 + optional c_feat)
         x2_gen = self.stage2.generate(
+            past_cond=past_cond, future_tbill=future_tbill,
             past_cum=past_cum_observed, future_cum=future_cum,
-            past_sp=past_sp, z_future=z2,
+            past_sp=past_sp, z_future=z2, c_feat=c_feat,
         )                                                           # [B, L, 1]
         future_sp_gen = x2_gen[:, P:, :]                            # [B, F, 1]
 
