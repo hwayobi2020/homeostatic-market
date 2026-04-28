@@ -50,6 +50,7 @@ from data_loader import (
     time_split_train_val, P_DEFAULT, F_DEFAULT, W_DEFAULT,
 )
 from dual_mamba import DualMambaPipeline
+from dual_favar import DualFAVARPipeline
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -178,9 +179,14 @@ def main():
     ap.add_argument("--out-dir",     type=str, default="result")
 
     # 모델
+    ap.add_argument("--backbone",    type=str, default="mamba",
+                    choices=["mamba", "favar"],
+                    help="flow backbone: mamba (selective scan) | favar (transformer causal attention)")
     ap.add_argument("--K",           type=int, default=2)
     ap.add_argument("--d-model",     type=int, default=64)
     ap.add_argument("--n-layers",    type=int, default=2)
+    ap.add_argument("--n-heads",     type=int, default=4,
+                    help="favar backbone 만 사용 (mamba 무시)")
     ap.add_argument("--log-scale-clamp", type=float, default=4.0)
     ap.add_argument("--d-export",    type=int, default=0,
                     help="Stage 1 c_feat → Stage 2 import_proj 출력 차원. 0=cumulative-only, 4=B-3 옵션")
@@ -263,13 +269,23 @@ def main():
                                   num_workers=args.num_workers)
 
     # ── 모델 ─────────────────────────────────────────────────────
-    model = DualMambaPipeline(
-        K=args.K, d_model=args.d_model, n_layers=args.n_layers,
-        window=args.W, log_scale_clamp=args.log_scale_clamp,
-        d_export=args.d_export,
-        bridge_input_mode=args.bridge_input_mode,
-        stage2_oracle_macro=args.stage2_oracle_macro,
-    ).to(device)
+    if args.backbone == "favar":
+        model = DualFAVARPipeline(
+            K=args.K, d_model=args.d_model, n_layers=args.n_layers,
+            n_heads=args.n_heads,
+            window=args.W, log_scale_clamp=args.log_scale_clamp,
+            d_export=args.d_export,
+            bridge_input_mode=args.bridge_input_mode,
+            stage2_oracle_macro=args.stage2_oracle_macro,
+        ).to(device)
+    else:
+        model = DualMambaPipeline(
+            K=args.K, d_model=args.d_model, n_layers=args.n_layers,
+            window=args.W, log_scale_clamp=args.log_scale_clamp,
+            d_export=args.d_export,
+            bridge_input_mode=args.bridge_input_mode,
+            stage2_oracle_macro=args.stage2_oracle_macro,
+        ).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"[model] params = {n_params:,}, K={args.K}, d_model={args.d_model}, "
           f"n_layers={args.n_layers}, window={args.W}")
