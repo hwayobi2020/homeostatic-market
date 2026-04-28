@@ -141,6 +141,7 @@ def build_windows(df: pd.DataFrame,
         "past_cond"            : np.zeros((n_w, P, len(CHANNELS_PAST_COND)), dtype=np.float32),
         "past_macro4"          : np.zeros((n_w, P, len(CHANNELS_MACRO4)),     dtype=np.float32),
         "future_tbill"         : np.zeros((n_w, F, 1), dtype=np.float32),
+        "future_macro4"        : np.zeros((n_w, F, len(CHANNELS_MACRO4)),     dtype=np.float32),
         "past_buffer_raw"      : np.zeros((n_w, Wm1, len(CHANNELS_RAW_2)), dtype=np.float32),
         "past_excess_liq_obs"  : np.zeros((n_w, P, 1), dtype=np.float32),
         "future_excess_liq_obs": np.zeros((n_w, F, 1), dtype=np.float32),
@@ -165,6 +166,10 @@ def build_windows(df: pd.DataFrame,
 
         # future_tbill [F, 1]
         out_np["future_tbill"][w_idx, :, 0] = arrs["tbill_wr"][future_s:future_e]
+
+        # future_macro4 [F, 4] (Stage 2 oracle 모드용 — 미래 macro 관측 정답)
+        for c_idx, col in enumerate(CHANNELS_MACRO4):
+            out_np["future_macro4"][w_idx, :, c_idx] = arrs[col][future_s:future_e]
 
         # past_buffer_raw [Wm1, 2]
         for c_idx, col in enumerate(CHANNELS_RAW_2):
@@ -198,7 +203,8 @@ def build_windows(df: pd.DataFrame,
 # ══════════════════════════════════════════════════════════════════
 
 WINDOW_KEYS = [
-    "past_cond", "past_macro4", "future_tbill", "past_buffer_raw",
+    "past_cond", "past_macro4", "future_tbill", "future_macro4",
+    "past_buffer_raw",
     "past_excess_liq_obs", "future_excess_liq_obs",
     "past_sp_obs", "future_sp_obs", "past_cum_observed",
 ]

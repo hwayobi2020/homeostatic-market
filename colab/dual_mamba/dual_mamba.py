@@ -358,31 +358,50 @@ class PriceGenerator(nn.Module):
 
     @staticmethod
     def build_raw_condition(past_cond: torch.Tensor,
-                             future_tbill: torch.Tensor) -> torch.Tensor:
+                             future_tbill: torch.Tensor,
+                             future_macro4: torch.Tensor | None = None,
+                             oracle_macro: bool = False) -> torch.Tensor:
         """past_cond 6채널 [sp, m2_growth, m2v, cpi_yoy, vix, tbill_wr] 에서
         sp_return (채널 0) 제외한 5채널만 사용. Target X 의 autoregressive 경로와 중복 방지.
 
-        past 5ch (관측) + future (4 zero pad + tbill_wr 시나리오) → [B, L=104, 5]
+        oracle_macro=False (기본):
+            past 5ch (관측) + future (4 zero pad + tbill_wr 시나리오) → [B, L=104, 5]
+        oracle_macro=True (Stage 2 upper bound 측정용):
+            past 5ch (관측) + future (m2_growth, m2v, cpi_yoy, vix obs + tbill_wr) → [B, L, 5]
+            future_macro4 [B, F, 4] 가 m2_growth/m2v/cpi_yoy/vix 순서로 관측 정답 leak.
         """
         B, P, D_past_orig = past_cond.shape
         Bf, F_len, _ = future_tbill.shape
         assert B == Bf and D_past_orig == 6, f"past_cond 채널 6 기대, got {D_past_orig}"
         # sp_return (채널 0) 제외 → 5채널 (m2_growth, m2v, cpi_yoy, vix, tbill_wr)
         past_no_sp = past_cond[:, :, 1:]                            # [B, P, 5]
-        future_cond = past_cond.new_zeros(B, F_len, PriceGenerator.D_COND_RAW)
-        # tbill_wr 은 past_no_sp 의 마지막 채널 (인덱스 4) → future 도 동일 위치
-        future_cond[:, :, 4] = future_tbill[:, :, 0]
+        if oracle_macro:
+            assert future_macro4 is not None, \
+                "future_macro4 required when oracle_macro=True"
+            assert future_macro4.shape == (B, F_len, 4), \
+                f"future_macro4 expected [B, F, 4], got {future_macro4.shape}"
+            future_cond = torch.cat([
+                future_macro4,                                       # [B, F, 4] (m2g, m2v, cpi, vix)
+                future_tbill,                                        # [B, F, 1] (tbill_wr)
+            ], dim=-1)                                               # [B, F, 5]
+        else:
+            future_cond = past_cond.new_zeros(B, F_len, PriceGenerator.D_COND_RAW)
+            # tbill_wr 은 past_no_sp 의 마지막 채널 (인덱스 4) → future 도 동일 위치
+            future_cond[:, :, 4] = future_tbill[:, :, 0]
         return torch.cat([past_no_sp, future_cond], dim=1)          # [B, L, 5]
 
-    def _build_cond(self, past_cond, future_tbill, past_cum, future_cum, c_feat):
+    def _build_cond(self, past_cond, future_tbill, past_cum, future_cum, c_feat,
+                    future_macro4=None, oracle_macro: bool = False):
         """[B, L=104, 6 + 2 (+d_export)] condition 빌드."""
-        c_raw = self.build_raw_condition(past_cond, future_tbill)           # [B, L, 6]
+        c_raw = self.build_raw_condition(past_cond, future_tbill,
+                                          future_macro4=future_macro4,
+                                          oracle_macro=oracle_macro)        # [B, L, 5]
         c_cum = torch.cat([past_cum, future_cum], dim=1)                    # [B, L, 2]
-        c_full = torch.cat([c_raw, c_cum], dim=-1)                          # [B, L, 8]
+        c_full = torch.cat([c_raw, c_cum], dim=-1)                          # [B, L, 7]
         if self.d_export > 0:
             assert c_feat is not None, "c_feat required when d_export > 0"
             c_extra = self.import_proj(c_feat)                              # [B, L, d_export]
-            c_full = torch.cat([c_full, c_extra], dim=-1)                   # [B, L, 8+d_export]
+            c_full = torch.cat([c_full, c_extra], dim=-1)                   # [B, L, 7+d_export]
         return c_full
 
     def forward(self,
@@ -391,7 +410,9 @@ class PriceGenerator(nn.Module):
                 past_cum: torch.Tensor,
                 future_cum: torch.Tensor,
                 X2_full: torch.Tensor,
-                c_feat: torch.Tensor | None = None):
+                c_feat: torch.Tensor | None = None,
+                future_macro4: torch.Tensor | None = None,
+                oracle_macro: bool = False):
         """학습 forward.
 
         past_cond    : [B, P, 6]   raw 6채널 관측 (Stage 1 과 동일)
@@ -400,8 +421,12 @@ class PriceGenerator(nn.Module):
         future_cum   : [B, F, 2]   Bridge 출력
         X2_full      : [B, L, 1]   sp_return target
         c_feat       : [B, L, d_stage1_feat] or None (d_export>0 시 필수)
+        future_macro4: [B, F, 4]   oracle_macro=True 시 m2g/m2v/cpi/vix 관측 정답 (leak baseline)
+        oracle_macro : bool        True 면 future portion 4 zero pad → 관측 정답으로 swap
         """
-        c_full = self._build_cond(past_cond, future_tbill, past_cum, future_cum, c_feat)
+        c_full = self._build_cond(past_cond, future_tbill, past_cum, future_cum, c_feat,
+                                   future_macro4=future_macro4,
+                                   oracle_macro=oracle_macro)
         z, log_det_J, log_scale = self.flow(X2_full, c_full)
         return z, log_det_J, log_scale, c_full
 
@@ -448,10 +473,14 @@ class DualMambaPipeline(nn.Module):
     def __init__(self, K: int = 2, d_model: int = 64, n_layers: int = 2,
                  window: int = 26, log_scale_clamp: float = 4.0,
                  d_export: int = 0,
-                 bridge_input_mode: str = "obs"):
+                 bridge_input_mode: str = "obs",
+                 stage2_oracle_macro: bool = False):
         """d_export: Stage 1 c_feat → Stage 2 import_proj 출력 차원.
                      0 = raw 6 + cumulative 2 = 8ch (default), >0 = + c_feat 추가.
         bridge_input_mode: "obs" (기존) | "sample_detach" (Stage 1 sample → Bridge, gradient 단절).
+        stage2_oracle_macro: True 면 Stage 2 condition future portion 4 zero pad → 관측 정답
+                             (m2_growth, m2v, cpi_yoy, vix) leak. Stage 2 capacity 상한 측정용.
+                             추론 시 사용 불가 — 학습/eval baseline 전용.
         """
         super().__init__()
         if bridge_input_mode not in ("obs", "sample_detach"):
@@ -471,6 +500,7 @@ class DualMambaPipeline(nn.Module):
         self.window = window
         self.d_export = d_export
         self.bridge_input_mode = bridge_input_mode
+        self.stage2_oracle_macro = stage2_oracle_macro
 
     def forward(self, batch: dict) -> dict:
         """teacher_forcing 학습 forward.
@@ -555,6 +585,8 @@ class DualMambaPipeline(nn.Module):
             future_cum   = future_cum,
             X2_full      = X2_full,
             c_feat       = c_feat if self.d_export > 0 else None,
+            future_macro4 = batch.get("future_macro4") if self.stage2_oracle_macro else None,
+            oracle_macro  = self.stage2_oracle_macro,
         )
 
         z2_future  = z2[:, P:, :]

@@ -188,6 +188,9 @@ def main():
                     choices=["obs", "sample_detach"],
                     help="Bridge 입력 future_excess_liq: obs=관측(teacher forcing, 기존) / "
                          "sample_detach=Stage 1 generate sample, detach (가-1: train-test mismatch 해결)")
+    ap.add_argument("--stage2-oracle-macro", action="store_true",
+                    help="Stage 2 condition future portion 4 zero pad → m2/m2v/cpi/vix 관측 정답 leak. "
+                         "Stage 2 capacity 상한 측정용 (oracle baseline). 추론 시 사용 불가.")
 
     # 윈도우
     ap.add_argument("--P",           type=int, default=P_DEFAULT)
@@ -265,6 +268,7 @@ def main():
         window=args.W, log_scale_clamp=args.log_scale_clamp,
         d_export=args.d_export,
         bridge_input_mode=args.bridge_input_mode,
+        stage2_oracle_macro=args.stage2_oracle_macro,
     ).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"[model] params = {n_params:,}, K={args.K}, d_model={args.d_model}, "
