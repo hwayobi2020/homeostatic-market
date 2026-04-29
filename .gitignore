@@ -11,3 +11,6 @@ plots/*.png
 colab/dual_mamba/result/*.pt
 colab/dual_mamba/result/*.pth
 colab/dual_mamba/result/*.npz
+
+# chat/ folder is local-only (per CLAUDE.md rule)
+chat/
