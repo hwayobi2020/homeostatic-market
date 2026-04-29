@@ -1,9 +1,10 @@
-"""weekly_v33 + 3 cumulative features (26w) → weekly_ppbond_{train,test}.csv
+"""weekly_v33 + cumulative features (13w + 26w) → weekly_ppbond_{train,test}.csv
 
-추가 컬럼 (모두 26w cumulative + 1-step lag):
+추가 컬럼 (cumulative + 1-step lag):
   - tbill_26w_lag        : Σ tbill_wr over 26 weeks (6M 누적 금리)
   - excess_liq_26w_lag   : Σ (m2_yoy − gdp_yoy − cpi_yoy) over 26 weeks (BIS 초과유동성 누적)
-  - pp_bond_26w_lag      : log(pp_bond[t]/pp_bond[t-26]) (항상성 채권 PP 누적)
+  - pp_bond_26w_lag      : log(pp_bond[t]/pp_bond[t-26]) (항상성 채권 PP, 6M 누적)
+  - pp_bond_13w_lag      : log(pp_bond[t]/pp_bond[t-13]) (항상성 채권 PP, 3M 누적, FOMO target)
 
 pp_bond[t] = pp_bond[t-1] × (1 + tbill_wr[t-1]) / (1 + metabolism_max[t])
 """
@@ -62,15 +63,19 @@ for t in range(1, N):
     pp_bond[t] = pp_bond[t-1] * (1.0 + tbill_lag[t]) / (1.0 + metab[t])
 log_b = np.log(np.maximum(pp_bond, 1e-8))
 
-# ── 4. 26w cumulative ──
+# ── 4. 26w + 13w cumulative ──
 tbill_26w      = np.full(N, np.nan)
 excess_liq_26w = np.full(N, np.nan)
 pp_bond_26w    = np.full(N, np.nan)
+pp_bond_13w    = np.full(N, np.nan)
 
 for t in range(26, N):
     tbill_26w[t]      = full["tbill_wr"].iloc[t-25:t+1].sum()           # Σ over last 26 weeks
     excess_liq_26w[t] = full["excess_liq_yoy"].iloc[t-25:t+1].sum() / 26.0  # mean yoy over 26w (avoid double-count)
     pp_bond_26w[t]    = log_b[t] - log_b[t-26]
+
+for t in range(13, N):
+    pp_bond_13w[t]    = log_b[t] - log_b[t-13]   # 3M FOMO 누적 (>0 채권충분, <0 FOMO 압력)
 
 # 1-step lag (leak 차단)
 def lag(x):
@@ -79,10 +84,11 @@ def lag(x):
 full["tbill_26w_lag"]      = lag(tbill_26w)
 full["excess_liq_26w_lag"] = lag(excess_liq_26w)
 full["pp_bond_26w_lag"]    = lag(pp_bond_26w)
+full["pp_bond_13w_lag"]    = lag(pp_bond_13w)
 
 # Drop NaN rows (앞 53주: 52w yoy + 26w cum + 1 lag → max 53)
 need = ["m2_yoy","gdp_yoy","excess_liq_yoy","tbill_26w_lag","excess_liq_26w_lag","pp_bond_26w_lag",
-        "cpi_wr","excess_liq_wr","vix_wr"]
+        "pp_bond_13w_lag","cpi_wr","excess_liq_wr","vix_wr"]
 print(f"\nNaN counts:")
 for c in need:
     print(f"  {c}: {full[c].isna().sum()}")
@@ -99,9 +105,17 @@ print(f"\nClean train: {train_clean['date'].iloc[0].date()} ~ {train_clean['date
 print(f"Clean test:  {test_clean['date'].iloc[0].date()} ~ {test_clean['date'].iloc[-1].date()}, n={len(test_clean)}")
 
 print(f"\n=== 새 features 통계 ===")
-for c in ["tbill_26w_lag","excess_liq_26w_lag","pp_bond_26w_lag","cpi_wr","excess_liq_wr","vix_wr"]:
+for c in ["tbill_26w_lag","excess_liq_26w_lag","pp_bond_26w_lag","pp_bond_13w_lag","cpi_wr","excess_liq_wr","vix_wr"]:
     s = full_clean[c]
     print(f"  {c:25s}: mean={s.mean():+.4f}, std={s.std():.4f}, min={s.min():+.4f}, max={s.max():+.4f}")
+
+# ── train/test 분포 비교 (vix_wr 처럼 OOS 폭발 방지 점검) ──
+print(f"\n=== train vs test 분포 (OOS 안정성 sanity) ===")
+for c in ["pp_bond_13w_lag","pp_bond_26w_lag","excess_liq_wr","vix_wr"]:
+    tr = train_clean[c]; te = test_clean[c]
+    ratio = te.std() / tr.std() if tr.std() > 0 else float("nan")
+    print(f"  {c:25s}: train std={tr.std():.4f} | test std={te.std():.4f} | ratio={ratio:.2f} | "
+          f"train [{tr.min():+.3f},{tr.max():+.3f}] | test [{te.min():+.3f},{te.max():+.3f}]")
 
 train_clean.to_csv(os.path.join(DATA, "weekly_ppbond_train.csv"), index=False)
 test_clean.to_csv(os.path.join(DATA, "weekly_ppbond_test.csv"), index=False)
