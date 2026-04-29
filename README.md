@@ -1,206 +1,140 @@
 # Homeostatic Financial Agent
 
-**"가만히 있으면 잃는다" — 기회비용 압력에서 투자 행동이 출현하는가?**
+**"가만히 있으면 잃는다" — 항상성 압력에서 투자 행동이 출현하고, 그 출현 신호가 가격 동학 학습을 안내한다.**
 
 ---
 
 ## 1. 이 프로젝트가 던지는 질문
 
-사람은 왜 투자할까? 돈을 벌고 싶어서? 남들보다 뒤처지기 싫어서? 아니면 그냥 가진 걸 잃기 싫어서?
+행동재무학(Behavioral Finance)은 인간의 비합리성을 손실 회피, 군집 행동, 과잉 자신감 같은 **편향 파라미터**로 모델에 직접 주입해 왔다. "인간은 이렇게 비합리적이다"라는 규칙을 수학에 박아넣는 방식이다.
 
-행동재무학(Behavioral Finance)은 인간의 투자 행동을 설명하기 위해 **손실 회피(Loss Aversion)**, **군집 행동(Herding)**, **과잉 자신감(Overconfidence)** 같은 심리적 편향을 모델에 직접 넣어왔다. "인간은 이렇게 비합리적이다"라는 규칙을 수학에 주입하는 방식이다.
+우리는 다른 길을 간다:
 
-우리는 다른 질문을 한다:
-
-> **아무런 행동 규칙도 넣지 않고, "가만히 있으면 잃는" 환경 압력만 주면, 투자 행동이 저절로 나타나는가? 그리고 그 행동이 시장을 이길 수 있는가?**
+> **아무 행동 규칙도 주입하지 않고, "가만히 있으면 잃는" 환경 압력만 주면, 투자 동기·욕심·두려움 같은 행동이 저절로 출현하는가? 그리고 그 출현 자체를 측정 가능한 변수로 만들어, 가격 동학을 학습시키는 신호로 쓸 수 있는가?**
 
 ---
 
 ## 2. 핵심 아이디어
 
-### 기회비용을 기초대사(Metabolism)로 모델링
+### 기초대사 (Metabolism) — 가만히 있어도 깎이는 구매력
 
-생물은 가만히 있어도 에너지를 소모한다 (기초대사). 아무것도 안 하면 굶어죽는다. 그래서 먹이를 찾아야 한다.
-
-금융에서도 마찬가지다. **가만히 있으면 구매력이 줄어든다.** 이 "줄어드는 속도"를 기초대사로 정의한다:
+생물은 가만히 있어도 에너지를 소모한다 (기초대사). 아무것도 안 하면 굶어죽는다. 금융에서도 마찬가지로, 가만히 있어도 구매력이 줄어든다. 이 "줄어드는 속도"를 기초대사로 정의한다:
 
 ```
-기초대사 = max(M2 통화량 증가율, T-bill 금리)
+metab_max[t] = max(M2 통화량 증가율, T-bill 금리, MICH 인플레 기대)
 ```
 
-- **M2가 높을 때** (유동성 장세, 2020~2021): 돈이 풀려서 자산 안 사면 구매력 감소
-- **금리가 높을 때** (긴축기, 2022~2025): 채권에 넣었으면 받았을 이자를 포기
+- M2 가 클 때 (유동성 장세): 자산 안 사면 구매력 희석
+- T-bill 이 클 때 (긴축): 채권에 두지 않으면 이자 기회비용 손실
+- MICH (인플레 기대) 가 클 때: 명목 자산 자체의 실질 가치 하락 기대
 
-둘 중 큰 것이 **"아무것도 안 할 때의 진짜 비용."** 이것이 투자를 강제하는 환경 압력이다.
+세 채널의 max — **"아무것도 안 할 때의 진짜 비용"** — 이 투자를 강제하는 환경 압력.
 
-### High Water Mark (HWM) Reward
+### 채권 구매력 항상성 변수 (bondpp_3m) — FOMO 의 직접 측정
 
-에이전트의 보상 함수:
+채권에 가만히 둔 자금의 실질 구매력을 매주 갱신:
 
 ```
-기준점 = 1.0 (시작)
-reward = 내 구매력 - 기준점
-if 내 구매력 > 기준점:
-    기준점 = 내 구매력
+pp_bond[t]    = pp_bond[t-1] × (1 + tbill_wr[t-1]) / (1 + metab_max[t])
+bondpp_3m[t] = log(pp_bond[t-1] / pp_bond[t-14])     # 3개월 (13주) 누적
 ```
 
-- 새 고점을 찍으면 → 보상 (기준점 갱신)
-- 고점에서 떨어지면 → 패널티
-- **한 번 올리면 지켜야 한다** → "올리고 → 지키고" 행동이 출현
+- `bondpp_3m > 0` → 채권 이자가 기초대사 압력보다 큼 (FOMO 약함, 채권만으로 충분)
+- `bondpp_3m < 0` → 기초대사가 채권 이자를 초과 (FOMO 발동 — "주식 사야 한다")
 
-### 편향은 수학이 아니라 환경에 있다
+이 변수가 **"구매력 항상성에서 욕심·두려움이 emergent"** 라는 thesis 의 직접 측정값.
 
-| | 기존 행동재무학 | 우리 모델 |
-|---|---|---|
-| 손실 회피 | 효용함수에 비대칭 주입 | **보상 함수는 HWM (방향 무관)** |
-| 투자 동기 | "수익 극대화" | **"기회비용을 이기고 고점을 지켜라"** |
-| 행동의 원천 | 연구자가 규칙 설계 | **환경 압력에서 행동이 출현** |
+### High Water Mark (HWM) Reward — 강화학습 보상
+
+```
+reward = PP − HWM
+새 고점 → HWM 갱신 (보상)
+고점에서 떨어짐 → 패널티
+```
+
+"올리고 → 지키고" 행동이 출현. 손실 회피 같은 편향을 주입하지 않아도 비대칭 행동이 자연스럽게 나타난다.
 
 ---
 
-## 3. 실험 설계
+## 3. 메인 트랙 — Conditional Normalizing Flow (Phase 15~)
 
-### 강화학습 프레임워크
+### 목표
+"M2/금리/인플레 시나리오를 주면 주가 시나리오가 나오는 가역 모델". `p(주가 시퀀스 | macro 시퀀스)` 를 직접 학습.
 
-- **State**: 구매력(PP), HWM 대비 drawdown, 직전 달 S&P/NDX 수익률, VIX, M2 3개월 누적, FRBSF 뉴스 센티먼트, 이전 투자 비율
-- **Action**: S&P 500 투자 비율 [0%, 100%]. 나머지는 T-bill.
-- **Reward**: PP - HWM (High Water Mark)
-- **Environment**: 매 월, 투자 결과는 **다음 달** S&P 수익률. 기초대사로 구매력 차감.
-- **Algorithm**: PPO (Proximal Policy Optimization)
+### 모델
+- **K=2 multi-step Conditional Affine Flow** (autoregressive, causal Transformer backbone)
+- L = 104주 (past 52w + future 52w)
+- 822k 파라미터
+- past-fixing conditional generation: past z 보존, future z 새로 샘플 → 시나리오 생성
+
+### Multi-task target
+- `sp_return` — 주간 S&P 500 로그 수익률
+- `pp_bond_13w_lag` — bondpp_3m (위 정의)
+
+### Condition (3채널, past 만)
+- `tbill_wr` (주간 T-bill rate, future 시나리오로도 활성)
+- `tbill_26w_lag` (6M 누적 금리)
+- `excess_liq_wr` = m2_growth − cpi_wr (BIS 초과유동성)
 
 ### 데이터
-
-| 데이터 | 출처 | 주기 | 용도 |
+| 변수 | 출처 | 주기 | 용도 |
 |---|---|---|---|
-| S&P 500 | Yahoo Finance | 일별 | 투자 수익률 |
-| NASDAQ 100 | Yahoo Finance | 일별 | 관측 피쳐 |
-| M2 통화량 | FRED (WM2NS) | 주간 | 기초대사 + 관측 |
-| 3-Month T-Bill | FRED (DTB3) | 일별 | 기초대사 + 채권 수익 |
-| VIX | CBOE | 일별 | 관측 피쳐 |
-| News Sentiment | FRBSF | 일별 | 관측 피쳐 |
+| S&P 500 | Yahoo Finance | 일별 → 주간 | target |
+| M2 | FRED (WM2NS) | 주간 | metabolism |
+| 3M T-bill | FRED (DTB3) | 일별 → 주간 | metabolism + condition |
+| MICH 인플레 기대 | FRED (MICH) | 월별 → 주간 forward-fill | metabolism |
+| CPI | FRED (CPIAUCSL) | 월별 → 주간 forward-fill | excess liquidity |
+| GDP | FRED (GDPC1) | 분기 → 주간 forward-fill | excess liquidity |
 
-### Data Leak 방지
-
-- **투자 결과**: 다음 달 수익률 (shift -1)
-- **M2**: 월말 2주 전 기준 (주간 발표 2주 lag 반영)
-- **VIX**: 이번 달 평균 (일별 공개)
-- **센티먼트**: 이번 달 평균 (일별 공개)
-- **T-bill**: 월초 금리 (공개 정보)
-- **학습/테스트 분리**: 1990~2020 학습, 2021~2025 테스트
+학습: 1999-01 ~ 2015-12 (887주). 시험: 2016-01 ~ 2025-12 (516주).
 
 ---
 
-## 4. 실험 결과
+## 4. 실험 결과 (5 seed, sp_return 채널 test NLL)
 
-### 4.1 최종 모델 (No-Leak, Out-of-Sample 2021~2025)
-
-기초대사에 사회적 프리미엄을 추가하여 계층별 압력 차이를 모델링:
-
-| 기초대사 | Return | Vol | Sharpe | Sortino | MDD | 평균 비중 | 해석 |
-|---|---|---|---|---|---|---|---|
-| max(M2,Tb) + 0% | +4.8% | 2.6% | **1.86** | **2.12** | **-2.2%** | 15% | 하위층: 낮은 압력 |
-| max(M2,Tb) + 2% | +7.6% | 6.1% | **1.24** | **1.28** | -8.8% | 42% | 중간층 |
-| max(M2,Tb) + 4% | +8.1% | 7.2% | **1.11** | **1.11** | -11.4% | 50% | 상위층: 높은 압력 |
-| 50/50 고정 | +7.6% | 7.5% | 1.02 | 0.97 | -12.6% | 50% | 벤치마크 |
-| S&P Buy & Hold | +11.5% | 15.0% | 0.81 | 0.75 | -24.8% | 100% | 벤치마크 |
-
-**모든 프리미엄에서 50/50과 Buy & Hold를 위험 조정 지표(Sharpe, Sortino, MDD)에서 초과.**
-
-### 4.2 핵심 발견
-
-**1. 중간 비중의 자연스러운 출현**
-
-기존 항상성 모델(reward = -|PP-1|)에서는 0% 또는 100%로 극단에 수렴했다. HWM + max(M2,Tbill)에서는 15~50%의 **중간 비중이 자연스럽게 출현**했다.
-
-**2. "올리고 → 지키고" 패턴**
-
-에이전트가 시장 상승기에 비중을 올려서 HWM을 갱신하고, 불확실할 때 비중을 줄여서 HWM을 지키는 행동이 반복적으로 나타났다.
-
-**3. 예측이 아닌 리스크 관리**
-
-에이전트는 미래 시장 방향을 예측하지 않는다. 관측 데이터에 미래 정보가 없다. **drawdown을 최소화하는 리스크 관리만으로 위험 조정 수익률을 개선**한다.
-
-**4. 기초대사 압력이 투자 적극성을 결정**
-
-프리미엄이 높을수록 투자 비중이 올라간다 (15% → 42% → 50%). 환경 압력의 크기가 투자 행동의 복잡도와 적극성을 결정한다.
-
-**5. 항상성 본능은 시장과 역행한다**
-
-초기 실험(대칭 항상성)에서 에이전트의 행동 **반대로 투자하면 수익이 나는** 패턴이 발견되었다. 인간의 "잃지 않으려는 본능"이 체계적으로 잘못된 타이밍에 투자하게 만든다는 것을 강화학습으로 증명.
-
-### 4.3 다양한 자산 배분 실험
-
-| 실험 | 결과 |
-|---|---|
-| S&P vs NDX 이진 선택 | 항상 S&P 선택 (변동성 기피) |
-| S&P/NDX/Cash 3자산 | 바벨 전략 출현: NDX + Cash, S&P 무시 |
-| S&P/NDX/Russell 3인덱스 | Russell을 반등기에 전술적 사용 |
-| S&P 롱/숏 + 채권 | 숏 거의 안 씀 (장기 우상향 학습) |
-
-### 4.4 Conditional Normalizing Flow + 항상성 변수 (Phase 15~, 2026-04)
-
-강화학습 트랙 (Phase 1-14) 이외에, **"M2 시나리오를 주면 주가 시나리오가 나오는 가역 모델"** 트랙 진행. K=2 multi-step Conditional Affine Flow 학습.
-
-#### 채권 구매력 항상성 변수 (bondpp_3m)
-
-기초대사가 만드는 누적 압력을 직접 변수화:
-
-```
-pp_bond[t]      = pp_bond[t-1] × (1 + tbill_wr[t-1]) / (1 + metab_max[t])
-bondpp_3m[t]   = log(pp_bond[t-1] / pp_bond[t-14])    # 3개월 (13주) 누적
-```
-
-- `bondpp_3m > 0` → 채권 이자가 기초대사 압력보다 큼 (FOMO 약함)
-- `bondpp_3m < 0` → 기초대사가 채권 이자 초과 (FOMO 발동, 주식으로)
-
-#### 결과 (5 seed, sp_return 채널 test NLL, train 1999-2015 / test 2016-2025)
+### 4.1 종합 비교
 
 | 모델 | median | mean ± std |
 |---|---:|---:|
-| Base (cond = tbill_wr + excess_liq_wr) | −1.74 | −1.75 ± 0.25 |
+| Base (cond=tbill+excess_liq, target=sp_return) | −1.74 | −1.75 ± 0.25 |
+| Stage 2 (PriceGenerator, cascade) | −2.06 | −2.11 ± 0.10 |
 | MTL 2ch (sp + excess_liq) | −2.05 | −1.98 ± 0.13 |
-| MTL 3ch (sp + liq + vix) | −2.21 | −2.20 ± 0.10 |
+| MTL 3ch (sp + liq + **vix**) | −2.21 | −2.20 ± 0.10 |
 | **MTL 2ch (sp + bondpp_3m)** ★ | **−2.20** | **−2.21 ± 0.075** |
+| MTL 3ch (sp + liq + bondpp_3m) | −2.16 | −2.13 ± 0.09 |
 
-핵심:
-- **외생 시장변수 없이 동등한 NLL** — 항상성 산식 변수 (bondpp_3m) 만으로 vix 변종과 같은 sp_return 학습 도달.
-- **분산 더 작음** (std 0.075 vs 0.104) — seed 안정성 우위.
-- **bondpp 채널은 OOS 안정** (test NLL median = −4.40). vix 변종은 같은 자리에서 +628~921 nat 폭발 (OOS regime shift). bondpp 의 OOS std 비율 2.32 가 우려 사항이었으나 condition (tbill_wr, excess_liq_wr) 이 test 시기 기초대사 변화를 capture 해서 흡수.
-- **채택 이유는 paper narrative**: vix 는 외생 변수라 항상성 thesis 와 인과 정합 X. bondpp_3m 은 thesis 내부 산식의 직접 측정 → "구매력 항상성에서 욕심·두려움 emergent" 가설을 NLL 측정 가능한 신호로 입증.
+### 4.2 핵심 발견
 
----
+**1. 항상성 산식 변수만으로 외생 시장변수 동률** — `bondpp_3m` 을 multi-task target 으로 추가하면 vix 변종과 같은 sp_return 학습 도달 (median −2.20 vs −2.21). 분산은 더 작음 (std 0.075 vs 0.104).
 
-## 5. 연구 과정에서의 발견
+**2. bondpp 채널은 OOS 안정** — bondpp 자체 channel test NLL median = −4.40. 같은 자리에 vix 를 놓으면 +628~921 nat 폭발 (코로나 outlier). bondpp 의 OOS std 비율 2.32 가 사전 우려였으나 condition (tbill_wr, excess_liq_wr) 이 test 시기 기초대사 변화를 capture 해서 흡수.
 
-### 기초대사의 진화
+**3. liq + bondpp 동시 추가는 살짝 negative transfer** — 2ch (−2.20) > 3ch (−2.16). 외생 vix 추가 시 패턴과 동일.
 
-| 버전 | 문제 |
-|---|---|
-| GBM (시뮬레이션) | 현실과 동떨어짐 |
-| CPI | 너무 안정적, 투자 동기 약함 |
-| M2 | 음수 가능 → 채권 도피 |
-| DFA 분위별 순자산 | 시장 수익률과 순환 구조, 1분기 lag 너무 늦음 |
-| **max(M2, T-bill)** | **항상 양수, 레짐 자동 전환, 기회비용의 정확한 정의** |
-
-### 보상 함수의 진화
-
-| 버전 | 문제 |
-|---|---|
-| -\|PP - 1.0\| (대칭 항상성) | 0/100% 극단 수렴 |
-| 비대칭 (Loss 2x) | 주입 모순 |
-| 적응적 (PP 변화율) | "안 하는 게 최적" |
-| Differential Sharpe | 학습 불안정 |
-| **HWM (High Water Mark)** | **"올리고 지키기" 출현, 중간 비중 자연 발생** |
+**4. paper narrative 우위** — vix 같은 외생 시장변수는 항상성 thesis 와 인과 정합 X. bondpp_3m 은 thesis 내부 산식의 직접 측정. "구매력 항상성에서 욕심·두려움 emergent" 가설이 NLL 측정 가능한 신호로 입증.
 
 ---
 
-## 6. 이론적 배경
+## 5. 이론적 배경
 
 - **Maturana & Varela (1984)** — 자기생산(Autopoiesis). "사는 것이 곧 아는 것이다."
-- **Yoshida et al. (2024)** — 항상성 강화학습. 체온 유지만 시켰더니 복합 행동 출현.
-- **Damasio** — 신체표지 가설. 감정이 의사결정을 편향시킴.
-- **Selten (1998)** — 열망 적응 이론. 기준선이 경험에 따라 변화.
-- **Kahneman & Tversky** — 전망 이론. 손실 편향 λ ≈ 2.25.
+- **Yoshida et al. (2024)** — 항상성 강화학습. 체온 유지만 시켜도 복합 행동 출현.
+- **Damasio** — 신체표지 가설 (Somatic Marker Hypothesis). 감정이 의사결정 편향의 정보 source.
+- **Kahneman & Tversky** — 전망 이론. 우리는 손실 편향 λ ≈ 2.25 가 evolutionary optimum 이 아님을 강화학습 트랙에서 실증 (λ ≈ 1 이 시장 환경에서 진화 선택됨).
+
+---
+
+## 6. 부록: 강화학습 트랙 (Phase 1~14, 2026-03~04)
+
+이 프로젝트는 강화학습 (PPO + HWM reward + max(M2,Tbill,MICH) metabolism) 으로 시작했다. 핵심 결과:
+
+- **Phase 4 (HWM)** — 2021-2025 OOS, premium +3% Sharpe 1.17 / Calmar 등 위험조정 지표에서 50/50, B&H 초과. 단일 seed cherry-pick 가능성 — 후속 5-seed 평균 0.65 ~ 1.09.
+- **Phase 9 (Evolutionary Prospect)** — Walk-forward 30 windows mean λ = 1.28 (Kahneman 2.25 기각), corr(λ, train B&H return) = −0.527 → procyclical loss aversion 발견.
+- **Phase 11 (LGBM signal)** — 3M ≥ +10% 상승 예측 W2 AUC 0.97 (multi-seed permutation p<0.001), post-panic reversion 패턴.
+- **Phase 13 (Neuroevolution)** — Tiny MLP + CMA-ES, PP feedback. W1 Calmar 1.138 > B&H 1.063, Sharpe 0.99 > B&H 0.80.
+- **Phase 14 (Mamba weight learner)** — W3 Sharpe 0.92, Calmar 1.01, **MDD −10% (B&H −24.8%)**, 레버리지 없이 역대 최고.
+
+강화학습 트랙은 별도 paper 가능성. 현 main contribution 은 Section 4 의 Conditional Flow + bondpp_3m.
 
 ---
 
@@ -208,61 +142,51 @@ bondpp_3m[t]   = log(pp_bond[t-1] / pp_bond[t-14])    # 3개월 (13주) 누적
 
 ```
 homeostatic-market/
-├── env/
-│   ├── single_agent_env.py              # 초기 2층 항상성 환경
-│   ├── real_data_env.py                 # 실제 S&P 500 + M2 환경
-│   ├── weekly_env.py                    # 주간 단위 환경
-│   ├── weekly_env_percentile.py         # 주간 분위별 환경
-│   ├── quarterly_env_percentile.py      # 분기 분위별 환경
-│   ├── quarterly_env_m2.py              # M2 기초대사 환경
-│   └── quarterly_env_sharpe.py          # Differential Sharpe 환경
-├── sim/
-│   ├── run_experiment.py                # Phase 1 실험
-│   ├── run_lag_comparison.py            # 관측 지연 실험
-│   ├── run_dual_homeostasis.py          # 1층 vs 2층 비교
-│   ├── run_contrarian.py               # 역발상 전략
-│   ├── run_ndx_full.py                  # NDX 전체 실험
-│   ├── run_meta_lgbm.py                 # 메타 LightGBM
-│   ├── run_meta_rl.py                   # 메타 RL
-│   └── run_meta_organism.py             # 메타 유기체 (3뇌 가중배합)
-├── analysis/
-│   └── stylized_facts.py               # 통계 분석 도구
-├── data/                                # 시장 데이터
-├── result/                              # 실험 결과 CSV
-├── models/                              # 학습된 PPO 모델
-├── news/                                # 뉴스 센티먼트 파이프라인
-└── docs/                                # 기술 문서
+├── colab/
+│   ├── dual_3ch/                          # ← 메인 트랙 (Conditional Flow)
+│   │   ├── favar_flow.py                  # MultiStepFAVARFlow 모델
+│   │   ├── train_mtl_bondpp2.py           # MTL 2ch (sp + bondpp) ★ best
+│   │   ├── train_mtl_bondpp3.py           # MTL 3ch (sp + liq + bondpp)
+│   │   ├── train_mtl_3ch.py               # MTL 3ch (sp + liq + vix) — vix baseline
+│   │   ├── train_joint.py                 # MTL 2ch (sp + liq)
+│   │   ├── train_stage1.py / train_stage2.py / train_singlestage.py
+│   │   └── data/                          # weekly_ppbond_{train,test}.csv
+│   ├── k2_104/                            # baseline + ablation
+│   ├── run_bondpp.py                      # 4 변종 batch runner
+│   └── run_all.py                         # 전체 실험 batch runner
+├── data/
+│   ├── build_weekly_ppbond.py             # bondpp_3m 컬럼 생성
+│   ├── weekly_ppbond_{train,test}.csv     # 메인 트랙 데이터
+│   └── fred/                              # FRED 원본 (M2, GDP, CPI, MICH, ...)
+├── analysis/                              # macro/retail/r-star/wavelet 진단
+├── env/, sim/                             # 강화학습 트랙 (부록)
+├── result/                                # 실험 결과 (csv, json, log)
+├── chat/                                  # 세션 기록 (git 제외)
+└── docs/
 ```
-
----
 
 ## 8. 설치 및 실행
 
 ```bash
-pip install gymnasium stable-baselines3 torch numpy pandas pandas-datareader yfinance lightgbm scikit-learn matplotlib python-docx
+pip install torch numpy pandas pyarrow gymnasium stable-baselines3 lightgbm
 ```
 
-```python
-# 최종 모델 학습 예시 (HWM + max(M2, Tbill))
-from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import DummyVecEnv
+메인 트랙 (5 seed × 4 변종, T4 GPU 약 12분):
+```bash
+cd colab/
+python run_bondpp.py --seeds 42 123 777 0 99
+```
 
-# 환경 설정은 sim/ 스크립트 참조
-model = PPO('MlpPolicy', env, learning_rate=3e-4, n_steps=2048,
-            batch_size=64, n_epochs=10, gamma=0.99)
-model.learn(total_timesteps=50_000)
+데이터 재빌드 (FRED 다운로드 후):
+```bash
+python data/build_weekly_ppbond.py
 ```
 
 ---
 
 ## 9. 향후 과제
 
-### 강화학습 트랙
-- 다른 시장 검증 (유럽, 아시아)
-- 다중 자산 동적 배분
-
-### Conditional Flow 트랙
-- Walk-forward 5-fold robustness (현재 단일 fold 1999-2015 / 2016-2025)
-- bondpp_3m 의 condition 채널 추가 (현재 target only) — 산식 자체를 inductive bias 로
-- Tipping point 시뮬레이션: tbill_wr 시나리오 sweep → sp_return 분위수 곡선의 비선형 knee 관찰
-- Paper writeup: "Homeostatic measurable variables guide price dynamics learning as effectively as exogenous market variables"
+- **Walk-forward 5-fold robustness** — 현재 단일 fold (1999-2015 / 2016-2025), 5-fold 비중첩 (train 8년 / gap 1년 / test 3.5년) 미실시.
+- **bondpp_3m 의 condition 채널 추가** — 현재 target only. cond 추가 시 산식 자체를 inductive bias 로 작용 가능성.
+- **Tipping point 시뮬레이션** — tbill_wr 시나리오 sweep → sp_return 분위수 곡선의 비선형 knee 관찰. 항상성 thesis 의 직접 검증.
+- **Paper writeup** — main thesis: "Homeostatic measurable variables guide price dynamics learning as effectively as exogenous market variables, with better OOS stability."
