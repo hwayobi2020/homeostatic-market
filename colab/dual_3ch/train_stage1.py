@@ -42,9 +42,10 @@ BATCH = 32
 MAX_EPOCHS = 60
 PATIENCE = 15
 
-COLS_TARGET = ["excess_liq_yoy"]
-COLS_COND   = ["tbill_wr", "tbill_26w_lag", "excess_liq_26w_lag"]
-MASK_FUTURE_CH = [2]   # excess_liq_26w_lag (idx 2) masked to 0 in future portion
+COLS_TARGET = ["excess_liq_wr"]   # weekly raw — Stage 2 의 cond ch=2 와 직접 일치
+COLS_COND   = ["tbill_wr", "tbill_26w_lag", "excess_liq_wr"]
+# future cond: only tbill_wr 시나리오. tbill_26w_lag (deterministic) 와 excess_liq_wr (target) 는 마스킹.
+MASK_FUTURE_CH = [1, 2]
 
 LOG2PI = math.log(2 * math.pi)
 

@@ -42,7 +42,7 @@ MAX_EPOCHS = 60
 PATIENCE = 15
 
 COLS_TARGET = ["sp_return"]
-COND_K2_104 = ["tbill_wr", "tbill_26w_lag", "excess_liq_26w_lag"]   # 3ch — symmetric with Stage 2 cond
+COND_K2_104 = ["tbill_wr", "tbill_26w_lag", "excess_liq_wr"]   # 3ch — Base/Stage2 symmetric (excess_liq weekly, no Bridge)
 
 LOG2PI = math.log(2 * math.pi)
 

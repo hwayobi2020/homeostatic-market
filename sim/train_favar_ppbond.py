@@ -31,7 +31,7 @@ COND_SETS = {
     "B_6ch": ["m2_growth", "m2v", "cpi_yoy", "vix", "tbill_26w_lag", "excess_liq_26w_lag"],
     "C_7ch": ["m2_growth", "m2v", "cpi_yoy", "vix", "tbill_26w_lag", "excess_liq_26w_lag", "pp_bond_26w_lag"],
     "Cprime_5ch": ["m2_growth", "m2v", "cpi_yoy", "vix", "pp_bond_26w_lag"],   # pp_bond only, raw cumulative 제거 (collinearity fix)
-    "K2_104": ["tbill_wr", "tbill_26w_lag", "excess_liq_26w_lag"],   # 3ch — symmetric with dual-stage Stage 2 cond
+    "K2_104": ["tbill_wr", "tbill_26w_lag", "excess_liq_wr"],   # 3ch — Base/Stage2 symmetric (excess_liq weekly, no Bridge)
 }
 
 LOG2PI = math.log(2 * math.pi)
