@@ -14,3 +14,10 @@ colab/dual_mamba/result/*.npz
 
 # chat/ folder is local-only (per CLAUDE.md rule)
 chat/
+
+# Temporary archives & extracted result bundles
+result/*.zip
+result/unzipped_*/
+
+# Drive backup folders (timestamp-named)
+models-20*/

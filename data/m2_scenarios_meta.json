@@ -1,0 +1,64 @@
+{
+  "future_weeks": 52,
+  "value_unit": "weekly log rate (decimal) — v31 m2_growth 정의와 동일",
+  "annualize_formula": "annual_rate_pct ≈ (exp(weekly * 52) - 1) * 100",
+  "v31_train_range": {
+    "annual_min_pct": -4.74,
+    "annual_max_pct": 23.72,
+    "annual_mean_pct": 6.55
+  },
+  "scenarios": {
+    "baseline_6pct": {
+      "regime": "평시",
+      "ann_eq": "연 6%",
+      "within_train": true
+    },
+    "low_growth_3pct": {
+      "regime": "평시 긴축",
+      "ann_eq": "연 3%",
+      "within_train": true
+    },
+    "high_growth_10pct": {
+      "regime": "완만 확장",
+      "ann_eq": "연 10%",
+      "within_train": true
+    },
+    "stagflation_13pct": {
+      "regime": "1970s",
+      "ann_eq": "연 13%",
+      "within_train": true
+    },
+    "covid_surge": {
+      "regime": "Covid-like",
+      "ann_eq": "12w @ 20%/yr → 40w @ 10%/yr",
+      "within_train": true
+    },
+    "qt_contraction": {
+      "regime": "2022-24 QT",
+      "ann_eq": "0% → -4%/yr linear",
+      "within_train": "부분 (YoY 수축은 train 에 없었음)"
+    },
+    "accelerating_5_to_12": {
+      "regime": "경기 과열",
+      "ann_eq": "5% → 12%/yr linear",
+      "within_train": true
+    },
+    "decelerating_10_to_2": {
+      "regime": "긴축 진입",
+      "ann_eq": "10% → 2%/yr linear",
+      "within_train": true
+    },
+    "hyperinflation_warn_40": {
+      "regime": "⚠ 경고",
+      "ann_eq": "연 40%",
+      "within_train": false,
+      "note": "train 최대 24% 보다 넘음 → Flow extrapolation, 예측 신뢰도 낮음"
+    },
+    "deflation_warn_n10": {
+      "regime": "⚠ 경고",
+      "ann_eq": "연 -10%",
+      "within_train": false,
+      "note": "train 최소 -4.74%. 대공황 수준. Flow 생성 결과 해석 주의"
+    }
+  }
+}

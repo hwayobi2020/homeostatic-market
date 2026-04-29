@@ -1,0 +1,86 @@
+[1a] cpi_yoy NaN 5주 forward-fill (2025 publishing lag)
+[1] 데이터: 1461 주, 1998-01-02 ~ 2025-12-26
+[2] exog 표준화 (train mean/std):
+    m2_growth      mean=+0.00120 std=0.00597
+    m2v            mean=+1.86274 std=0.20827
+    cpi_yoy        mean=+0.02158 std=0.01257
+    vix            mean=+0.21226 std=0.08361
+
+[3] Markov-Switching Regression: K=2, switching=intercept+exog+variance
+    train n=939, exog dim=4
+
+[4] Fit 결과:
+    log-likelihood = +2242.9228
+    AIC = -4457.85, BIC = -4390.02
+    converged: True
+
+[5] 전이행렬 P[i→j]:
+    P[0→0]=0.969  P[0→1]=0.031
+    P[1→0]=0.068  P[1→1]=0.932
+    Steady state: regime0 50.0%, regime1 50.0%
+
+[6] Per-regime parameters:
+                        Markov Switching Model Results                        
+==============================================================================
+Dep. Variable:                      y   No. Observations:                  939
+Model:               MarkovRegression   Log Likelihood                2242.923
+Date:                Mon, 27 Apr 2026   AIC                          -4457.846
+Time:                        18:16:53   BIC                          -4390.018
+Sample:                             0   HQIC                         -4431.988
+                                - 939                                         
+Covariance Type:               approx                                         
+                             Regime 0 parameters                              
+==============================================================================
+                 coef    std err          z      P>|z|      [0.025      0.975]
+------------------------------------------------------------------------------
+const          0.0043      0.001      4.178      0.000       0.002       0.006
+x1          4.348e-05      0.001      0.058      0.954      -0.001       0.002
+x2          5.726e-05      0.001      0.068      0.946      -0.002       0.002
+x3            -0.0013      0.001     -1.187      0.235      -0.003       0.001
+x4             0.0033      0.001      2.569      0.010       0.001       0.006
+sigma2         0.0003   2.49e-05     10.027      0.000       0.000       0.000
+                             Regime 1 parameters                              
+==============================================================================
+                 coef    std err          z      P>|z|      [0.025      0.975]
+------------------------------------------------------------------------------
+const         -0.0075      0.003     -2.216      0.027      -0.014      -0.001
+x1            -0.0047      0.002     -2.135      0.033      -0.009      -0.000
+x2             0.0019      0.003      0.669      0.504      -0.004       0.008
+x3            -0.0005      0.002     -0.235      0.814      -0.005       0.004
+x4             0.0036      0.002      1.596      0.111      -0.001       0.008
+sigma2         0.0014      0.000      7.416      0.000       0.001       0.002
+                         Regime transition parameters                         
+==============================================================================
+                 coef    std err          z      P>|z|      [0.025      0.975]
+------------------------------------------------------------------------------
+p[0->0]        0.9687      0.011     91.496      0.000       0.948       0.989
+p[1->0]        0.0676      0.028      2.413      0.016       0.013       0.123
+==============================================================================
+
+Warnings:
+[1] Covariance matrix calculated using numerical (complex-step) differentiation.
+
+[7] Smoothed regime probabilities 계산 완료 (train+test)
+    avg P(regime0) = 0.721
+    avg P(regime1) = 0.279
+
+[8] 1.0σ episode 시점에서 hidden regime 분포:
+    2002-12-20 ~ 2003-03-21 ( 14w, +): regime1 우세, P(regime1)=0.89
+    2003-08-01 ~ 2003-08-29 (  5w, +): regime0 우세, P(regime0)=0.99
+    2005-07-29 ~ 2005-09-23 (  9w, +): regime0 우세, P(regime0)=1.00
+    2005-12-02 ~ 2007-08-10 ( 89w, +): regime0 우세, P(regime0)=0.98
+    2007-08-24 ~ 2007-09-14 (  4w, +): regime0 우세, P(regime0)=0.95
+    2007-10-05 ~ 2007-10-26 (  4w, +): regime0 우세, P(regime0)=0.64
+    2008-06-06 ~ 2008-08-22 ( 12w, −): regime0 우세, P(regime0)=0.73
+    2008-09-05 ~ 2008-11-28 ( 13w, −): regime1 우세, P(regime1)=0.86
+    2010-12-31 ~ 2012-01-06 ( 54w, −): regime0 우세, P(regime0)=0.51
+    2012-02-03 ~ 2012-05-04 ( 14w, −): regime0 우세, P(regime0)=0.94
+    2021-06-04 ~ 2022-02-11 ( 37w, −): regime0 우세, P(regime0)=0.88
+    2022-08-26 ~ 2022-12-09 ( 16w, +): regime1 우세, P(regime1)=0.86
+    2023-01-06 ~ 2025-02-21 (112w, +): regime0 우세, P(regime0)=0.95
+Traceback (most recent call last):
+  File "D:\projects\homeostatic-market\analysis\ms_var_sp_prototype.py", line 182, in <module>
+    name: float(val) for name, val in zip(res.param_names, res.params)
+  File "C:\Users\hwayo\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\LocalCache\local-packages\Python310\site-packages\statsmodels\base\wrapper.py", line 34, in __getattribute__
+    obj = getattr(results, attr)
+AttributeError: 'MarkovRegressionResults' object has no attribute 'param_names'

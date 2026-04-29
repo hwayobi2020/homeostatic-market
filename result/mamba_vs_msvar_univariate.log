@@ -1,0 +1,32 @@
+[1] 데이터: train 939주, test 522주
+
+[2] MS-VAR K=2 (univariate sp_return)
+    train ll = +2242.92, AIC = -4457.85
+    train NLL/step = -2.3039
+    test  NLL/step = -2.3498
+
+[3-Mamba_all] Mamba 학습 시작 (T=939)
+    params: 20,226, d_model=32, n_layers=2, lr=0.0005
+    [Mamba_all ep   1] train NLL/step = +0.7703  best +0.7703  elapsed 0s
+    [Mamba_all ep  10] train NLL/step = +0.4349  best +0.4349  elapsed 1s
+    [Mamba_all ep  20] train NLL/step = +0.0954  best +0.0954  elapsed 1s
+    [Mamba_all ep  30] train NLL/step = -0.3154  best -0.3154  elapsed 2s
+    [Mamba_all ep  40] train NLL/step = -0.8730  best -0.8730  elapsed 2s
+    [Mamba_all ep  50] train NLL/step = -1.5683  best -1.5683  elapsed 3s
+    [Mamba_all ep  60] train NLL/step = -2.0420  best -2.0420  elapsed 3s
+    [Mamba_all ep  70] train NLL/step = -2.0743  best -2.2024  elapsed 4s
+    [Mamba_all ep  80] train NLL/step = -2.2211  best -2.2211  elapsed 4s
+    [Mamba_all ep  90] train NLL/step = -2.1783  best -2.2758  elapsed 5s
+    [Mamba_all ep 100] train NLL/step = -2.2816  best -2.3014  elapsed 5s
+
+[4] 직접 비교 (univariate sp_return, full train, conditioning 4채널)
+                      모델 |    train NLL |     test NLL |      gap
+              MS-VAR K=2 |      -2.3039 |      -2.3498 |  -0.0458
+      Mamba (univariate) |      -2.2751 |      -1.8467 |  +0.4284
+
+[5] 해석:
+    test NLL 차이 = -0.5030 nat (Mamba 가 높음(나쁨))
+    bits 환산: -0.7257 bits per step
+    → MS-VAR 가 step 당 평균 likelihood 가 1.65배 높음
+
+[6] saved result\mamba_vs_msvar_univariate.json

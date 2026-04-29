@@ -1,0 +1,38 @@
+[1] 데이터: train 939, test 522
+[2] Mamba MDN K=2: params=20,325, d_model=32, n_layers=2
+    [ep   1] train NLL/step = +0.9537  best +0.9537  elapsed 0s
+    [ep  10] train NLL/step = +0.6781  best +0.6781  elapsed 1s
+    [ep  20] train NLL/step = +0.3465  best +0.3465  elapsed 1s
+    [ep  30] train NLL/step = -0.0586  best -0.0586  elapsed 2s
+    [ep  40] train NLL/step = -0.5467  best -0.5467  elapsed 3s
+    [ep  50] train NLL/step = -1.0976  best -1.0976  elapsed 3s
+    [ep  60] train NLL/step = -1.5291  best -1.5370  elapsed 4s
+    [ep  70] train NLL/step = -1.7228  best -1.7485  elapsed 5s
+    [ep  80] train NLL/step = -1.8729  best -1.8802  elapsed 5s
+    [ep  90] train NLL/step = -1.9947  best -1.9947  elapsed 6s
+    [ep 100] train NLL/step = -2.0833  best -2.0833  elapsed 6s
+    [ep 110] train NLL/step = -2.1428  best -2.1428  elapsed 7s
+    [ep 120] train NLL/step = -2.1687  best -2.1762  elapsed 7s
+    [ep 130] train NLL/step = -2.2020  best -2.2020  elapsed 8s
+    [ep 140] train NLL/step = -2.2086  best -2.2270  elapsed 8s
+    [ep 150] train NLL/step = -2.2473  best -2.2473  elapsed 9s
+
+[3] Regime 통계 (train 기간):
+    avg P(regime 1) = 0.720, std = 0.281
+    avg μ_0 = +0.01856  ann μ = +96.50%/yr
+    avg μ_1 = -0.04849  ann μ = -252.13%/yr
+    avg σ_0 = 0.20671  ann σ = 149.06%/yr
+    avg σ_1 = 0.07717  ann σ = 55.65%/yr
+
+[4] 결과:
+    train NLL = -2.2524
+    test  NLL = -1.2961
+    gap = +0.9563
+
+[5] 비교 (univariate sp_return, train 939, test 522):
+                        모델 |   params |  train NLL |   test NLL
+                MS-VAR K=2 |       14 |    -2.3039 |    -2.3498
+           Mamba (vanilla) |    20226 |    -2.2751 |    -1.8467
+             Mamba MDN K=2 |    20325 |    -2.2524 |    -1.2961
+
+[6] saved result\mamba_mdn_regime.json

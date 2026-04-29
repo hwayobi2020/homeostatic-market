@@ -1,0 +1,52 @@
+{
+  "axes": {
+    "x_defn": "M2 growth 104w trailing mean",
+    "y_defn": "M2 growth 52w mean - 260w mean",
+    "target_defn": "forward 52w mean of (tbill_wr - mich_wr)"
+  },
+  "train": {
+    "n_samples": 993,
+    "date_first": "1995-12-22",
+    "date_last": "2014-12-26",
+    "x_stats": {
+      "mean": 0.0011549138012228288,
+      "std": 0.00025828896687760236,
+      "min": 0.00042440373692198145,
+      "max": 0.0017401133131616556
+    },
+    "y_stats": {
+      "mean": 0.00010393477529263638,
+      "std": 0.0003500835520877629,
+      "min": -0.0008514104347932651,
+      "max": 0.0007985353677772914
+    },
+    "target_stats_weekly": {
+      "mean": -0.00011478486134938784,
+      "std": 0.0004172539968297644,
+      "min": -0.0006798035197179317,
+      "max": 0.0005527139329568807
+    },
+    "target_stats_annualized_pct": {
+      "mean": -0.5968812790168168,
+      "std": 2.1697207835147747
+    },
+    "r2": 0.4053771965637124,
+    "resid_std_weekly": 0.0003217520224838995,
+    "resid_std_annualized": 1.6731105169162777
+  },
+  "test": {
+    "n_samples_xy": 522,
+    "n_samples_full": 470,
+    "r2": -21.447552386551152,
+    "x_extrapolation_frac": 0.4319148936170213,
+    "y_extrapolation_frac": 0.3702127659574468
+  },
+  "gam": {
+    "lam": [
+      0.2682695795279726,
+      0.2682695795279726
+    ],
+    "edof": 28.516446627360036,
+    "n_splines_per_axis": 20
+  }
+}

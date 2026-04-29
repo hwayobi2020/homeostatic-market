@@ -1,0 +1,16 @@
+{
+  "condition": "B_6ch",
+  "n_params": 548868,
+  "n_cond": 6,
+  "cols_cond": [
+    "m2_growth",
+    "m2v",
+    "cpi_yoy",
+    "vix",
+    "tbill_26w_lag",
+    "excess_liq_26w_lag"
+  ],
+  "best_epoch": 20,
+  "best_val_nll": -2.7018563747406006,
+  "best_test_nll": -2.153883695602417
+}

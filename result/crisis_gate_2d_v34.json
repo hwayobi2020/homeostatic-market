@@ -1,0 +1,382 @@
+{
+  "data": {
+    "train_valid": 680,
+    "test_valid": 522,
+    "vix_train_mean": 0.19708631556513606,
+    "vix_train_std": 0.08891823273423999
+  },
+  "quantiles": {
+    "abs_y": {
+      "train": {
+        "q50": 0.6176283947926587,
+        "q75": 0.8596437778933576,
+        "q90": 0.9276320147017801,
+        "q95": 0.9638808484390351,
+        "q99": 0.9847451218420352
+      },
+      "test": {
+        "q50": 0.827920622573936,
+        "q75": 0.999095752439361,
+        "q90": 0.9999961903635686,
+        "q95": 0.9999977522509702,
+        "q99": 0.9999994373745256
+      }
+    },
+    "vix_raw": {
+      "train": {
+        "q50": 0.1727149991989136,
+        "q75": 0.22278615302609323,
+        "q90": 0.3023857134864444,
+        "q95": 0.3652999977838425,
+        "q99": 0.611773912181025
+      }
+    },
+    "vix_anomaly": {
+      "train": {
+        "q50": -0.05361226131067756,
+        "q75": 0.024374785737954437,
+        "q90": 0.09352085047949699,
+        "q95": 0.14074318362344498,
+        "q99": 0.4438173790638161
+      }
+    },
+    "vix_zscore": {
+      "train": {
+        "q50": -0.2740868280531822,
+        "q75": 0.28902775809511627,
+        "q90": 1.184227291561547,
+        "q95": 1.891779414031605,
+        "q99": 4.663695890755193
+      }
+    }
+  },
+  "corr_abs_y_vs_vix": {
+    "vix_raw": {
+      "train": 0.22925893297959257,
+      "test": 0.3041869494908061
+    },
+    "vix_anomaly": {
+      "train": 0.1526179388718547,
+      "test": 0.17848072518830937
+    },
+    "vix_zscore": {
+      "train": 0.2292589329795927,
+      "test": 0.3041869494908062
+    }
+  },
+  "crisis_records": [
+    {
+      "date": "2008-09-12",
+      "label": "Lehman",
+      "abs_y": 0.27571928374343146,
+      "vix_raw": 0.2069571413312639,
+      "vix_anomaly": 0.04709567574191523,
+      "vix_zscore": 0.11101014339353645
+    },
+    {
+      "date": "2009-03-06",
+      "label": "GFC bottom",
+      "abs_y": 0.8328011494236761,
+      "vix_raw": 0.4557052592227333,
+      "vix_anomaly": 0.2663261006023683,
+      "vix_zscore": 2.908502966208978
+    },
+    {
+      "date": "2020-03-20",
+      "label": "COVID bottom",
+      "abs_y": 0.8084713935753536,
+      "vix_raw": 0.1962894735838237,
+      "vix_anomaly": 0.04494397709145412,
+      "vix_zscore": -0.008961513930376567
+    },
+    {
+      "date": "2022-06-17",
+      "label": "Fed tightening",
+      "abs_y": 0.9872047744191158,
+      "vix_raw": 0.2944571458725702,
+      "vix_anomaly": 0.09958421332618878,
+      "vix_zscore": 1.09506034154387
+    },
+    {
+      "date": "2023-03-10",
+      "label": "SVB",
+      "abs_y": 0.999995497280966,
+      "vix_raw": 0.2006210537960654,
+      "vix_anomaly": -0.013453560188687624,
+      "vix_zscore": 0.03975268201173109
+    }
+  ],
+  "cases_18": [
+    {
+      "id": "vix_raw_narrow_top10_AND",
+      "vix_def": "vix_raw",
+      "threshold": "narrow_top10",
+      "form": "AND",
+      "mu_y": 0.9276320147017801,
+      "sigma_y": 0.03127533598716942,
+      "mu_vix": 0.3023857134864444,
+      "sigma_vix": 0.09724693978873293,
+      "active_train": 0.01911764705882353,
+      "active_test": 0.0019157088122605363,
+      "mean_train": 0.00796390950545867,
+      "mean_test": 0.0016897813309323408,
+      "crisis_gate_mean": 0.0
+    },
+    {
+      "id": "vix_raw_narrow_top10_NORM",
+      "vix_def": "vix_raw",
+      "threshold": "narrow_top10",
+      "form": "NORM",
+      "mu_y": 0.9276320147017801,
+      "sigma_y": 0.03127533598716942,
+      "mu_vix": 0.3023857134864444,
+      "sigma_vix": 0.09724693978873293,
+      "active_train": 0.1411764705882353,
+      "active_test": 0.05747126436781609,
+      "mean_train": 0.0989003167951935,
+      "mean_test": 0.04161652229504685,
+      "crisis_gate_mean": 0.0
+    },
+    {
+      "id": "vix_raw_narrow_top10_OR",
+      "vix_def": "vix_raw",
+      "threshold": "narrow_top10",
+      "form": "OR",
+      "mu_y": 0.9276320147017801,
+      "sigma_y": 0.03127533598716942,
+      "mu_vix": 0.3023857134864444,
+      "sigma_vix": 0.09724693978873293,
+      "active_train": 0.32941176470588235,
+      "active_test": 0.2720306513409962,
+      "mean_train": 0.2245748318939774,
+      "mean_test": 0.1551415312070708,
+      "crisis_gate_mean": 0.2025894443331941
+    },
+    {
+      "id": "vix_raw_medium_top25_AND",
+      "vix_def": "vix_raw",
+      "threshold": "medium_top25",
+      "form": "AND",
+      "mu_y": 0.8596437778933576,
+      "sigma_y": 0.07750090497728035,
+      "mu_vix": 0.22278615302609323,
+      "sigma_vix": 0.0324176785718827,
+      "active_train": 0.03529411764705882,
+      "active_test": 0.03639846743295019,
+      "mean_train": 0.014153890131720671,
+      "mean_test": 0.01341966351829439,
+      "crisis_gate_mean": 0.02155981879293816
+    },
+    {
+      "id": "vix_raw_medium_top25_NORM",
+      "vix_def": "vix_raw",
+      "threshold": "medium_top25",
+      "form": "NORM",
+      "mu_y": 0.8596437778933576,
+      "sigma_y": 0.07750090497728035,
+      "mu_vix": 0.22278615302609323,
+      "sigma_vix": 0.0324176785718827,
+      "active_train": 0.16911764705882354,
+      "active_test": 0.1111111111111111,
+      "mean_train": 0.10765482021192894,
+      "mean_test": 0.07143809415506469,
+      "crisis_gate_mean": 0.14615966435689154
+    },
+    {
+      "id": "vix_raw_medium_top25_OR",
+      "vix_def": "vix_raw",
+      "threshold": "medium_top25",
+      "form": "OR",
+      "mu_y": 0.8596437778933576,
+      "sigma_y": 0.07750090497728035,
+      "mu_vix": 0.22278615302609323,
+      "sigma_vix": 0.0324176785718827,
+      "active_train": 0.38676470588235295,
+      "active_test": 0.34099616858237547,
+      "mean_train": 0.2692439083744452,
+      "mean_test": 0.23832077005230193,
+      "crisis_gate_mean": 0.5235089322443045
+    },
+    {
+      "id": "vix_anomaly_narrow_top10_AND",
+      "vix_def": "vix_anomaly",
+      "threshold": "narrow_top10",
+      "form": "AND",
+      "mu_y": 0.9276320147017801,
+      "sigma_y": 0.03127533598716942,
+      "mu_vix": 0.09352085047949699,
+      "sigma_vix": 0.10486064833146541,
+      "active_train": 0.010294117647058823,
+      "active_test": 0.005747126436781609,
+      "mean_train": 0.0036663956516919207,
+      "mean_test": 0.0039949251440523055,
+      "crisis_gate_mean": 0.0
+    },
+    {
+      "id": "vix_anomaly_narrow_top10_NORM",
+      "vix_def": "vix_anomaly",
+      "threshold": "narrow_top10",
+      "form": "NORM",
+      "mu_y": 0.9276320147017801,
+      "sigma_y": 0.03127533598716942,
+      "mu_vix": 0.09352085047949699,
+      "sigma_vix": 0.10486064833146541,
+      "active_train": 0.13970588235294118,
+      "active_test": 0.05747126436781609,
+      "mean_train": 0.09880416193708574,
+      "mean_test": 0.041746075968387496,
+      "crisis_gate_mean": 0.0
+    },
+    {
+      "id": "vix_anomaly_narrow_top10_OR",
+      "vix_def": "vix_anomaly",
+      "threshold": "narrow_top10",
+      "form": "OR",
+      "mu_y": 0.9276320147017801,
+      "sigma_y": 0.03127533598716942,
+      "mu_vix": 0.09352085047949699,
+      "sigma_vix": 0.10486064833146541,
+      "active_train": 0.3573529411764706,
+      "active_test": 0.42911877394636017,
+      "mean_train": 0.25891430413846866,
+      "mean_test": 0.2714621742826366,
+      "crisis_gate_mean": 0.48588205406828866
+    },
+    {
+      "id": "vix_anomaly_medium_top25_AND",
+      "vix_def": "vix_anomaly",
+      "threshold": "medium_top25",
+      "form": "AND",
+      "mu_y": 0.8596437778933576,
+      "sigma_y": 0.07750090497728035,
+      "mu_vix": 0.024374785737954437,
+      "sigma_vix": 0.03678327794754364,
+      "active_train": 0.010294117647058823,
+      "active_test": 0.07471264367816093,
+      "mean_train": 0.004439526946038979,
+      "mean_test": 0.03194412992183694,
+      "crisis_gate_mean": 0.05332149205050577
+    },
+    {
+      "id": "vix_anomaly_medium_top25_NORM",
+      "vix_def": "vix_anomaly",
+      "threshold": "medium_top25",
+      "form": "NORM",
+      "mu_y": 0.8596437778933576,
+      "sigma_y": 0.07750090497728035,
+      "mu_vix": 0.024374785737954437,
+      "sigma_vix": 0.03678327794754364,
+      "active_train": 0.17205882352941176,
+      "active_test": 0.10344827586206896,
+      "mean_train": 0.11328905011928632,
+      "mean_test": 0.06827990182790028,
+      "crisis_gate_mean": 0.10558373462563606
+    },
+    {
+      "id": "vix_anomaly_medium_top25_OR",
+      "vix_def": "vix_anomaly",
+      "threshold": "medium_top25",
+      "form": "OR",
+      "mu_y": 0.8596437778933576,
+      "sigma_y": 0.07750090497728035,
+      "mu_vix": 0.024374785737954437,
+      "sigma_vix": 0.03678327794754364,
+      "active_train": 0.3897058823529412,
+      "active_test": 0.4003831417624521,
+      "mean_train": 0.25749074942095307,
+      "mean_test": 0.2648225684090224,
+      "crisis_gate_mean": 0.46796904663217775
+    },
+    {
+      "id": "vix_zscore_narrow_top10_AND",
+      "vix_def": "vix_zscore",
+      "threshold": "narrow_top10",
+      "form": "AND",
+      "mu_y": 0.9276320147017801,
+      "sigma_y": 0.03127533598716942,
+      "mu_vix": 1.184227291561547,
+      "sigma_vix": 1.0936670331650191,
+      "active_train": 0.01911764705882353,
+      "active_test": 0.0019157088122605363,
+      "mean_train": 0.007963909505458671,
+      "mean_test": 0.0016897813309323412,
+      "crisis_gate_mean": 0.0
+    },
+    {
+      "id": "vix_zscore_narrow_top10_NORM",
+      "vix_def": "vix_zscore",
+      "threshold": "narrow_top10",
+      "form": "NORM",
+      "mu_y": 0.9276320147017801,
+      "sigma_y": 0.03127533598716942,
+      "mu_vix": 1.184227291561547,
+      "sigma_vix": 1.0936670331650191,
+      "active_train": 0.1411764705882353,
+      "active_test": 0.05747126436781609,
+      "mean_train": 0.0989003167951935,
+      "mean_test": 0.04161652229504685,
+      "crisis_gate_mean": 0.0
+    },
+    {
+      "id": "vix_zscore_narrow_top10_OR",
+      "vix_def": "vix_zscore",
+      "threshold": "narrow_top10",
+      "form": "OR",
+      "mu_y": 0.9276320147017801,
+      "sigma_y": 0.03127533598716942,
+      "mu_vix": 1.184227291561547,
+      "sigma_vix": 1.0936670331650191,
+      "active_train": 0.32941176470588235,
+      "active_test": 0.2720306513409962,
+      "mean_train": 0.22457483189397745,
+      "mean_test": 0.1551415312070708,
+      "crisis_gate_mean": 0.20258944433319415
+    },
+    {
+      "id": "vix_zscore_medium_top25_AND",
+      "vix_def": "vix_zscore",
+      "threshold": "medium_top25",
+      "form": "AND",
+      "mu_y": 0.8596437778933576,
+      "sigma_y": 0.07750090497728035,
+      "mu_vix": 0.28902775809511627,
+      "sigma_vix": 0.36457852990368234,
+      "active_train": 0.03529411764705882,
+      "active_test": 0.03639846743295019,
+      "mean_train": 0.014153890131720671,
+      "mean_test": 0.013419663518294388,
+      "crisis_gate_mean": 0.02155981879293816
+    },
+    {
+      "id": "vix_zscore_medium_top25_NORM",
+      "vix_def": "vix_zscore",
+      "threshold": "medium_top25",
+      "form": "NORM",
+      "mu_y": 0.8596437778933576,
+      "sigma_y": 0.07750090497728035,
+      "mu_vix": 0.28902775809511627,
+      "sigma_vix": 0.36457852990368234,
+      "active_train": 0.16911764705882354,
+      "active_test": 0.1111111111111111,
+      "mean_train": 0.10765482021192893,
+      "mean_test": 0.07143809415506469,
+      "crisis_gate_mean": 0.14615966435689154
+    },
+    {
+      "id": "vix_zscore_medium_top25_OR",
+      "vix_def": "vix_zscore",
+      "threshold": "medium_top25",
+      "form": "OR",
+      "mu_y": 0.8596437778933576,
+      "sigma_y": 0.07750090497728035,
+      "mu_vix": 0.28902775809511627,
+      "sigma_vix": 0.36457852990368234,
+      "active_train": 0.38676470588235295,
+      "active_test": 0.34099616858237547,
+      "mean_train": 0.2692439083744452,
+      "mean_test": 0.23832077005230193,
+      "crisis_gate_mean": 0.5235089322443044
+    }
+  ],
+  "best_case": "vix_raw_medium_top25_OR"
+}

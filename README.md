@@ -137,6 +137,37 @@ if 내 구매력 > 기준점:
 | S&P/NDX/Russell 3인덱스 | Russell을 반등기에 전술적 사용 |
 | S&P 롱/숏 + 채권 | 숏 거의 안 씀 (장기 우상향 학습) |
 
+### 4.4 Conditional Normalizing Flow + 항상성 변수 (Phase 15~, 2026-04)
+
+강화학습 트랙 (Phase 1-14) 이외에, **"M2 시나리오를 주면 주가 시나리오가 나오는 가역 모델"** 트랙 진행. K=2 multi-step Conditional Affine Flow 학습.
+
+#### 채권 구매력 항상성 변수 (bondpp_3m)
+
+기초대사가 만드는 누적 압력을 직접 변수화:
+
+```
+pp_bond[t]      = pp_bond[t-1] × (1 + tbill_wr[t-1]) / (1 + metab_max[t])
+bondpp_3m[t]   = log(pp_bond[t-1] / pp_bond[t-14])    # 3개월 (13주) 누적
+```
+
+- `bondpp_3m > 0` → 채권 이자가 기초대사 압력보다 큼 (FOMO 약함)
+- `bondpp_3m < 0` → 기초대사가 채권 이자 초과 (FOMO 발동, 주식으로)
+
+#### 결과 (5 seed, sp_return 채널 test NLL, train 1999-2015 / test 2016-2025)
+
+| 모델 | median | mean ± std |
+|---|---:|---:|
+| Base (cond = tbill_wr + excess_liq_wr) | −1.74 | −1.75 ± 0.25 |
+| MTL 2ch (sp + excess_liq) | −2.05 | −1.98 ± 0.13 |
+| MTL 3ch (sp + liq + vix) | −2.21 | −2.20 ± 0.10 |
+| **MTL 2ch (sp + bondpp_3m)** ★ | **−2.20** | **−2.21 ± 0.075** |
+
+핵심:
+- **외생 시장변수 없이 동등한 NLL** — 항상성 산식 변수 (bondpp_3m) 만으로 vix 변종과 같은 sp_return 학습 도달.
+- **분산 더 작음** (std 0.075 vs 0.104) — seed 안정성 우위.
+- **bondpp 채널은 OOS 안정** (test NLL median = −4.40). vix 변종은 같은 자리에서 +628~921 nat 폭발 (OOS regime shift). bondpp 의 OOS std 비율 2.32 가 우려 사항이었으나 condition (tbill_wr, excess_liq_wr) 이 test 시기 기초대사 변화를 capture 해서 흡수.
+- **채택 이유는 paper narrative**: vix 는 외생 변수라 항상성 thesis 와 인과 정합 X. bondpp_3m 은 thesis 내부 산식의 직접 측정 → "구매력 항상성에서 욕심·두려움 emergent" 가설을 NLL 측정 가능한 신호로 입증.
+
 ---
 
 ## 5. 연구 과정에서의 발견
@@ -226,7 +257,12 @@ model.learn(total_timesteps=50_000)
 
 ## 9. 향후 과제
 
-- Validation set 분리 (하이퍼파라미터 체리피킹 방지)
+### 강화학습 트랙
 - 다른 시장 검증 (유럽, 아시아)
 - 다중 자산 동적 배분
-- 논문 작성
+
+### Conditional Flow 트랙
+- Walk-forward 5-fold robustness (현재 단일 fold 1999-2015 / 2016-2025)
+- bondpp_3m 의 condition 채널 추가 (현재 target only) — 산식 자체를 inductive bias 로
+- Tipping point 시뮬레이션: tbill_wr 시나리오 sweep → sp_return 분위수 곡선의 비선형 knee 관찰
+- Paper writeup: "Homeostatic measurable variables guide price dynamics learning as effectively as exogenous market variables"

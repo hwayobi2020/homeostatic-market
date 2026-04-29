@@ -1,0 +1,40 @@
+{
+  "tag": "smoke_v2",
+  "args": {
+    "tag": "smoke_v2",
+    "train_csv": "data/weekly_ppbond_train.csv",
+    "test_csv": "data/weekly_ppbond_test.csv",
+    "out_dir": "result",
+    "K": 1,
+    "d_model": 32,
+    "n_layers": 1,
+    "log_scale_clamp": 4.0,
+    "P": 52,
+    "F": 52,
+    "W": 26,
+    "lr": 0.0005,
+    "wd": 0.0001,
+    "batch": 16,
+    "max_epochs": 3,
+    "patience": 5,
+    "grad_clip": 5.0,
+    "lambda_nll2": 1.0,
+    "val_fraction": 0.15,
+    "seed": 42,
+    "device": "cpu",
+    "num_workers": 0
+  },
+  "n_params": 42564,
+  "n_windows_train": 646,
+  "n_windows_val": 113,
+  "n_windows_test": 389,
+  "best_val_loss": 0.366478342398078,
+  "best_epoch": 2,
+  "test_metrics": {
+    "nll1": 5.05999360461468,
+    "nll2": 1.4867596574185133,
+    "total": 6.546753304936279
+  },
+  "train_time_s": 23.099690914154053,
+  "device": "cpu"
+}

@@ -1,0 +1,46 @@
+[1] 데이터: 전체 1461 주 (1998-01-02 ~ 2025-12-26)
+    train 939 주, test 522 주
+    r* gap valid: 1202 주
+
+[2] r* gap (train, valid): μ=-0.0096 (-0.96%/yr), σ=0.0158 (1.58%/yr)
+    crisis 정의: |gap - μ| > 1.0·σ = 1.58%/yr
+    train crisis: 222 주 (23.6%)
+    test  crisis: 170 주 (32.6%)
+
+[3] OLS fit:
+    Model_all    : n_train = 680
+    Model_crisis : n_train = 222
+
+[4] 계수 비교 (intercept, m2_growth, m2v, cpi_yoy, vix):
+                   |                      sp_return |                     margin_chg
+                   |        all     crisis      diff |        all     crisis      diff
+         intercept |    +0.0012    +0.0001   -0.0011 |    +0.0019    +0.0025   +0.0006
+         m2_growth |    -0.0009    -0.0032   -0.0023 |    -0.0007    -0.0012   -0.0004
+               m2v |    +0.0009    +0.0012   +0.0003 |    +0.0019    -0.0006   -0.0025
+           cpi_yoy |    -0.0027    -0.0027   -0.0000 |    -0.0031    -0.0023   +0.0008
+               vix |    -0.0007    -0.0003   +0.0004 |    -0.0038    -0.0065   -0.0027
+
+[5] 잔차 공분산 비교 (Σ):
+    Model_all    Σ = [[+0.00057, +0.00011],
+                       [+0.00011, +0.00048]]
+    Model_crisis Σ = [[+0.00085, +0.00023],
+                       [+0.00023, +0.00091]]
+    잔차 corr(sp, margin): all = +0.214, crisis = +0.266
+
+[6] Test per-point NLL (낮을수록 좋음):
+                           |         전체 |     crisis |     normal
+                 Model_all |     -4.752 |     -4.684 |     -4.785
+              Model_crisis |     -4.616 |     -4.597 |     -4.626
+              Router (MoE) |     -4.724 |     -4.597 |     -4.785
+
+[7] 사분면 평가 (cumulative 52 주 윈도우, n_windows=471, 10 샘플/윈도우)
+
+  비교:
+  [GROUND TRUTH (test)   ] P(m+|sp+)= 77.4% P(m-|sp-)= 98.6% sp_mean=+0.120 sp_std=0.124 mg_mean=+0.078 mg_std=0.197 sp+=84.7%
+  [Model_all (gen)       ] P(m+|sp+)= 48.9% P(m-|sp-)= 82.5% sp_mean=-0.157 sp_std=0.271 mg_mean=-0.239 mg_std=0.355 sp+=30.4%
+  [Model_crisis (gen)    ] P(m+|sp+)= 92.8% P(m-|sp-)= 35.6% sp_mean=-0.251 sp_std=0.296 mg_mean=+0.163 mg_std=0.336 sp+=19.9%
+  [Router MoE (gen)      ] P(m+|sp+)= 60.6% P(m-|sp-)= 60.6% sp_mean=-0.185 sp_std=0.294 mg_mean=-0.064 mg_std=0.320 sp+=29.2%
+
+[8] saved result\two_model_router_ols.json
+
+[Done]

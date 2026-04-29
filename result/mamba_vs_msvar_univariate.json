@@ -1,0 +1,15 @@
+{
+  "MS_VAR": {
+    "train_NLL": -2.303939204434752,
+    "test_NLL": -2.349755501694986,
+    "log_likelihood_total": 2242.922843613481,
+    "AIC": -4457.845687226962
+  },
+  "Mamba_univariate": {
+    "train_NLL": -2.2751033306121826,
+    "test_NLL": -1.8467304706573486,
+    "best_train_during_fit": -2.3013808727264404,
+    "arch": "d_model=32, n_layers=2"
+  },
+  "test_NLL_diff_nat": -0.5030250310376374
+}

@@ -1,0 +1,84 @@
+{
+  "ckpt": "D:\\projects\\homeostatic-market\\models\\favar_v33_proto30_best.pt",
+  "past_anchor_date": "2015-12-25",
+  "config": {
+    "L": 52,
+    "PAST_LEN": 26,
+    "K": 2,
+    "D_COND": 3,
+    "D_TARGET": 2,
+    "D_MODEL": 64,
+    "N_HEADS": 4,
+    "N_LAYERS": 2,
+    "COLS_TARGET": [
+      "sp_return",
+      "margin_chg"
+    ],
+    "COLS_COND": [
+      "m2_growth",
+      "m2v",
+      "cpi_yoy"
+    ]
+  },
+  "n_samples": 200,
+  "scenarios": {
+    "baseline": {
+      "m2_growth": 0.0011901609832420945,
+      "m2v": 1.864253282546997,
+      "cpi_yoy": 0.02230857126414776
+    },
+    "qe": {
+      "m2_growth": 0.0021284333711157877,
+      "m2v": 1.4,
+      "cpi_yoy": 0.02
+    },
+    "tightening": {
+      "m2_growth": 0.0008016473809821048,
+      "m2v": 1.9,
+      "cpi_yoy": 0.04
+    },
+    "covid_shock": {
+      "m2_growth": 0.004696344767741221,
+      "m2v": 1.2,
+      "cpi_yoy": 0.06
+    }
+  },
+  "summary": {
+    "baseline": {
+      "sp_cum_pct_mean": -4.407461166381836,
+      "sp_cum_pct_std": 7.35898494720459,
+      "sp_cum_pct_q05": -14.814169454574586,
+      "sp_cum_pct_q95": 8.613800525665274,
+      "margin_cum_pct_mean": 20.753768920898438,
+      "margin_cum_pct_std": 5.065090656280518,
+      "sp_margin_corr": 0.08137733259644232
+    },
+    "qe": {
+      "sp_cum_pct_mean": -26.614526748657227,
+      "sp_cum_pct_std": 15.074479103088379,
+      "sp_cum_pct_q05": -49.78791770935059,
+      "sp_cum_pct_q95": 0.8692276477813626,
+      "margin_cum_pct_mean": 0.5453166365623474,
+      "margin_cum_pct_std": 10.885040283203125,
+      "sp_margin_corr": 0.1483065830318488
+    },
+    "tightening": {
+      "sp_cum_pct_mean": -4.68439245223999,
+      "sp_cum_pct_std": 9.919306755065918,
+      "sp_cum_pct_q05": -20.256525230407714,
+      "sp_cum_pct_q95": 10.38840847015378,
+      "margin_cum_pct_mean": -5.601654052734375,
+      "margin_cum_pct_std": 3.424342632293701,
+      "sp_margin_corr": 0.018969342906577577
+    },
+    "covid_shock": {
+      "sp_cum_pct_mean": -59.57655334472656,
+      "sp_cum_pct_std": 28.9429874420166,
+      "sp_cum_pct_q05": -92.03528289794922,
+      "sp_cum_pct_q95": -3.2407438755035463,
+      "margin_cum_pct_mean": -44.43303680419922,
+      "margin_cum_pct_std": 23.062164306640625,
+      "sp_margin_corr": 0.020869265233091457
+    }
+  }
+}

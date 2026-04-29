@@ -1,0 +1,48 @@
+{
+  "ckpt": "D:\\projects\\homeostatic-market\\colab\\dual_mamba\\result\\smoke_K1d32_best.pt",
+  "best_epoch": 2,
+  "val_loss_best": 0.6775358488074447,
+  "n_windows_evaluated": 5,
+  "n_samples_per_window": 3,
+  "test_nll1": 2.756312822621402,
+  "test_nll2": 1.5896794170830735,
+  "test_nll_total": 4.345992239704476,
+  "pit_z1": {
+    "rank_mean": 0.3733680584166565,
+    "rank_std": 0.34863259120767104,
+    "n": 20228
+  },
+  "pit_z2": {
+    "rank_mean": 0.5381407722762158,
+    "rank_std": 0.30396727771437004,
+    "n": 20228
+  },
+  "marginal_excess_liq_obs": {
+    "mean": -0.6908147931098938,
+    "std": 0.3392702043056488,
+    "skew": 0.2867104974423543,
+    "kurt": -1.1266331181706524,
+    "n": 260
+  },
+  "marginal_excess_liq_gen": {
+    "mean": -0.22726145386695862,
+    "std": 0.6176493763923645,
+    "skew": 0.1352696789998733,
+    "kurt": -0.5720572700666664,
+    "n": 780
+  },
+  "marginal_sp_return_obs": {
+    "mean": 0.07239070534706116,
+    "std": 0.7081196904182434,
+    "skew": -1.2633347678962186,
+    "kurt": 3.313736087401499,
+    "n": 260
+  },
+  "marginal_sp_return_gen": {
+    "mean": -0.04597127065062523,
+    "std": 1.0193392038345337,
+    "skew": -0.0490851213450793,
+    "kurt": 0.20566318118323057,
+    "n": 780
+  }
+}

@@ -1,0 +1,84 @@
+{
+  "ckpt": "models\\favar_v33_full60_best.pt",
+  "past_anchor_date": "2015-12-25",
+  "config": {
+    "L": 208,
+    "PAST_LEN": 156,
+    "K": 3,
+    "D_COND": 3,
+    "D_TARGET": 2,
+    "D_MODEL": 64,
+    "N_HEADS": 4,
+    "N_LAYERS": 2,
+    "COLS_TARGET": [
+      "sp_return",
+      "margin_chg"
+    ],
+    "COLS_COND": [
+      "m2_growth",
+      "m2v",
+      "cpi_yoy"
+    ]
+  },
+  "n_samples": 200,
+  "scenarios": {
+    "baseline": {
+      "m2_growth": 0.0011815049219876528,
+      "m2v": 1.8688784837722778,
+      "cpi_yoy": 0.02333291806280613
+    },
+    "qe": {
+      "m2_growth": 0.002119777309861346,
+      "m2v": 1.4,
+      "cpi_yoy": 0.02
+    },
+    "tightening": {
+      "m2_growth": 0.000792991319727663,
+      "m2v": 1.9,
+      "cpi_yoy": 0.04
+    },
+    "covid_shock": {
+      "m2_growth": 0.004687688706486779,
+      "m2v": 1.2,
+      "cpi_yoy": 0.06
+    }
+  },
+  "summary": {
+    "baseline": {
+      "sp_cum_pct_mean": -39.30514907836914,
+      "sp_cum_pct_std": 3.6117188930511475,
+      "sp_cum_pct_q05": -44.68821773529053,
+      "sp_cum_pct_q95": -32.959878349304205,
+      "margin_cum_pct_mean": 234.82772827148438,
+      "margin_cum_pct_std": 34.100502014160156,
+      "sp_margin_corr": 0.059730729528225134
+    },
+    "qe": {
+      "sp_cum_pct_mean": 12.799778938293457,
+      "sp_cum_pct_std": 17.44339370727539,
+      "sp_cum_pct_q05": -13.700343084335326,
+      "sp_cum_pct_q95": 39.598545265197714,
+      "margin_cum_pct_mean": -67.29049682617188,
+      "margin_cum_pct_std": 4.065670013427734,
+      "sp_margin_corr": -0.04537855296037145
+    },
+    "tightening": {
+      "sp_cum_pct_mean": 143.37669372558594,
+      "sp_cum_pct_std": 13.597262382507324,
+      "sp_cum_pct_q05": 123.77011566162109,
+      "sp_cum_pct_q95": 164.52645416259764,
+      "margin_cum_pct_mean": 1163.9095458984375,
+      "margin_cum_pct_std": 146.07174682617188,
+      "sp_margin_corr": 0.048964400737729716
+    },
+    "covid_shock": {
+      "sp_cum_pct_mean": 8045.70361328125,
+      "sp_cum_pct_std": 1479.68798828125,
+      "sp_cum_pct_q05": 6033.8106689453125,
+      "sp_cum_pct_q95": 10801.546240234367,
+      "margin_cum_pct_mean": -99.88552856445312,
+      "margin_cum_pct_std": 0.03037511743605137,
+      "sp_margin_corr": -0.17371475112943127
+    }
+  }
+}
