@@ -42,7 +42,7 @@ MAX_EPOCHS = 60
 PATIENCE = 15
 
 COLS_TARGET = ["sp_return"]
-COND_K2_104 = ["excess_liq_yoy", "tbill_wr", "tbill_26w_lag", "excess_liq_26w_lag"]
+COND_K2_104 = ["excess_liq_yoy", "tbill_wr", "tbill_26w_lag", "excess_liq_26w_lag", "vix"]
 
 LOG2PI = math.log(2 * math.pi)
 
