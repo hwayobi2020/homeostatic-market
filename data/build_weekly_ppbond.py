@@ -46,8 +46,10 @@ full["excess_liq_yoy"] = full["m2_yoy"] - full["gdp_yoy"] - full["cpi_yoy"]
 # ── Weekly rate versions (시간 단위 정합) ──
 # cpi_wr: weekly inflation log return (= log_cpi 첫차분)
 # excess_liq_wr: weekly excess liquidity = m2_growth − cpi_wr (gdp 는 분기 데이터라 제외)
+# vix_wr: weekly log return of VIX level (cpi_wr 와 동일 패턴)
 full["cpi_wr"] = full["log_cpi"].diff()
 full["excess_liq_wr"] = full["m2_growth"] - full["cpi_wr"]
+full["vix_wr"] = np.log(full["vix"].clip(lower=1e-8)).diff()
 
 # ── 3. pp_bond ──
 tbill = full["tbill_wr"].fillna(0).values
@@ -80,7 +82,7 @@ full["pp_bond_26w_lag"]    = lag(pp_bond_26w)
 
 # Drop NaN rows (앞 53주: 52w yoy + 26w cum + 1 lag → max 53)
 need = ["m2_yoy","gdp_yoy","excess_liq_yoy","tbill_26w_lag","excess_liq_26w_lag","pp_bond_26w_lag",
-        "cpi_wr","excess_liq_wr"]
+        "cpi_wr","excess_liq_wr","vix_wr"]
 print(f"\nNaN counts:")
 for c in need:
     print(f"  {c}: {full[c].isna().sum()}")
@@ -97,7 +99,7 @@ print(f"\nClean train: {train_clean['date'].iloc[0].date()} ~ {train_clean['date
 print(f"Clean test:  {test_clean['date'].iloc[0].date()} ~ {test_clean['date'].iloc[-1].date()}, n={len(test_clean)}")
 
 print(f"\n=== 새 features 통계 ===")
-for c in ["tbill_26w_lag","excess_liq_26w_lag","pp_bond_26w_lag","cpi_wr","excess_liq_wr"]:
+for c in ["tbill_26w_lag","excess_liq_26w_lag","pp_bond_26w_lag","cpi_wr","excess_liq_wr","vix_wr"]:
     s = full_clean[c]
     print(f"  {c:25s}: mean={s.mean():+.4f}, std={s.std():.4f}, min={s.min():+.4f}, max={s.max():+.4f}")
 
