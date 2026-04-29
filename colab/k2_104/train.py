@@ -42,7 +42,9 @@ MAX_EPOCHS = 60
 PATIENCE = 15
 
 COLS_TARGET = ["sp_return"]
-COND_K2_104 = ["tbill_wr", "tbill_26w_lag", "excess_liq_wr"]   # 3ch — Base/Stage2 symmetric (excess_liq weekly, no Bridge)
+COND_K2_104_NO_26W   = ["tbill_wr", "excess_liq_wr"]                       # default
+COND_K2_104_WITH_26W = ["tbill_wr", "tbill_26w_lag", "excess_liq_wr"]      # legacy reproduce
+COND_K2_104 = COND_K2_104_NO_26W
 
 LOG2PI = math.log(2 * math.pi)
 
@@ -205,7 +207,12 @@ def main():
     ap.add_argument("--train-csv", default=os.path.join(HERE, "data", "weekly_ppbond_train.csv"))
     ap.add_argument("--test-csv", default=os.path.join(HERE, "data", "weekly_ppbond_test.csv"))
     ap.add_argument("--out-dir", default=os.path.join(HERE, "result"))
+    ap.add_argument("--with-26w", action="store_true", help="Include tbill_26w_lag in cond (legacy reproduce)")
     args = ap.parse_args()
+    if args.with_26w:
+        global COND_K2_104
+        COND_K2_104 = COND_K2_104_WITH_26W
+        print(f"[--with-26w] cond = {COND_K2_104}")
 
     os.makedirs(args.out_dir, exist_ok=True)
     results = []

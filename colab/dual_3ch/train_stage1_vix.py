@@ -45,8 +45,12 @@ MAX_EPOCHS = 60
 PATIENCE = 15
 
 COLS_TARGET = ["vix_wr"]
-COLS_COND   = ["tbill_wr", "tbill_26w_lag", "excess_liq_wr"]
-MASK_FUTURE_CH = [1, 2]   # future 에 tbill_26w_lag + excess_liq_wr 마스킹, tbill_wr 만 active
+COLS_COND_NO_26W   = ["tbill_wr", "excess_liq_wr"]                       # default
+COLS_COND_WITH_26W = ["tbill_wr", "tbill_26w_lag", "excess_liq_wr"]      # legacy reproduce
+COLS_COND = COLS_COND_NO_26W
+MASK_FUTURE_CH_NO_26W   = [1]
+MASK_FUTURE_CH_WITH_26W = [1, 2]
+MASK_FUTURE_CH = MASK_FUTURE_CH_NO_26W
 
 LOG2PI = math.log(2 * math.pi)
 
@@ -211,7 +215,13 @@ def main():
     ap.add_argument("--train-csv", default=os.path.join(HERE, "data", "weekly_ppbond_train.csv"))
     ap.add_argument("--test-csv",  default=os.path.join(HERE, "data", "weekly_ppbond_test.csv"))
     ap.add_argument("--out-dir",   default=os.path.join(HERE, "result"))
+    ap.add_argument("--with-26w", action="store_true", help="Include tbill_26w_lag in cond")
     args = ap.parse_args()
+    if args.with_26w:
+        global COLS_COND, MASK_FUTURE_CH
+        COLS_COND = COLS_COND_WITH_26W
+        MASK_FUTURE_CH = MASK_FUTURE_CH_WITH_26W
+        print(f"[--with-26w] cond = {COLS_COND}, mask = {MASK_FUTURE_CH}")
 
     os.makedirs(args.out_dir, exist_ok=True)
     results = []
