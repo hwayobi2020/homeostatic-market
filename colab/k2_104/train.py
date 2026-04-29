@@ -42,12 +42,19 @@ MAX_EPOCHS = 60
 PATIENCE = 15
 
 COLS_TARGET = ["sp_return"]
-COND_K2_104 = ["excess_liq_yoy", "tbill_wr", "tbill_26w_lag", "excess_liq_26w_lag", "vix"]
+COND_K2_104 = ["tbill_wr", "tbill_26w_lag", "excess_liq_26w_lag"]   # 3ch — symmetric with Stage 2 cond
 
 LOG2PI = math.log(2 * math.pi)
 
 
-def load_windows(csv_path, cols_cond, cols_target, L=104):
+def load_windows(csv_path, cols_cond, cols_target, L=104, stats=None):
+    """Load windowed (X, C) tensors from CSV.
+
+    stats : optional dict with keys 'mean', 'std' — train z-score parameters.
+            If None, compute from current data (train mode).
+            If provided, apply those train stats to current data (test mode).
+            Avoids the train/test independent-normalization bug that breaks NLL calibration.
+    """
     df = pd.read_csv(csv_path)
     n = len(df)
     n_w = n - L + 1
@@ -58,8 +65,12 @@ def load_windows(csv_path, cols_cond, cols_target, L=104):
     for i in range(n_w):
         X[i] = df[cols_target].iloc[i : i + L].values
         C[i] = df[cols_cond].iloc[i : i + L].values
-    mu = C.reshape(-1, len(cols_cond)).mean(axis=0)
-    sd = C.reshape(-1, len(cols_cond)).std(axis=0) + 1e-8
+    if stats is None:
+        mu = C.reshape(-1, len(cols_cond)).mean(axis=0)
+        sd = C.reshape(-1, len(cols_cond)).std(axis=0) + 1e-8
+    else:
+        mu = np.asarray(stats["mean"], dtype=np.float32)
+        sd = np.asarray(stats["std"],  dtype=np.float32)
     C = (C - mu) / sd
     return torch.from_numpy(X), torch.from_numpy(C), {"mean": mu.tolist(), "std": sd.tolist()}
 
@@ -80,7 +91,12 @@ def run(condition_name, cols_cond, train_csv, test_csv, save_dir, seed=42):
     print(f"\n{'=' * 70}\n[{condition_name}] seed={seed} cond={cols_cond} (D_COND={len(cols_cond)})\n{'=' * 70}")
 
     Xtr, Ctr, stats_tr = load_windows(train_csv, cols_cond, COLS_TARGET, L=L)
-    Xte, Cte, _ = load_windows(test_csv, cols_cond, COLS_TARGET, L=L)
+    Xte, Cte, _ = load_windows(test_csv, cols_cond, COLS_TARGET, L=L, stats=stats_tr)
+    print(f"  z-score stats: mean={[round(m,4) for m in stats_tr['mean']]}")
+    print(f"                   std={[round(s,4) for s in stats_tr['std']]}")
+    Cte_np = Cte.numpy().reshape(-1, Cte.shape[-1])
+    print(f"  test z mean per channel: {[round(float(m),4) for m in Cte_np.mean(axis=0)]}")
+    print(f"  test z std  per channel: {[round(float(s),4) for s in Cte_np.std(axis=0)]}")
     if Xtr is None or Xte is None:
         print("[FAIL] not enough windows")
         return None

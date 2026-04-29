@@ -31,13 +31,14 @@ COND_SETS = {
     "B_6ch": ["m2_growth", "m2v", "cpi_yoy", "vix", "tbill_26w_lag", "excess_liq_26w_lag"],
     "C_7ch": ["m2_growth", "m2v", "cpi_yoy", "vix", "tbill_26w_lag", "excess_liq_26w_lag", "pp_bond_26w_lag"],
     "Cprime_5ch": ["m2_growth", "m2v", "cpi_yoy", "vix", "pp_bond_26w_lag"],   # pp_bond only, raw cumulative 제거 (collinearity fix)
-    "K2_104": ["excess_liq_yoy", "tbill_wr", "tbill_26w_lag", "excess_liq_26w_lag", "vix"],   # liquidity + vix condition (no m2/cpi)
+    "K2_104": ["tbill_wr", "tbill_26w_lag", "excess_liq_26w_lag"],   # 3ch — symmetric with dual-stage Stage 2 cond
 }
 
 LOG2PI = math.log(2 * math.pi)
 
 
-def load_windows(csv_path, cols_cond, cols_target, L=104):
+def load_windows(csv_path, cols_cond, cols_target, L=104, stats=None):
+    """stats=None → compute from data (train); stats=<dict> → apply train stats (test)."""
     df = pd.read_csv(csv_path)
     n = len(df)
     n_w = n - L + 1
@@ -48,9 +49,12 @@ def load_windows(csv_path, cols_cond, cols_target, L=104):
     for i in range(n_w):
         X[i] = df[cols_target].iloc[i:i+L].values
         C[i] = df[cols_cond].iloc[i:i+L].values
-    # z-score condition (per channel)
-    mu = C.reshape(-1, len(cols_cond)).mean(axis=0)
-    sd = C.reshape(-1, len(cols_cond)).std(axis=0) + 1e-8
+    if stats is None:
+        mu = C.reshape(-1, len(cols_cond)).mean(axis=0)
+        sd = C.reshape(-1, len(cols_cond)).std(axis=0) + 1e-8
+    else:
+        mu = np.asarray(stats["mean"], dtype=np.float32)
+        sd = np.asarray(stats["std"],  dtype=np.float32)
     C = (C - mu) / sd
     return torch.from_numpy(X), torch.from_numpy(C), {"mean": mu.tolist(), "std": sd.tolist()}
 
