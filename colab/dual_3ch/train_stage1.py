@@ -97,7 +97,8 @@ def run(train_csv, test_csv, save_dir, seed=42):
     print(f"[Stage1] seed={seed}")
     print(f"  cond   = {COLS_COND}")
     print(f"  target = {COLS_TARGET}")
-    print(f"  mask_future_ch = {MASK_FUTURE_CH} (= excess_liq_26w_lag future masked to 0)")
+    masked_names = [COLS_COND[i] for i in MASK_FUTURE_CH]
+    print(f"  mask_future_ch = {MASK_FUTURE_CH} → {masked_names} future masked to 0 (only tbill_wr scenario active)")
     print(f"{'=' * 70}")
 
     Xtr, Ctr, stats_tr = load_windows(train_csv, COLS_COND, COLS_TARGET, L=L)
