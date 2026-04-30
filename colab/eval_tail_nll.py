@@ -1,9 +1,9 @@
 """Tail-NLL 평가 — 폭락 윈도우 (future 52주 평균 sp_return 하위 10%) 의 sp_return 채널 NLL.
 
 15 변종 × 5 seed ckpt 자동 스캔 → 시험 데이터 reload → 폭락 윈도우 NLL 측정.
-표 순서로 csv + 콘솔 출력.
+콜라브 셀에 표만 출력 (파일 저장 X).
 
-폭락 정의: A 안 — future 52주 평균 sp_return 분포의 하위 10% 윈도우 (사용자 컨펌).
+폭락 정의: future 52주 평균 sp_return 분포의 하위 10% 윈도우.
 
 ckpt 키 호환:
   - 구 패턴: stats_train (cond stats), mask_future_ch optional
@@ -13,10 +13,6 @@ Stage 1 / Stage 1 (vix) 변종은 sp_return 이 target 에 없어 tail_nll_sp = 
 
 사용법:
   !python /content/drive/MyDrive/Colab\\ Notebooks/homeostatic-market/colab/eval_tail_nll.py
-
-출력:
-  result/tail_nll_summary.csv      (variant × seed)
-  result/tail_nll_aggregate.csv    (variant 별 median, mean ± std)
 """
 import torch  # MUST be first
 
@@ -169,7 +165,6 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root",     default=ROOT, help="project root (homeostatic-market)")
     ap.add_argument("--test-csv", default=os.path.join(ROOT, "data", "weekly_ppbond_test.csv"))
-    ap.add_argument("--out-dir",  default=os.path.join(ROOT, "result"))
     ap.add_argument("--percentile", type=float, default=10.0,
                     help="폭락 윈도우 분위수 (기본 10 = 하위 10%)")
     ap.add_argument("--L", type=int, default=104, help="window length (모든 변종 동일)")
@@ -177,22 +172,15 @@ def main():
     args = ap.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    os.makedirs(args.out_dir, exist_ok=True)
 
     # 폭락 윈도우 정의 (한 번만)
     tail_mask, future_means, threshold = define_tail_windows(
         args.test_csv, args.L, args.past_len, args.percentile)
     n_tail  = int(tail_mask.sum())
     n_total = len(tail_mask)
-    print(f"\n{'#' * 80}")
-    print(f"# Tail-NLL 평가")
-    print(f"{'#' * 80}")
-    print(f"  test csv     : {args.test_csv}")
-    print(f"  L            : {args.L}  (past={args.past_len}, future={args.L - args.past_len})")
-    print(f"  폭락 정의    : future {args.L - args.past_len}주 평균 sp_return 하위 {args.percentile}%")
-    print(f"  threshold    : {threshold:+.6f}")
-    print(f"  n_tail/total : {n_tail} / {n_total}")
-    print(f"  device       : {device}")
+    print(f"\n# 폭락 정의: future {args.L - args.past_len}주 평균 sp_return 하위 "
+          f"{args.percentile}%  |  threshold = {threshold:+.6f}  |  "
+          f"n_tail/total = {n_tail}/{n_total}  |  device = {device}\n")
 
     rows = []
     for label, folder, prefix in VARIANTS:
@@ -200,75 +188,50 @@ def main():
             ckpt_path = os.path.join(args.root, "colab", folder, "result",
                                      f"{prefix}_seed{seed}_best.pt")
             if not os.path.exists(ckpt_path):
-                rows.append(dict(
-                    variant=label, seed=seed,
-                    full_nll_sp=float("nan"), tail_nll_sp=float("nan"),
-                    ckpt_exists=False, error="missing"))
-                print(f"  [{label[:36]:36s}] seed={seed:>3d}  MISSING: {ckpt_path}")
+                rows.append(dict(variant=label, seed=seed, tail_nll_sp=float("nan")))
                 continue
             try:
-                full_sp, tail_sp = evaluate_ckpt(ckpt_path, args.test_csv, tail_mask, device)
-                rows.append(dict(
-                    variant=label, seed=seed,
-                    full_nll_sp=full_sp, tail_nll_sp=tail_sp,
-                    ckpt_exists=True, error=""))
-                if math.isnan(tail_sp):
-                    print(f"  [{label[:36]:36s}] seed={seed:>3d}  sp_return target X (NaN)")
-                else:
-                    print(f"  [{label[:36]:36s}] seed={seed:>3d}  "
-                          f"full_sp={full_sp:+.4f}  tail_sp={tail_sp:+.4f}")
+                _, tail_sp = evaluate_ckpt(ckpt_path, args.test_csv, tail_mask, device)
+                rows.append(dict(variant=label, seed=seed, tail_nll_sp=tail_sp))
             except Exception as e:
-                rows.append(dict(
-                    variant=label, seed=seed,
-                    full_nll_sp=float("nan"), tail_nll_sp=float("nan"),
-                    ckpt_exists=True, error=str(e)))
-                print(f"  [{label[:36]:36s}] seed={seed:>3d}  ERROR: {e}")
+                rows.append(dict(variant=label, seed=seed, tail_nll_sp=float("nan")))
+                print(f"  ERROR  [{label}] seed={seed}: {e}")
 
     df = pd.DataFrame(rows)
-    detail_csv = os.path.join(args.out_dir, "tail_nll_summary.csv")
-    df.to_csv(detail_csv, index=False)
-    print(f"\nsaved: {detail_csv}")
 
     # 변종별 집계 (표 순서 유지)
     agg_rows = []
     for label, _, _ in VARIANTS:
-        vdf = df[df["variant"] == label]
-        sp_vals = vdf["tail_nll_sp"].dropna().values
+        sp_vals = df[df["variant"] == label]["tail_nll_sp"].dropna().values
         if len(sp_vals) > 0:
             agg_rows.append(dict(
                 variant=label,
-                n_seed=int(len(sp_vals)),
-                tail_nll_sp_median=float(np.median(sp_vals)),
-                tail_nll_sp_mean=float(sp_vals.mean()),
-                tail_nll_sp_std=float(sp_vals.std(ddof=1)) if len(sp_vals) > 1 else 0.0,
+                median=float(np.median(sp_vals)),
+                mean=float(sp_vals.mean()),
+                std=float(sp_vals.std(ddof=1)) if len(sp_vals) > 1 else 0.0,
+                n=int(len(sp_vals)),
             ))
         else:
-            agg_rows.append(dict(
-                variant=label, n_seed=0,
-                tail_nll_sp_median=float("nan"),
-                tail_nll_sp_mean=float("nan"),
-                tail_nll_sp_std=float("nan"),
-            ))
-    agg = pd.DataFrame(agg_rows)
-    agg_csv = os.path.join(args.out_dir, "tail_nll_aggregate.csv")
-    agg.to_csv(agg_csv, index=False)
-    print(f"saved: {agg_csv}")
+            agg_rows.append(dict(variant=label, median=None, mean=None, std=None, n=0))
 
-    # paper-style 표
-    print(f"\n{'#' * 90}")
-    print(f"# Tail-NLL 표 (sp_return 채널, 폭락 윈도우 = future {args.L - args.past_len}w "
-          f"평균 하위 {args.percentile}%, n_tail={n_tail})")
-    print(f"{'#' * 90}")
-    print(f"  {'variant':40s}  {'median':>10s}  {'mean ± std':>22s}  {'n':>3s}")
-    print("  " + "-" * 88)
-    for r in agg_rows:
-        if r["n_seed"] > 0:
-            print(f"  {r['variant']:40s}  "
-                  f"{r['tail_nll_sp_median']:>+10.4f}  "
-                  f"{r['tail_nll_sp_mean']:>+9.4f} ± {r['tail_nll_sp_std']:>6.3f}     "
-                  f"{r['n_seed']:>3d}")
+    # paper-style 표 — 콜라브 셀에 깔끔히 출력
+    title = (f"Tail-NLL  (sp_return 채널, 폭락 윈도우 = future "
+             f"{args.L - args.past_len}w 평균 하위 {args.percentile}%, n_tail={n_tail})")
+    print("=" * 90)
+    print(title)
+    print("=" * 90)
+    head = f"{'#':>3}  {'variant':40s}  {'median':>10s}  {'mean ± std':>20s}  {'n':>3s}"
+    print(head)
+    print("-" * 90)
+    for i, r in enumerate(agg_rows, 1):
+        if r["n"] > 0:
+            print(f"{i:>3d}  {r['variant']:40s}  "
+                  f"{r['median']:>+10.4f}  "
+                  f"{r['mean']:>+8.4f} ± {r['std']:>6.3f}     "
+                  f"{r['n']:>3d}")
         else:
-            print(f"  {r['variant']:40s}  {'—':>10s}  {'—':>22s}  {0:>3d}")
+            print(f"{i:>3d}  {r['variant']:40s}  {'—':>10s}  {'— (no ckpt)':>20s}  {0:>3d}")
+    print("=" * 90)
 
 
 if __name__ == "__main__":
