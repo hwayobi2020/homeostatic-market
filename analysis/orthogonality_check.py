@@ -52,6 +52,8 @@ CANDIDATES = [
     ("margin_chg",  "FINRA margin debt weekly"),
     ("cpi_wr",      "CPI weekly"),
     ("mich_wr",     "MICH 인플레 기대 (참조: metab redundant)"),
+    ("frbsf_level", "FRBSF 뉴스 sentiment raw (일별 → 금요일)"),
+    ("frbsf_wr",    "FRBSF sentiment 주간 1차 차분"),
 ]
 
 
@@ -140,12 +142,32 @@ def diagnose(df, split_name):
     return rows
 
 
+def attach_frbsf(df, frbsf):
+    """date 기준 inner join — frbsf_level, frbsf_wr 부착."""
+    out = df.merge(frbsf[["date", "frbsf_level", "frbsf_wr"]], on="date", how="left")
+    n_miss = out[["frbsf_level", "frbsf_wr"]].isna().any(axis=1).sum()
+    if n_miss > 0:
+        print(f"  ⚠ FRBSF 결측 행: {n_miss} / {len(out)}")
+    return out
+
+
 def main():
     train_csv = os.path.join(DATA, "weekly_ppbond_train.csv")
     test_csv  = os.path.join(DATA, "weekly_ppbond_test.csv")
+    frbsf_csv = os.path.join(DATA, "frbsf_weekly.csv")
 
     train = pd.read_csv(train_csv)
     test  = pd.read_csv(test_csv)
+
+    # FRBSF 부착 (있을 때만)
+    if os.path.exists(frbsf_csv):
+        frbsf = pd.read_csv(frbsf_csv)
+        print(f"# FRBSF weekly attach: {frbsf_csv} (n={len(frbsf)})")
+        train = attach_frbsf(train, frbsf)
+        test  = attach_frbsf(test,  frbsf)
+    else:
+        print(f"# (FRBSF 미부착 — {frbsf_csv} 없음)")
+
     full  = pd.concat([train, test]).reset_index(drop=True)
 
     print(f"\n# Orthogonality check — {len(CANDIDATES)} 후보 vs {len(EXISTING)} 기존 변수")
