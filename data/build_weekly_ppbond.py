@@ -5,8 +5,10 @@
   - excess_liq_26w_lag   : Σ (m2_yoy − gdp_yoy − cpi_yoy) over 26 weeks (BIS 초과유동성 누적)
   - pp_bond_26w_lag      : log(pp_bond[t]/pp_bond[t-26]) (항상성 채권 PP, 6M 누적)
   - pp_bond_13w_lag      : log(pp_bond[t]/pp_bond[t-13]) (항상성 채권 PP, 3M 누적, FOMO target)
+  - pp_stock_13w_lag     : log(pp_stock[t]/pp_stock[t-13]) (항상성 주식 PP, 3M 누적, ablation target)
 
-pp_bond[t] = pp_bond[t-1] × (1 + tbill_wr[t-1]) / (1 + metabolism_max[t])
+pp_bond[t]  = pp_bond[t-1]  × (1 + tbill_wr[t-1])   / (1 + metabolism_max[t])
+pp_stock[t] = pp_stock[t-1] × (1 + sp_return[t-1])  / (1 + metabolism_max[t])   (대칭 정의)
 """
 import torch  # Windows DLL fix
 import numpy as np, pandas as pd, os
@@ -52,22 +54,29 @@ full["cpi_wr"] = full["log_cpi"].diff()
 full["excess_liq_wr"] = full["m2_growth"] - full["cpi_wr"]
 full["vix_wr"] = np.log(full["vix"].clip(lower=1e-8)).diff()
 
-# ── 3. pp_bond ──
+# ── 3. pp_bond + pp_stock (대칭 산식) ──
 tbill = full["tbill_wr"].fillna(0).values
+sp    = full["sp_return"].fillna(0).values
 metab = full["metabolism_max"].fillna(0).values
 tbill_lag = np.concatenate([[0.0], tbill[:-1]])
+sp_lag    = np.concatenate([[0.0], sp[:-1]])
 
-pp_bond = np.zeros(N)
-pp_bond[0] = 1.0
+pp_bond  = np.zeros(N)
+pp_stock = np.zeros(N)
+pp_bond[0]  = 1.0
+pp_stock[0] = 1.0
 for t in range(1, N):
-    pp_bond[t] = pp_bond[t-1] * (1.0 + tbill_lag[t]) / (1.0 + metab[t])
-log_b = np.log(np.maximum(pp_bond, 1e-8))
+    pp_bond[t]  = pp_bond[t-1]  * (1.0 + tbill_lag[t]) / (1.0 + metab[t])
+    pp_stock[t] = pp_stock[t-1] * (1.0 + sp_lag[t])    / (1.0 + metab[t])
+log_b = np.log(np.maximum(pp_bond,  1e-8))
+log_s = np.log(np.maximum(pp_stock, 1e-8))
 
 # ── 4. 26w + 13w cumulative ──
 tbill_26w      = np.full(N, np.nan)
 excess_liq_26w = np.full(N, np.nan)
 pp_bond_26w    = np.full(N, np.nan)
 pp_bond_13w    = np.full(N, np.nan)
+pp_stock_13w   = np.full(N, np.nan)
 
 for t in range(26, N):
     tbill_26w[t]      = full["tbill_wr"].iloc[t-25:t+1].sum()           # Σ over last 26 weeks
@@ -76,6 +85,7 @@ for t in range(26, N):
 
 for t in range(13, N):
     pp_bond_13w[t]    = log_b[t] - log_b[t-13]   # 3M FOMO 누적 (>0 채권충분, <0 FOMO 압력)
+    pp_stock_13w[t]   = log_s[t] - log_s[t-13]   # 3M 주식 항상성 누적 (대칭, ablation)
 
 # 1-step lag (leak 차단)
 def lag(x):
@@ -85,10 +95,11 @@ full["tbill_26w_lag"]      = lag(tbill_26w)
 full["excess_liq_26w_lag"] = lag(excess_liq_26w)
 full["pp_bond_26w_lag"]    = lag(pp_bond_26w)
 full["pp_bond_13w_lag"]    = lag(pp_bond_13w)
+full["pp_stock_13w_lag"]   = lag(pp_stock_13w)
 
 # Drop NaN rows (앞 53주: 52w yoy + 26w cum + 1 lag → max 53)
 need = ["m2_yoy","gdp_yoy","excess_liq_yoy","tbill_26w_lag","excess_liq_26w_lag","pp_bond_26w_lag",
-        "pp_bond_13w_lag","cpi_wr","excess_liq_wr","vix_wr"]
+        "pp_bond_13w_lag","pp_stock_13w_lag","cpi_wr","excess_liq_wr","vix_wr"]
 print(f"\nNaN counts:")
 for c in need:
     print(f"  {c}: {full[c].isna().sum()}")
@@ -105,13 +116,13 @@ print(f"\nClean train: {train_clean['date'].iloc[0].date()} ~ {train_clean['date
 print(f"Clean test:  {test_clean['date'].iloc[0].date()} ~ {test_clean['date'].iloc[-1].date()}, n={len(test_clean)}")
 
 print(f"\n=== 새 features 통계 ===")
-for c in ["tbill_26w_lag","excess_liq_26w_lag","pp_bond_26w_lag","pp_bond_13w_lag","cpi_wr","excess_liq_wr","vix_wr"]:
+for c in ["tbill_26w_lag","excess_liq_26w_lag","pp_bond_26w_lag","pp_bond_13w_lag","pp_stock_13w_lag","cpi_wr","excess_liq_wr","vix_wr"]:
     s = full_clean[c]
     print(f"  {c:25s}: mean={s.mean():+.4f}, std={s.std():.4f}, min={s.min():+.4f}, max={s.max():+.4f}")
 
 # ── train/test 분포 비교 (vix_wr 처럼 OOS 폭발 방지 점검) ──
 print(f"\n=== train vs test 분포 (OOS 안정성 sanity) ===")
-for c in ["pp_bond_13w_lag","pp_bond_26w_lag","excess_liq_wr","vix_wr"]:
+for c in ["pp_bond_13w_lag","pp_bond_26w_lag","pp_stock_13w_lag","excess_liq_wr","vix_wr"]:
     tr = train_clean[c]; te = test_clean[c]
     ratio = te.std() / tr.std() if tr.std() > 0 else float("nan")
     print(f"  {c:25s}: train std={tr.std():.4f} | test std={te.std():.4f} | ratio={ratio:.2f} | "

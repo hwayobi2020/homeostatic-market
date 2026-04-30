@@ -57,6 +57,7 @@ VARIANTS = [
     ("MTL(3 채널, liq, bondpp_3m)",         "dual_3ch", "mtl_bp3"),
     ("MTL(3 채널, liq, bondpp_3m정규)",     "dual_3ch", "mtl_bp3_normbp"),
     ("MTL(3 채널, liq, vix)",               "dual_3ch", "mtl3"),
+    ("MTL(2 채널, stockpp_3m)",             "dual_3ch", "mtl_pps2"),
 ]
 
 
