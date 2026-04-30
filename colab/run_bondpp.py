@@ -93,6 +93,36 @@ def main():
         print(f"  [{elapsed/60:.1f} min] {status}")
         statuses.append((label, status))
 
+        # 학습 후 multi-seed 집계 라인 자동 출력 (run_all.py 와 동일 패턴)
+        if proc.returncode == 0:
+            try:
+                with open(log_path, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+                start = None
+                for k, ln in enumerate(lines):
+                    if "multi-seed (n=" in ln:
+                        start = k
+                        break
+                if start is not None:
+                    print("  --- multi-seed 집계 ---")
+                    for ln in lines[start:]:
+                        text = ln.rstrip()
+                        if text:
+                            print("  " + text)
+            except Exception as e:
+                print(f"  log read error: {e}")
+        else:
+            try:
+                with open(log_path, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+                print("  --- log tail (실패) ---")
+                for ln in lines[-15:]:
+                    text = ln.rstrip()
+                    if text:
+                        print("  " + text)
+            except Exception as e:
+                print(f"  log read error: {e}")
+
     total = time.time() - t_start
     print(f"\n{'#' * 70}")
     print(f"# DONE. Total: {total/60:.1f} min")
