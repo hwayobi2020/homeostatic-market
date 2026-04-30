@@ -22,8 +22,10 @@
  12. MTL 3ch (liq + sp + bondpp_3m), 정규화 O
  13. MTL 3ch (sp + bondpp_3m + vix), 정규화 X
  14. MTL 3ch (sp + bondpp_3m + vix), 정규화 O
+ 15. MTL 2ch (sp + vix), 정규화 X
+ 16. MTL 2ch (sp + vix), 정규화 O (vix_wr 만)
 
-각 실험 5 시드 (42, 123, 777, 0, 99) 기본. T4 ~10시간, A100 ~6시간 (14 실험 기준).
+각 실험 5 시드 (42, 123, 777, 0, 99) 기본. T4 ~11시간, A100 ~6.5시간 (16 실험 기준).
 """
 import argparse
 import os
@@ -49,6 +51,8 @@ EXPERIMENTS = [
     ("dual_3ch", "train_mtl_bondpp3.py",  ["--normalize-bondpp"],   "mtl_bp3_normbp_run.log",   "12. MTL 3ch (liq + sp + bondpp_3m), 정규화 O"),
     ("dual_3ch", "train_mtl_bondpp_vix.py", [],                     "mtl_bp_vix_run.log",       "13. MTL 3ch (sp + bondpp_3m + vix), 정규화 X"),
     ("dual_3ch", "train_mtl_bondpp_vix.py", ["--normalize-bondpp"], "mtl_bp_vix_normbp_run.log","14. MTL 3ch (sp + bondpp_3m + vix), 정규화 O"),
+    ("dual_3ch", "train_mtl_2ch_vix.py",   [],                      "mtl_2ch_vix_run.log",       "15. MTL 2ch (sp + vix), 정규화 X"),
+    ("dual_3ch", "train_mtl_2ch_vix.py",   ["--normalize-vix"],     "mtl_2ch_vix_normvix_run.log","16. MTL 2ch (sp + vix), 정규화 O (vix_wr)"),
 ]
 
 
