@@ -128,7 +128,23 @@ for c in ["pp_bond_13w_lag","pp_bond_26w_lag","pp_stock_13w_lag","excess_liq_wr"
     print(f"  {c:25s}: train std={tr.std():.4f} | test std={te.std():.4f} | ratio={ratio:.2f} | "
           f"train [{tr.min():+.3f},{tr.max():+.3f}] | test [{te.min():+.3f},{te.max():+.3f}]")
 
+# 1차 저장: root data/
 train_clean.to_csv(os.path.join(DATA, "weekly_ppbond_train.csv"), index=False)
 test_clean.to_csv(os.path.join(DATA, "weekly_ppbond_test.csv"), index=False)
-print(f"\nsaved: weekly_ppbond_train.csv (n={len(train_clean)})")
-print(f"saved: weekly_ppbond_test.csv  (n={len(test_clean)})")
+print(f"\nsaved: {DATA}/weekly_ppbond_train.csv (n={len(train_clean)})")
+print(f"saved: {DATA}/weekly_ppbond_test.csv  (n={len(test_clean)})")
+
+# 2차 저장: train script 들이 사용하는 colab/*/data/ 위치에도 동시 복사
+# (각 train script default csv 경로가 HERE/data/... 로 잡혀 있어 동기화 필수)
+COLAB_SUBPATHS = [
+    os.path.join("colab", "k2_104",   "data"),
+    os.path.join("colab", "dual_3ch", "data"),
+    os.path.join("colab", "dual_mamba", "data"),
+]
+for sub in COLAB_SUBPATHS:
+    sub_dir = os.path.join(ROOT, sub)
+    if not os.path.isdir(sub_dir):
+        continue  # 폴더 없으면 skip (콜라브 환경에서 dual_mamba 같은 게 없을 수도)
+    train_clean.to_csv(os.path.join(sub_dir, "weekly_ppbond_train.csv"), index=False)
+    test_clean.to_csv(os.path.join(sub_dir, "weekly_ppbond_test.csv"), index=False)
+    print(f"synced: {sub_dir}/weekly_ppbond_{{train,test}}.csv")
