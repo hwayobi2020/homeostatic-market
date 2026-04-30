@@ -57,20 +57,31 @@ def main():
     ap.add_argument("--seeds", nargs="+", default=["42", "123", "777", "0", "99"])
     ap.add_argument("--with-26w", action="store_true",
                     help="모든 실험에 tbill_26w_lag 포함 (legacy 결과 reproduce)")
+    ap.add_argument("--only", nargs="+", default=[],
+                    help="특정 실험 번호만 실행 (예: --only 13). --skip 보다 우선")
     ap.add_argument("--skip", nargs="+", default=[],
-                    help="특정 실험 번호 스킵 (예: --skip 4 7)")
+                    help="특정 실험 번호 스킵 (예: --skip 4 7). --only 지정 시 무시됨")
     args = ap.parse_args()
 
+    only = set(args.only)
+    skipped = set(args.skip) if not only else set()
     print(f"\n{'#' * 70}")
     print(f"# Batch run — {len(EXPERIMENTS)} experiments")
     print(f"# seeds = {args.seeds}")
     print(f"# with-26w = {args.with_26w}")
+    if only:
+        print(f"# only = {sorted(only, key=int)}")
+    elif skipped:
+        print(f"# skip = {sorted(skipped, key=int)}")
     print(f"{'#' * 70}\n")
 
-    skipped = set(args.skip)
     t_start = time.time()
     statuses = []
     for i, (folder, script, extra_args, log_name, label) in enumerate(EXPERIMENTS, start=1):
+        if only and str(i) not in only:
+            print(f"\n--- not in --only: {label} ---")
+            statuses.append((label, "skipped"))
+            continue
         if str(i) in skipped:
             print(f"\n--- skipped: {label} ---")
             statuses.append((label, "skipped"))
