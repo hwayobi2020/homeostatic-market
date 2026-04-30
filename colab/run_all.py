@@ -16,8 +16,12 @@
   6. Stage 2 (대조군) Single-stage with mask
   7. MTL 2ch joint (excess_liq_wr + sp_return)
   8. MTL 3ch joint (+ vix_wr)
+  9. MTL 2ch (sp + bondpp_3m), 정규화 X
+ 10. MTL 2ch (sp + bondpp_3m), 정규화 O
+ 11. MTL 3ch (liq + sp + bondpp_3m), 정규화 X
+ 12. MTL 3ch (liq + sp + bondpp_3m), 정규화 O
 
-각 실험 5 시드 (42, 123, 777, 0, 99) 기본. T4 ~6.5시간, A100 ~3.5시간.
+각 실험 5 시드 (42, 123, 777, 0, 99) 기본. T4 ~9시간, A100 ~5시간 (12 실험 기준).
 """
 import argparse
 import os
@@ -27,15 +31,20 @@ import time
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 
+# (folder, script, extra_args, log_name, label)
 EXPERIMENTS = [
-    ("k2_104",   "train.py",             "K2_104_multi_run.log",      "1. Base K2_104"),
-    ("k2_104",   "train_ablation.py",    "K2_104_ablation_run.log",   "2. Base x liquidity (ablation)"),
-    ("dual_3ch", "train_stage1.py",      "stage1_multi_run.log",      "3. Stage 1 (MacroExpander)"),
-    ("dual_3ch", "train_stage1_vix.py",  "stage1vix_multi_run.log",   "4. Stage 1 (vix) — known OOS broken"),
-    ("dual_3ch", "train_stage2.py",      "stage2_multi_run.log",      "5. Stage 2 (PriceGenerator) — needs Stage 1 ckpt"),
-    ("dual_3ch", "train_singlestage.py", "singlestage_multi_run.log", "6. Stage 2 (대조군 single-stage)"),
-    ("dual_3ch", "train_joint.py",       "joint_multi_run.log",       "7. MTL 2ch joint (excess_liq_wr + sp_return)"),
-    ("dual_3ch", "train_mtl_3ch.py",     "mtl3_multi_run.log",        "8. MTL 3ch joint (+ vix_wr)"),
+    ("k2_104",   "train.py",              [],                       "K2_104_multi_run.log",      "1. Base K2_104"),
+    ("k2_104",   "train_ablation.py",     [],                       "K2_104_ablation_run.log",   "2. Base x liquidity (ablation)"),
+    ("dual_3ch", "train_stage1.py",       [],                       "stage1_multi_run.log",      "3. Stage 1 (MacroExpander)"),
+    ("dual_3ch", "train_stage1_vix.py",   [],                       "stage1vix_multi_run.log",   "4. Stage 1 (vix) — known OOS broken"),
+    ("dual_3ch", "train_stage2.py",       [],                       "stage2_multi_run.log",      "5. Stage 2 (PriceGenerator) — needs Stage 1 ckpt"),
+    ("dual_3ch", "train_singlestage.py",  [],                       "singlestage_multi_run.log", "6. Stage 2 (대조군 single-stage)"),
+    ("dual_3ch", "train_joint.py",        [],                       "joint_multi_run.log",       "7. MTL 2ch joint (excess_liq_wr + sp_return)"),
+    ("dual_3ch", "train_mtl_3ch.py",      [],                       "mtl3_multi_run.log",        "8. MTL 3ch joint (+ vix_wr)"),
+    ("dual_3ch", "train_mtl_bondpp2.py",  [],                       "mtl_bp2_run.log",           "9. MTL 2ch (sp + bondpp_3m), 정규화 X"),
+    ("dual_3ch", "train_mtl_bondpp2.py",  ["--normalize-bondpp"],   "mtl_bp2_normbp_run.log",   "10. MTL 2ch (sp + bondpp_3m), 정규화 O"),
+    ("dual_3ch", "train_mtl_bondpp3.py",  [],                       "mtl_bp3_run.log",          "11. MTL 3ch (liq + sp + bondpp_3m), 정규화 X"),
+    ("dual_3ch", "train_mtl_bondpp3.py",  ["--normalize-bondpp"],   "mtl_bp3_normbp_run.log",   "12. MTL 3ch (liq + sp + bondpp_3m), 정규화 O"),
 ]
 
 
@@ -57,7 +66,7 @@ def main():
     skipped = set(args.skip)
     t_start = time.time()
     statuses = []
-    for i, (folder, script, log_name, label) in enumerate(EXPERIMENTS, start=1):
+    for i, (folder, script, extra_args, log_name, label) in enumerate(EXPERIMENTS, start=1):
         if str(i) in skipped:
             print(f"\n--- skipped: {label} ---")
             statuses.append((label, "skipped"))
@@ -68,7 +77,7 @@ def main():
         os.makedirs(result_dir, exist_ok=True)
         log_path = os.path.join(result_dir, log_name)
 
-        cmd = [sys.executable, script, "--seeds"] + list(args.seeds)
+        cmd = [sys.executable, script, "--seeds"] + list(args.seeds) + list(extra_args)
         if args.with_26w:
             cmd.append("--with-26w")
 

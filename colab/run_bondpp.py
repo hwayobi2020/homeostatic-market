@@ -33,6 +33,8 @@ EXPERIMENTS = [
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--seeds", nargs="+", default=["42", "123", "777", "0", "99"])
+    ap.add_argument("--with-26w", action="store_true",
+                    help="모든 실험에 tbill_26w_lag 포함 (legacy 3ch cond reproduce)")
     ap.add_argument("--skip",  nargs="+", default=[],
                     help="특정 실험 번호 스킵 (예: --skip 2 4)")
     args = ap.parse_args()
@@ -40,6 +42,7 @@ def main():
     print(f"\n{'#' * 70}")
     print(f"# Batch run (bondpp) — {len(EXPERIMENTS)} variants")
     print(f"# seeds = {args.seeds}")
+    print(f"# with-26w = {args.with_26w}")
     print(f"{'#' * 70}\n")
 
     skipped = set(args.skip)
@@ -57,6 +60,8 @@ def main():
         log_path = os.path.join(result_dir, log_name)
 
         cmd = [sys.executable, script, "--seeds"] + list(args.seeds) + list(extra_args)
+        if args.with_26w:
+            cmd.append("--with-26w")
 
         ts = time.time()
         print(f"\n{'=' * 70}")
