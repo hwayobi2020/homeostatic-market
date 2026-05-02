@@ -45,7 +45,7 @@ N_LAYERS = 2
 LR = 5e-4
 BATCH = 32
 MAX_EPOCHS = 60
-PATIENCE = 15
+PATIENCE = 30
 
 COLS_TARGET = ["sp_return", "pp_stock_13w_lag"]
 COLS_COND      = ["tbill_wr", "excess_liq_wr"]   # 2ch (bondpp2 와 동일 패턴, default = NO_26W)

@@ -44,7 +44,7 @@ N_LAYERS = 2
 LR = 5e-4
 BATCH = 32
 MAX_EPOCHS = 60
-PATIENCE = 15
+PATIENCE = 30
 
 COLS_TARGET = ["excess_liq_wr", "sp_return", "pp_bond_13w_lag"]
 COLS_COND_NO_26W   = ["tbill_wr", "excess_liq_wr"]                          # default 2ch

@@ -44,7 +44,7 @@ N_LAYERS = 2
 LR = 5e-4
 BATCH = 32
 MAX_EPOCHS = 60
-PATIENCE = 15
+PATIENCE = 30
 
 COLS_TARGET = ["sp_return"]
 COLS_COND = ["tbill_wr", "tbill_26w_lag", "excess_liq_wr", "pp_bond_13w_lag"]   # 4ch

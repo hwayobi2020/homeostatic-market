@@ -46,7 +46,7 @@ N_LAYERS = 2
 LR = 5e-4
 BATCH = 32
 MAX_EPOCHS = 60
-PATIENCE = 15
+PATIENCE = 30
 
 COLS_TARGET = ["sp_return"]
 COND_2CH_NO_26W   = ["tbill_wr"]                       # default 1ch
