@@ -207,6 +207,8 @@ def main():
                     help="한 번 inverse 호출에 처리할 sample 수 (OOM 시 축소)")
     ap.add_argument("--L",        type=int, default=104)
     ap.add_argument("--past-len", type=int, default=52)
+    ap.add_argument("--start-index", type=int, default=1,
+                    help="VARIANTS 시작 index (1-based). 이전 변종은 스캔에서 skip — 도중 멈춤 후 재개용")
     args = ap.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -222,7 +224,13 @@ def main():
     print(f"# device = {device}  |  N samples/window = {args.n_samples}\n")
 
     rows = []
-    for label, folder, prefix in VARIANTS:
+    if args.start_index > 1:
+        print(f"# start-index = {args.start_index} → 1~{args.start_index - 1} 번 변종은 스캔 skip\n")
+    for i, (label, folder, prefix) in enumerate(VARIANTS, start=1):
+        if i < args.start_index:
+            for seed in SEEDS:
+                rows.append(dict(variant=label, seed=seed, gen_cvar=float("nan")))
+            continue
         for seed in SEEDS:
             ckpt_path = os.path.join(args.root, "colab", folder, "result",
                                      f"{prefix}_seed{seed}_best.pt")
