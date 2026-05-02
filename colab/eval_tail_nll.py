@@ -75,6 +75,11 @@ VARIANTS = [
     ("MTL(3 채널, bondpp_3m정규, vix정규)",               "dual_3ch", "mtl_bp_vix_normbp_normvix"),
     ("MTL(3 채널, liq, vix정규)",                         "dual_3ch", "mtl3_normvix"),
     ("MTL(3 채널, bondpp_3m정규, vix정규) [no-liq cond]", "dual_3ch", "mtl_bp_vix_noliq_normbp_normvix"),
+    # 9-13행 cond=1ch (no-liq) 통일 변종 — paper 표 cond 일관성
+    ("MTL(2 채널, vix정규) [no-liq cond]",                                "dual_3ch", "mtl_2ch_vix_noliq_normvix"),
+    ("MTL(2 채널, bondpp_3m정규) [no-liq cond]",                          "dual_3ch", "mtl_bp2_noliq_normbp"),
+    ("MTL(2 채널, stockpp_3m정규) [no-liq cond]",                         "dual_3ch", "mtl_pps2_noliq_normsp"),
+    ("MTL(3 채널, bondpp_3m정규, stockpp_3m정규) [no-liq cond]",          "dual_3ch", "mtl_bp_stockpp_noliq_normbp_normsp"),
 ]
 
 

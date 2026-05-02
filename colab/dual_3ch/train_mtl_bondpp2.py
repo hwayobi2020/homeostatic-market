@@ -122,14 +122,15 @@ def loss_fn(X, C, model, past_len, device):
 
 
 def run(train_csv, test_csv, save_dir, seed=42, normalize_bondpp=False,
-        val_csv=None, fold_tag=None):
+        no_liq=False, val_csv=None, fold_tag=None):
     torch.manual_seed(seed)
     np.random.seed(seed)
     masked_names = [COLS_COND[i] for i in MASK_FUTURE_CH]
     tag_norm  = "_normbp" if normalize_bondpp else ""
+    tag_liq   = "_noliq"  if no_liq           else ""
     fold_str  = f"_{fold_tag}" if fold_tag else ""
     print(f"\n{'=' * 70}")
-    print(f"[MTL_bp2{tag_norm}{fold_str}] seed={seed}")
+    print(f"[MTL_bp2{tag_liq}{tag_norm}{fold_str}] seed={seed}")
     if val_csv is not None:
         print(f"  val_csv = {val_csv}  (별도 val sliding window)")
     print(f"  cond   = {COLS_COND}    (D_COND={len(COLS_COND)})")
@@ -234,7 +235,7 @@ def run(train_csv, test_csv, save_dir, seed=42, normalize_bondpp=False,
     print(f"    test per channel: " + ", ".join([f"{c}={v:+.4f}" for c, v in zip(COLS_TARGET, best_test_per_ch)]))
 
     os.makedirs(save_dir, exist_ok=True)
-    tag = f"mtl_bp2{tag_norm}{fold_str}_seed{seed}"
+    tag = f"mtl_bp2{tag_liq}{tag_norm}{fold_str}_seed{seed}"
     ckpt_path    = os.path.join(save_dir, f"{tag}_best.pt")
     log_path     = os.path.join(save_dir, f"{tag}_trainlog.csv")
     summary_path = os.path.join(save_dir, f"{tag}_summary.json")
@@ -254,9 +255,10 @@ def run(train_csv, test_csv, save_dir, seed=42, normalize_bondpp=False,
         }, ckpt_path)
     pd.DataFrame(log).to_csv(log_path, index=False)
     summary = dict(
-        stage=f"mtl_bp2{tag_norm}{fold_str}",
+        stage=f"mtl_bp2{tag_liq}{tag_norm}{fold_str}",
         fold=fold_tag,
         seed=seed,
+        no_liq=no_liq,
         cond_cols=COLS_COND,
         target_cols=COLS_TARGET,
         mask_future_ch=MASK_FUTURE_CH,
@@ -289,12 +291,20 @@ def main():
                     help="train mean/std 로 pp_bond_13w_lag target 정규화")
     ap.add_argument("--with-26w", action="store_true",
                     help="cond 에 tbill_26w_lag 포함 (legacy 3ch reproduce)")
+    ap.add_argument("--no-liq", action="store_true",
+                    help="cond 에서 excess_liq_wr 제거 (cond=[tbill_wr] 1ch only)")
     args = ap.parse_args()
+    if args.with_26w and args.no_liq:
+        raise ValueError("--with-26w 와 --no-liq 동시 사용 불가")
+    global COLS_COND, MASK_FUTURE_CH
     if args.with_26w:
-        global COLS_COND, MASK_FUTURE_CH
         COLS_COND = COLS_COND_WITH_26W
         MASK_FUTURE_CH = MASK_FUTURE_CH_WITH_26W
         print(f"[--with-26w] cond = {COLS_COND}, mask = {MASK_FUTURE_CH}")
+    elif args.no_liq:
+        COLS_COND = ["tbill_wr"]
+        MASK_FUTURE_CH = []
+        print(f"[--no-liq] cond = {COLS_COND}, mask = {MASK_FUTURE_CH}")
 
     if args.fold is not None:
         repo_root = os.path.normpath(os.path.join(HERE, "..", ".."))
@@ -310,13 +320,14 @@ def main():
     results = []
     for seed in args.seeds:
         r = run(args.train_csv, args.test_csv, args.out_dir, seed=seed,
-                normalize_bondpp=args.normalize_bondpp,
+                normalize_bondpp=args.normalize_bondpp, no_liq=args.no_liq,
                 val_csv=args.val_csv, fold_tag=args.fold)
         if r is not None:
             results.append(r)
 
     if len(results) > 1:
         tag_norm = "_normbp" if args.normalize_bondpp else ""
+        tag_liq  = "_noliq"  if args.no_liq           else ""
         fold_str = f"_{args.fold}" if args.fold else ""
         df_rows = []
         for r in results:
@@ -325,9 +336,9 @@ def main():
                 row[f"test_{c}"] = v
             df_rows.append(row)
         df = pd.DataFrame(df_rows)
-        out_csv = os.path.join(args.out_dir, f"mtl_bp2{tag_norm}{fold_str}_multiseed_results.csv")
+        out_csv = os.path.join(args.out_dir, f"mtl_bp2{tag_liq}{tag_norm}{fold_str}_multiseed_results.csv")
         df.to_csv(out_csv, index=False)
-        print(f"\n[MTL_bp2{tag_norm}{fold_str}] multi-seed (n={len(df)})")
+        print(f"\n[MTL_bp2{tag_liq}{tag_norm}{fold_str}] multi-seed (n={len(df)})")
         print(f"  val:                  mean={df.val.mean():+.4f} ± {df.val.std():.4f}  median={df.val.median():+.4f}")
         print(f"  test mean (2ch avg):  mean={df.test_mean.mean():+.4f} ± {df.test_mean.std():.4f}  median={df.test_mean.median():+.4f}")
         for c in COLS_TARGET:
