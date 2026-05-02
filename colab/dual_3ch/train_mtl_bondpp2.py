@@ -214,8 +214,11 @@ def run(train_csv, test_csv, save_dir, seed=42, normalize_bondpp=False,
             row[f"test_{c}"] = float(v)
         log.append(row)
 
-        if val_nll < best_val - 1e-4:
-            best_val = val_nll
+        # best ckpt 기준: sp_return 단독 val NLL (paper 주제와 일관)
+        sp_idx_val = COLS_TARGET.index("sp_return")
+        val_metric = float(val_per_ch[sp_idx_val])
+        if val_metric < best_val - 1e-4:
+            best_val = val_metric
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
             best_test = test_nll
             best_test_per_ch = test_per_ch.copy()
