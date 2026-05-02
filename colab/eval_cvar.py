@@ -70,6 +70,9 @@ VARIANTS = [
     ("MTL(3 채널, liq, bondpp_3m정규)",     "dual_3ch", "mtl_bp3_normbp"),
     ("MTL(3 채널, liq, vix)",               "dual_3ch", "mtl3"),
     ("MTL(2 채널, stockpp_3m)",             "dual_3ch", "mtl_pps2"),
+    # liq를 cond에서 제거한 mtl_bp3 변종 (cond=[tbill_wr] 1ch only)
+    ("MTL(3 채널, bondpp_3m) [no-liq cond]",        "dual_3ch", "mtl_bp3_noliq"),
+    ("MTL(3 채널, bondpp_3m정규) [no-liq cond]",    "dual_3ch", "mtl_bp3_noliq_normbp"),
 ]
 
 
