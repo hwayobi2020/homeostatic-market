@@ -271,13 +271,12 @@ def main():
     args = ap.parse_args()
     if args.with_26w and args.no_liq:
         raise ValueError("--with-26w 와 --no-liq 동시 사용 불가")
+    global COLS_COND, MASK_FUTURE_CH
     if args.with_26w:
-        global COLS_COND, MASK_FUTURE_CH
         COLS_COND = COLS_COND_WITH_26W
         MASK_FUTURE_CH = MASK_FUTURE_CH_WITH_26W
         print(f"[--with-26w] cond = {COLS_COND}, mask = {MASK_FUTURE_CH}")
     elif args.no_liq:
-        global COLS_COND, MASK_FUTURE_CH
         COLS_COND = ["tbill_wr"]
         MASK_FUTURE_CH = []   # mask 할 채널 없음 (tbill_wr 만 있고 future 시나리오 활성)
         print(f"[--no-liq] cond = {COLS_COND}, mask = {MASK_FUTURE_CH}")
