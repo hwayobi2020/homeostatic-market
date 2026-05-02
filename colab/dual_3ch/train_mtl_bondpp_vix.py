@@ -56,6 +56,7 @@ MASK_FUTURE_CH_NO_26W   = [1]      # mask excess_liq_wr in future (no 26w)
 MASK_FUTURE_CH_WITH_26W = [1, 2]   # mask tbill_26w_lag + excess_liq_wr (legacy)
 MASK_FUTURE_CH = MASK_FUTURE_CH_NO_26W
 BONDPP_TARGET_IDX = 1      # pp_bond_13w_lag 위치 in COLS_TARGET
+VIX_TARGET_IDX    = 2      # vix_wr 위치 in COLS_TARGET
 
 LOG2PI = math.log(2 * math.pi)
 
@@ -122,11 +123,19 @@ def loss_fn(X, C, model, past_len, device):
     return (nll_future / (F_ * D)).mean()
 
 
-def run(train_csv, test_csv, save_dir, seed=42, normalize_bondpp=False, no_liq=False):
+def run(train_csv, test_csv, save_dir, seed=42, normalize_bondpp=False, no_liq=False,
+        normalize_vix=False):
     torch.manual_seed(seed)
     np.random.seed(seed)
+    if normalize_bondpp and normalize_vix:
+        raise ValueError("--normalize-bondpp 와 --normalize-vix 동시 사용 불가 "
+                         "(load_windows 가 단일 채널 정규화만 지원)")
     masked_names = [COLS_COND[i] for i in MASK_FUTURE_CH]
-    tag_norm = "_normbp" if normalize_bondpp else ""
+    tag_norm = ""
+    if normalize_bondpp:
+        tag_norm = "_normbp"
+    elif normalize_vix:
+        tag_norm = "_normvix"
     tag_liq  = "_noliq"  if no_liq           else ""
     print(f"\n{'=' * 70}")
     print(f"[MTL_bp_vix{tag_liq}{tag_norm}] seed={seed}")
@@ -134,9 +143,15 @@ def run(train_csv, test_csv, save_dir, seed=42, normalize_bondpp=False, no_liq=F
     print(f"  target = {COLS_TARGET}  (D_TARGET={len(COLS_TARGET)})  joint")
     print(f"  mask_future_ch = {MASK_FUTURE_CH} → {masked_names} masked in future")
     print(f"  normalize_bondpp = {normalize_bondpp} (target idx {BONDPP_TARGET_IDX} = {COLS_TARGET[BONDPP_TARGET_IDX]})")
+    print(f"  normalize_vix    = {normalize_vix} (target idx {VIX_TARGET_IDX} = {COLS_TARGET[VIX_TARGET_IDX]})")
     print(f"{'=' * 70}")
 
-    norm_idx = BONDPP_TARGET_IDX if normalize_bondpp else None
+    if normalize_bondpp:
+        norm_idx = BONDPP_TARGET_IDX
+    elif normalize_vix:
+        norm_idx = VIX_TARGET_IDX
+    else:
+        norm_idx = None
     Xtr, Ctr, stats_c, stats_t = load_windows(train_csv, COLS_COND, COLS_TARGET,
                                               L=L, normalize_target_idx=norm_idx)
     Xte, Cte, _, _             = load_windows(test_csv,  COLS_COND, COLS_TARGET,
@@ -239,6 +254,7 @@ def run(train_csv, test_csv, save_dir, seed=42, normalize_bondpp=False, no_liq=F
     summary = dict(
         stage=f"mtl_bp_vix{tag_liq}{tag_norm}",
         no_liq=no_liq,
+        normalize_vix=normalize_vix,
         seed=seed,
         cond_cols=COLS_COND,
         target_cols=COLS_TARGET,
@@ -266,6 +282,8 @@ def main():
     ap.add_argument("--out-dir",   default=os.path.join(HERE, "result"))
     ap.add_argument("--normalize-bondpp", action="store_true",
                     help="train mean/std 로 pp_bond_13w_lag target 정규화")
+    ap.add_argument("--normalize-vix", action="store_true",
+                    help="train mean/std 로 vix_wr target 정규화 (vix_wr 채널 NLL 폭발 방지)")
     ap.add_argument("--with-26w", action="store_true",
                     help="cond 에 tbill_26w_lag 포함 (legacy 3ch reproduce)")
     ap.add_argument("--no-liq", action="store_true",
@@ -273,6 +291,8 @@ def main():
     args = ap.parse_args()
     if args.with_26w and args.no_liq:
         raise ValueError("--with-26w 와 --no-liq 동시 사용 불가")
+    if args.normalize_bondpp and args.normalize_vix:
+        raise ValueError("--normalize-bondpp 와 --normalize-vix 동시 사용 불가")
     global COLS_COND, MASK_FUTURE_CH
     if args.with_26w:
         COLS_COND = COLS_COND_WITH_26W
@@ -287,13 +307,19 @@ def main():
     results = []
     for seed in args.seeds:
         r = run(args.train_csv, args.test_csv, args.out_dir, seed=seed,
-                normalize_bondpp=args.normalize_bondpp, no_liq=args.no_liq)
+                normalize_bondpp=args.normalize_bondpp, no_liq=args.no_liq,
+                normalize_vix=args.normalize_vix)
         if r is not None:
             results.append(r)
 
     if len(results) > 1:
-        tag_norm = "_normbp" if args.normalize_bondpp else ""
-        tag_liq  = "_noliq"  if args.no_liq           else ""
+        if args.normalize_bondpp:
+            tag_norm = "_normbp"
+        elif args.normalize_vix:
+            tag_norm = "_normvix"
+        else:
+            tag_norm = ""
+        tag_liq  = "_noliq"  if args.no_liq else ""
         df_rows = []
         for r in results:
             row = {"seed": r["seed"], "best_epoch": r["best_epoch"], "val": r["val"], "test_mean": r["test"]}

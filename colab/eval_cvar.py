@@ -74,8 +74,9 @@ VARIANTS = [
     ("MTL(3 채널, bondpp_3m) [no-liq cond]",        "dual_3ch", "mtl_bp3_noliq"),
     ("MTL(3 채널, bondpp_3m정규) [no-liq cond]",    "dual_3ch", "mtl_bp3_noliq_normbp"),
     # liq를 cond에서 제거한 mtl_bp_vix 변종 (cond=[tbill_wr] 1ch only)
-    ("MTL(3 채널, bondpp_3m, vix) [no-liq cond]",     "dual_3ch", "mtl_bp_vix_noliq"),
-    ("MTL(3 채널, bondpp_3m정규, vix) [no-liq cond]", "dual_3ch", "mtl_bp_vix_noliq_normbp"),
+    ("MTL(3 채널, bondpp_3m, vix) [no-liq cond]",       "dual_3ch", "mtl_bp_vix_noliq"),
+    ("MTL(3 채널, bondpp_3m정규, vix) [no-liq cond]",   "dual_3ch", "mtl_bp_vix_noliq_normbp"),
+    ("MTL(3 채널, bondpp_3m, vix정규) [no-liq cond]",   "dual_3ch", "mtl_bp_vix_noliq_normvix"),
 ]
 
 
