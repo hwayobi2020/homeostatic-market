@@ -2,12 +2,18 @@
 
 각 ckpt 마다:
   - past 52주 z 추출 (forward 1회, future 자리는 0-padding)
-  - future 52주 z ~ N(0, I), 윈도우당 N=200 samples
+  - future 52주 z ~ N(0, I), 윈도우당 N samples (기본 100)
   - inverse(z, c) → 생성 sp_return future 시퀀스
   - 모든 (window × sample × time) flatten → empirical CVaR_alpha
         = mean of values <= alpha-quantile
 
 비교 대상: 시험 기간 future 52주 sp_return 실측 분포의 동일 정의 CVaR.
+
+Incremental save / resume:
+  - 매 ckpt 측정 직후 result/cvar_partial.csv 에 row append
+        (columns: variant, seed, gen_cvar, alpha, n_samples)
+  - 재시작 시 (alpha, n_samples) 일치하는 cache 자동 사용 → idle 끊김 후 이어서
+  - --no-resume 으로 cache 무시 가능
 
 ckpt 키 호환 (eval_tail_nll.py 와 동일):
   - 구 패턴: stats_train (cond stats), mask_future_ch optional
@@ -19,7 +25,8 @@ Stage 1 / Stage 1 (vix) 변종은 sp_return 이 target 에 없어 gen_cvar = NaN
 
 사용법 (Colab):
   !python /content/drive/MyDrive/Colab\\ Notebooks/homeostatic-market/colab/eval_cvar.py
-  !python ... /eval_cvar.py --alpha 0.10 --n-samples 100   # 옵션 변경
+  !python ... /eval_cvar.py --n-samples 200       # paper 최종 정밀
+  !python ... /eval_cvar.py --no-resume           # cache 무시 처음부터
 """
 import torch  # MUST be first
 
@@ -201,14 +208,18 @@ def main():
     ap.add_argument("--test-csv", default=os.path.join(ROOT, "data", "weekly_ppbond_test.csv"))
     ap.add_argument("--alpha",    type=float, default=0.05,
                     help="CVaR 분위수 (기본 0.05 = 하위 5%)")
-    ap.add_argument("--n-samples", type=int,  default=200,
-                    help="윈도우당 conditional generation 샘플 수 (기본 200)")
-    ap.add_argument("--batch-per-window", type=int, default=64,
+    ap.add_argument("--n-samples", type=int,  default=100,
+                    help="윈도우당 conditional generation 샘플 수 (기본 100)")
+    ap.add_argument("--batch-per-window", type=int, default=128,
                     help="한 번 inverse 호출에 처리할 sample 수 (OOM 시 축소)")
     ap.add_argument("--L",        type=int, default=104)
     ap.add_argument("--past-len", type=int, default=52)
     ap.add_argument("--start-index", type=int, default=1,
                     help="VARIANTS 시작 index (1-based). 이전 변종은 스캔에서 skip — 도중 멈춤 후 재개용")
+    ap.add_argument("--csv", default=os.path.join(ROOT, "result", "cvar_partial.csv"),
+                    help="incremental save / resume용 CSV. (variant, seed, alpha, n_samples) 키로 cache")
+    ap.add_argument("--no-resume", action="store_true",
+                    help="CSV cache 무시하고 처음부터 새로 측정 (CSV 자체는 그대로 append)")
     args = ap.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -221,7 +232,33 @@ def main():
     print(f"# real CVaR (test 실측)        = {real_cvar:+.6f}")
     print(f"# {args.alpha*100:.0f}%-quantile (test 실측)   = {real_threshold:+.6f}")
     print(f"# n_pool (실측 future sample 수) = {n_pool}")
-    print(f"# device = {device}  |  N samples/window = {args.n_samples}\n")
+    print(f"# device = {device}  |  N samples/window = {args.n_samples}")
+    print(f"# csv (incremental) = {args.csv}\n")
+
+    # CSV cache 로드 (alpha + n_samples 일치 row 만 사용)
+    cached = {}
+    if (not args.no_resume) and os.path.exists(args.csv):
+        try:
+            cdf = pd.read_csv(args.csv)
+            cdf = cdf[(cdf["alpha"] == args.alpha) & (cdf["n_samples"] == args.n_samples)]
+            for _, r in cdf.iterrows():
+                cached[(r["variant"], int(r["seed"]))] = float(r["gen_cvar"])
+            if cached:
+                print(f"# cache hit: {len(cached)} 개 ckpt 결과 재사용 "
+                      f"(alpha={args.alpha}, n_samples={args.n_samples})\n")
+        except Exception as e:
+            print(f"# cache 읽기 실패 (무시하고 진행): {e}\n")
+
+    # CSV 디렉토리 보장
+    os.makedirs(os.path.dirname(args.csv), exist_ok=True)
+    csv_exists = os.path.exists(args.csv)
+
+    def append_csv(label, seed, gen_cvar):
+        nonlocal csv_exists
+        new_row = pd.DataFrame([dict(variant=label, seed=int(seed), gen_cvar=gen_cvar,
+                                      alpha=args.alpha, n_samples=args.n_samples)])
+        new_row.to_csv(args.csv, mode="a", header=not csv_exists, index=False)
+        csv_exists = True
 
     rows = []
     if args.start_index > 1:
@@ -232,20 +269,31 @@ def main():
                 rows.append(dict(variant=label, seed=seed, gen_cvar=float("nan")))
             continue
         for seed in SEEDS:
+            # 1) cache 우선
+            if (label, seed) in cached:
+                gen_cvar = cached[(label, seed)]
+                rows.append(dict(variant=label, seed=seed, gen_cvar=gen_cvar))
+                tag = "—" if math.isnan(gen_cvar) else f"{gen_cvar:+.6f}"
+                print(f"  cached [{label:38s}] seed={seed}: gen_cvar = {tag}")
+                continue
+
             ckpt_path = os.path.join(args.root, "colab", folder, "result",
                                      f"{prefix}_seed{seed}_best.pt")
             if not os.path.exists(ckpt_path):
                 rows.append(dict(variant=label, seed=seed, gen_cvar=float("nan")))
+                append_csv(label, seed, float("nan"))
                 continue
             try:
                 gen_cvar = evaluate_ckpt(
                     ckpt_path, args.test_csv, args.alpha,
                     args.n_samples, args.batch_per_window, device)
                 rows.append(dict(variant=label, seed=seed, gen_cvar=gen_cvar))
+                append_csv(label, seed, gen_cvar)
                 tag = "—" if math.isnan(gen_cvar) else f"{gen_cvar:+.6f}"
                 print(f"  done   [{label:38s}] seed={seed}: gen_cvar = {tag}")
             except Exception as e:
                 rows.append(dict(variant=label, seed=seed, gen_cvar=float("nan")))
+                append_csv(label, seed, float("nan"))
                 print(f"  ERROR  [{label}] seed={seed}: {e}")
 
     df = pd.DataFrame(rows)
