@@ -55,12 +55,13 @@ MASK_FUTURE_CH = MASK_FUTURE_CH_NO_26W
 LOG2PI = math.log(2 * math.pi)
 
 
-def load_windows(csv_path, cols_cond, cols_target, L=104, stats=None):
+def load_windows(csv_path, cols_cond, cols_target, L=104, stats=None,
+                 target_stats=None, normalize_target_idx=None):
     df = pd.read_csv(csv_path)
     n = len(df)
     n_w = n - L + 1
     if n_w <= 0:
-        return None, None, None
+        return None, None, None, None
     X = np.zeros((n_w, L, len(cols_target)), dtype=np.float32)
     C = np.zeros((n_w, L, len(cols_cond)), dtype=np.float32)
     for i in range(n_w):
@@ -73,7 +74,21 @@ def load_windows(csv_path, cols_cond, cols_target, L=104, stats=None):
         mu = np.asarray(stats["mean"], dtype=np.float32)
         sd = np.asarray(stats["std"],  dtype=np.float32)
     C = (C - mu) / sd
-    return torch.from_numpy(X), torch.from_numpy(C), {"mean": mu.tolist(), "std": sd.tolist()}
+
+    tstats_out = None
+    if normalize_target_idx is not None:
+        if target_stats is None:
+            tmu = float(X[..., normalize_target_idx].mean())
+            tsd = float(X[..., normalize_target_idx].std()) + 1e-8
+        else:
+            tmu = float(target_stats["mean"])
+            tsd = float(target_stats["std"])
+        X[..., normalize_target_idx] = (X[..., normalize_target_idx] - tmu) / tsd
+        tstats_out = {"mean": tmu, "std": tsd, "channel": int(normalize_target_idx),
+                      "channel_name": cols_target[normalize_target_idx]}
+
+    return torch.from_numpy(X), torch.from_numpy(C), \
+           {"mean": mu.tolist(), "std": sd.tolist()}, tstats_out
 
 
 def mask_future_channels(C, past_len, mask_channels):
@@ -92,19 +107,25 @@ def nll_per_step_channel(X, C, model, past_len, device):
     return nll_future / (F_ * D)
 
 
-def run(train_csv, test_csv, save_dir, seed=42):
+def run(train_csv, test_csv, save_dir, seed=42, normalize_vix=False):
     torch.manual_seed(seed)
     np.random.seed(seed)
     masked_names = [COLS_COND[i] for i in MASK_FUTURE_CH]
+    tag_norm = "_normvix" if normalize_vix else ""
     print(f"\n{'=' * 70}")
-    print(f"[Stage1_vix] seed={seed}")
+    print(f"[Stage1_vix{tag_norm}] seed={seed}")
     print(f"  cond   = {COLS_COND}")
     print(f"  target = {COLS_TARGET}")
     print(f"  mask_future_ch = {MASK_FUTURE_CH} → {masked_names} masked (only tbill_wr scenario)")
+    print(f"  normalize_vix = {normalize_vix}")
     print(f"{'=' * 70}")
 
-    Xtr, Ctr, stats_tr = load_windows(train_csv, COLS_COND, COLS_TARGET, L=L)
-    Xte, Cte, _        = load_windows(test_csv,  COLS_COND, COLS_TARGET, L=L, stats=stats_tr)
+    norm_idx = 0 if normalize_vix else None   # vix_wr 는 target idx 0 (single target)
+    Xtr, Ctr, stats_tr, stats_t = load_windows(train_csv, COLS_COND, COLS_TARGET, L=L,
+                                                normalize_target_idx=norm_idx)
+    Xte, Cte, _, _              = load_windows(test_csv,  COLS_COND, COLS_TARGET, L=L,
+                                                stats=stats_tr, target_stats=stats_t,
+                                                normalize_target_idx=norm_idx)
 
     print(f"  z-score stats (train): mean={[round(m,5) for m in stats_tr['mean']]}")
     print(f"                            std={[round(s,5) for s in stats_tr['std']]}")
@@ -174,7 +195,7 @@ def run(train_csv, test_csv, save_dir, seed=42):
     print(f"\n  best epoch {best_epoch}: val={best_val:+.4f}, test={best_test:+.4f}")
 
     os.makedirs(save_dir, exist_ok=True)
-    tag = f"stage1vix_seed{seed}"
+    tag = f"stage1vix{tag_norm}_seed{seed}"
     ckpt_path    = os.path.join(save_dir, f"{tag}_best.pt")
     log_path     = os.path.join(save_dir, f"{tag}_trainlog.csv")
     summary_path = os.path.join(save_dir, f"{tag}_summary.json")
@@ -186,16 +207,20 @@ def run(train_csv, test_csv, save_dir, seed=42):
             "target_cols":     COLS_TARGET,
             "mask_future_ch":  MASK_FUTURE_CH,
             "stats_train":     stats_tr,
+            "stats_target":    stats_t,
+            "normalize_vix":   normalize_vix,
             "config": dict(K=K_STEPS, d_model=D_MODEL, n_heads=N_HEADS, n_layers=N_LAYERS,
                            d_cond=len(COLS_COND), d_target=len(COLS_TARGET),
                            past_len=PAST_LEN, total_len=L),
         }, ckpt_path)
     pd.DataFrame(log).to_csv(log_path, index=False)
     summary = dict(
-        stage="stage1_vix",
+        stage=f"stage1_vix{tag_norm}",
         seed=seed,
+        normalize_vix=normalize_vix,
         cond_cols=COLS_COND,
         target_cols=COLS_TARGET,
+        stats_target=stats_t,
         mask_future_ch=MASK_FUTURE_CH,
         best_epoch=best_epoch,
         val=best_val,
@@ -216,6 +241,8 @@ def main():
     ap.add_argument("--test-csv",  default=os.path.join(HERE, "data", "weekly_ppbond_test.csv"))
     ap.add_argument("--out-dir",   default=os.path.join(HERE, "result"))
     ap.add_argument("--with-26w", action="store_true", help="Include tbill_26w_lag in cond")
+    ap.add_argument("--normalize-vix", action="store_true",
+                    help="train mean/std 로 vix_wr target 정규화")
     args = ap.parse_args()
     if args.with_26w:
         global COLS_COND, MASK_FUTURE_CH
@@ -226,17 +253,19 @@ def main():
     os.makedirs(args.out_dir, exist_ok=True)
     results = []
     for seed in args.seeds:
-        r = run(args.train_csv, args.test_csv, args.out_dir, seed=seed)
+        r = run(args.train_csv, args.test_csv, args.out_dir, seed=seed,
+                normalize_vix=args.normalize_vix)
         if r is not None:
             results.append(r)
 
     if len(results) > 1:
+        tag_norm = "_normvix" if args.normalize_vix else ""
         df = pd.DataFrame(results)
-        df.to_csv(os.path.join(args.out_dir, "stage1vix_multiseed_results.csv"), index=False)
+        df.to_csv(os.path.join(args.out_dir, f"stage1vix{tag_norm}_multiseed_results.csv"), index=False)
         v_mean, v_std = df.val.mean(),  df.val.std()
         t_mean, t_std = df.test.mean(), df.test.std()
         v_med, t_med = df.val.median(), df.test.median()
-        print(f"\n[Stage1_vix] multi-seed (n={len(df)})")
+        print(f"\n[Stage1_vix{tag_norm}] multi-seed (n={len(df)})")
         print(f"  val:  mean={v_mean:+.4f} ± {v_std:.4f}  median={v_med:+.4f}")
         print(f"  test: mean={t_mean:+.4f} ± {t_std:.4f}  median={t_med:+.4f}")
 

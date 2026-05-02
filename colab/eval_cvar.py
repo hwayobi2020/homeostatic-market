@@ -81,6 +81,12 @@ VARIANTS = [
     ("MTL(2 채널, stockpp_3m정규)",                       "dual_3ch", "mtl_pps2_normsp"),
     # bondpp + stockpp 동시 정규화 변종 (3채널)
     ("MTL(3 채널, bondpp_3m정규, stockpp_3m정규)",        "dual_3ch", "mtl_bp_stockpp_normbp_normsp"),
+    # vix 정규화 변종 (paper 표 정규화 통일)
+    ("Stage 1 (vix정규)",                                 "dual_3ch", "stage1vix_normvix"),
+    ("MTL(2 채널, vix정규)",                              "dual_3ch", "mtl_2ch_vix_normvix"),
+    ("MTL(3 채널, bondpp_3m정규, vix정규)",               "dual_3ch", "mtl_bp_vix_normbp_normvix"),
+    ("MTL(3 채널, liq, vix정규)",                         "dual_3ch", "mtl3_normvix"),
+    ("MTL(3 채널, bondpp_3m정규, vix정규) [no-liq cond]", "dual_3ch", "mtl_bp_vix_noliq_normbp_normvix"),
 ]
 
 
