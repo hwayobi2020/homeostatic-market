@@ -50,6 +50,7 @@ MAX_EPOCHS = 60
 PATIENCE = 30
 
 COLS_TARGET = ["excess_liq_wr", "sp_return"]   # 2ch joint
+SP_TARGET_IDX = 1                              # sp_return 위치 in COLS_TARGET
 COLS_COND_NO_26W   = ["tbill_wr"]                          # default 1ch
 COLS_COND_WITH_26W = ["tbill_wr", "tbill_26w_lag"]         # legacy 2ch reproduce
 COLS_COND = COLS_COND_NO_26W
@@ -104,17 +105,41 @@ def loss_fn(X, C, model, past_len, device):
     return (nll_future / (F_ * D)).mean()
 
 
-def run(train_csv, test_csv, save_dir, seed=42):
+def run(train_csv, test_csv, save_dir, seed=42, normalize_sp=False,
+        val_csv=None, fold_tag=None):
     torch.manual_seed(seed)
     np.random.seed(seed)
+    tag_norm_sr = "_normsr" if normalize_sp else ""
+    fold_str    = f"_{fold_tag}" if fold_tag else ""
+    tag_full    = f"joint{tag_norm_sr}{fold_str}_seed{seed}"
+    ckpt_path   = os.path.join(save_dir, f"{tag_full}_best.pt")
+    summary_path_pre = os.path.join(save_dir, f"{tag_full}_summary.json")
+    if os.path.exists(ckpt_path) and os.path.exists(summary_path_pre):
+        print(f"[SKIP] {tag_full} — ckpt + summary 이미 존재")
+        with open(summary_path_pre) as f:
+            return json.load(f)
     print(f"\n{'=' * 70}")
-    print(f"[Joint] seed={seed}")
+    print(f"[Joint{tag_norm_sr}{fold_str}] seed={seed}")
+    if val_csv is not None:
+        print(f"  val_csv = {val_csv}")
     print(f"  cond   = {COLS_COND}    (D_COND={len(COLS_COND)})")
     print(f"  target = {COLS_TARGET}  (D_TARGET={len(COLS_TARGET)})  joint generation")
+    print(f"  normalize_sp = {normalize_sp}")
     print(f"{'=' * 70}")
 
     Xtr, Ctr, stats_tr = load_windows(train_csv, COLS_COND, COLS_TARGET, L=L)
     Xte, Cte, _        = load_windows(test_csv,  COLS_COND, COLS_TARGET, L=L, stats=stats_tr)
+
+    stats_targets_all = {}
+    if normalize_sp:
+        smu = float(Xtr[..., SP_TARGET_IDX].mean())
+        ssd = float(Xtr[..., SP_TARGET_IDX].std()) + 1e-8
+        Xtr[..., SP_TARGET_IDX] = (Xtr[..., SP_TARGET_IDX] - smu) / ssd
+        Xte[..., SP_TARGET_IDX] = (Xte[..., SP_TARGET_IDX] - smu) / ssd
+        stats_targets_all[SP_TARGET_IDX] = {"mean": smu, "std": ssd,
+                                            "channel": int(SP_TARGET_IDX),
+                                            "channel_name": COLS_TARGET[SP_TARGET_IDX]}
+        print(f"  ★ target normalize sp_return (train): mean={smu:+.5f}, std={ssd:.5f}")
 
     print(f"  z-score stats (train): mean={[round(m,5) for m in stats_tr['mean']]}")
     print(f"                            std={[round(s,5) for s in stats_tr['std']]}")
@@ -122,11 +147,19 @@ def run(train_csv, test_csv, save_dir, seed=42):
     print(f"  test z mean per channel: {[round(float(m),4) for m in Cte_np.mean(axis=0)]}")
     print(f"  test z std  per channel: {[round(float(s),4) for s in Cte_np.std(axis=0)]}")
 
-    n_w_tr = Xtr.shape[0]
-    n_val = max(int(n_w_tr * 0.15), 1)
-    Xtr_, Ctr_ = Xtr[:-n_val], Ctr[:-n_val]
-    Xv,  Cv  = Xtr[-n_val:], Ctr[-n_val:]
-    print(f"  train_windows={Xtr_.shape[0]}, val_windows={Xv.shape[0]}, test_windows={Xte.shape[0]}")
+    if val_csv is not None:
+        Xv, Cv, _ = load_windows(val_csv, COLS_COND, COLS_TARGET, L=L, stats=stats_tr)
+        if normalize_sp:
+            s = stats_targets_all[SP_TARGET_IDX]
+            Xv[..., SP_TARGET_IDX] = (Xv[..., SP_TARGET_IDX] - s["mean"]) / s["std"]
+        Xtr_, Ctr_ = Xtr, Ctr
+        print(f"  train_windows={Xtr_.shape[0]} (full), val_windows={Xv.shape[0]} (val_csv), test_windows={Xte.shape[0]}")
+    else:
+        n_w_tr = Xtr.shape[0]
+        n_val = max(int(n_w_tr * 0.15), 1)
+        Xtr_, Ctr_ = Xtr[:-n_val], Ctr[:-n_val]
+        Xv,  Cv  = Xtr[-n_val:], Ctr[-n_val:]
+        print(f"  train_windows={Xtr_.shape[0]}, val_windows={Xv.shape[0]} (auto 15%), test_windows={Xte.shape[0]}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = MultiStepFAVARFlow(
@@ -192,8 +225,7 @@ def run(train_csv, test_csv, save_dir, seed=42):
     print(f"    test per channel: {COLS_TARGET[0]}={best_test_per_ch[0]:+.4f}  {COLS_TARGET[1]}={best_test_per_ch[1]:+.4f}")
 
     os.makedirs(save_dir, exist_ok=True)
-    tag = f"joint_seed{seed}"
-    ckpt_path    = os.path.join(save_dir, f"{tag}_best.pt")
+    tag = tag_full
     log_path     = os.path.join(save_dir, f"{tag}_trainlog.csv")
     summary_path = os.path.join(save_dir, f"{tag}_summary.json")
 
@@ -203,16 +235,21 @@ def run(train_csv, test_csv, save_dir, seed=42):
             "cond_cols":     COLS_COND,
             "target_cols":   COLS_TARGET,
             "stats_train":   stats_tr,
+            "stats_targets_all": stats_targets_all,
+            "normalize_sp":  normalize_sp,
             "config": dict(K=K_STEPS, d_model=D_MODEL, n_heads=N_HEADS, n_layers=N_LAYERS,
                            d_cond=len(COLS_COND), d_target=len(COLS_TARGET),
                            past_len=PAST_LEN, total_len=L),
         }, ckpt_path)
     pd.DataFrame(log).to_csv(log_path, index=False)
     summary = dict(
-        stage="joint",
+        stage=f"joint{tag_norm_sr}{fold_str}",
+        fold=fold_tag,
         seed=seed,
+        normalize_sp=normalize_sp,
         cond_cols=COLS_COND,
         target_cols=COLS_TARGET,
+        stats_targets_all={int(k): v for k, v in stats_targets_all.items()},
         best_epoch=best_epoch,
         val=best_val,
         test=best_test,
@@ -233,8 +270,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--seeds", nargs="+", type=int, default=[42])
     ap.add_argument("--train-csv", default=os.path.join(HERE, "data", "weekly_ppbond_train.csv"))
+    ap.add_argument("--val-csv",   default=None)
     ap.add_argument("--test-csv",  default=os.path.join(HERE, "data", "weekly_ppbond_test.csv"))
     ap.add_argument("--out-dir",   default=os.path.join(HERE, "result"))
+    ap.add_argument("--fold", default=None, choices=["F1", "F2", "F3"],
+                    help="walk-forward fold")
+    ap.add_argument("--normalize-sp", action="store_true",
+                    help="train mean/std 로 sp_return target 정규화")
     ap.add_argument("--with-26w", action="store_true", help="Include tbill_26w_lag")
     args = ap.parse_args()
     if args.with_26w:
@@ -242,14 +284,25 @@ def main():
         COLS_COND = COLS_COND_WITH_26W
         print(f"[--with-26w] cond = {COLS_COND}")
 
+    if args.fold is not None:
+        repo_root = os.path.normpath(os.path.join(HERE, "..", ".."))
+        folds_dir = os.path.join(repo_root, "data", "folds")
+        args.train_csv = os.path.join(folds_dir, f"{args.fold}_train.csv")
+        args.val_csv   = os.path.join(folds_dir, f"{args.fold}_val.csv")
+        args.test_csv  = os.path.join(folds_dir, f"{args.fold}_test.csv")
+        print(f"[--fold {args.fold}] train={args.train_csv}")
+
     os.makedirs(args.out_dir, exist_ok=True)
     results = []
     for seed in args.seeds:
-        r = run(args.train_csv, args.test_csv, args.out_dir, seed=seed)
+        r = run(args.train_csv, args.test_csv, args.out_dir, seed=seed,
+                normalize_sp=args.normalize_sp, val_csv=args.val_csv, fold_tag=args.fold)
         if r is not None:
             results.append(r)
 
     if len(results) > 1:
+        tag_norm_sr = "_normsr" if args.normalize_sp else ""
+        fold_str    = f"_{args.fold}" if args.fold else ""
         df_rows = []
         for r in results:
             df_rows.append({
@@ -261,7 +314,7 @@ def main():
                 f"test_{COLS_TARGET[1]}": r["test_per_channel"][COLS_TARGET[1]],
             })
         df = pd.DataFrame(df_rows)
-        df.to_csv(os.path.join(args.out_dir, "joint_multiseed_results.csv"), index=False)
+        df.to_csv(os.path.join(args.out_dir, f"joint{tag_norm_sr}{fold_str}_multiseed_results.csv"), index=False)
         print(f"\n[Joint] multi-seed (n={len(df)})")
         print(f"  val:                  mean={df.val.mean():+.4f} ± {df.val.std():.4f}  median={df.val.median():+.4f}")
         print(f"  test mean (2ch avg):  mean={df.test_mean.mean():+.4f} ± {df.test_mean.std():.4f}  median={df.test_mean.median():+.4f}")

@@ -50,6 +50,7 @@ COLS_COND = COLS_COND_NO_26W
 MASK_FUTURE_CH_NO_26W   = [1]
 MASK_FUTURE_CH_WITH_26W = [1, 2]
 MASK_FUTURE_CH = MASK_FUTURE_CH_NO_26W
+SP_TARGET_IDX      = 0
 BONDPP_TARGET_IDX  = 1
 STOCKPP_TARGET_IDX = 2
 
@@ -124,23 +125,37 @@ def loss_fn(X, C, model, past_len, device):
 
 
 def run(train_csv, test_csv, save_dir, seed=42,
-        normalize_bondpp=True, normalize_stockpp=True, no_liq=False):
+        normalize_bondpp=True, normalize_stockpp=True, no_liq=False,
+        normalize_sp=False, val_csv=None, fold_tag=None):
     torch.manual_seed(seed)
     np.random.seed(seed)
     masked_names = [COLS_COND[i] for i in MASK_FUTURE_CH]
-    tag_b   = "_normbp" if normalize_bondpp  else ""
-    tag_s   = "_normsp" if normalize_stockpp else ""
-    tag_liq = "_noliq"  if no_liq            else ""
+    tag_b       = "_normbp" if normalize_bondpp  else ""
+    tag_s       = "_normsp" if normalize_stockpp else ""
+    tag_norm_sr = "_normsr" if normalize_sp      else ""
+    tag_liq     = "_noliq"  if no_liq            else ""
+    fold_str    = f"_{fold_tag}" if fold_tag else ""
+    tag_full    = f"mtl_bp_stockpp{tag_liq}{tag_b}{tag_s}{tag_norm_sr}{fold_str}_seed{seed}"
+    ckpt_path   = os.path.join(save_dir, f"{tag_full}_best.pt")
+    summary_path_pre = os.path.join(save_dir, f"{tag_full}_summary.json")
+    if os.path.exists(ckpt_path) and os.path.exists(summary_path_pre):
+        print(f"[SKIP] {tag_full} — ckpt + summary 이미 존재")
+        with open(summary_path_pre) as f:
+            return json.load(f)
     print(f"\n{'=' * 70}")
-    print(f"[MTL_bp_stockpp{tag_liq}{tag_b}{tag_s}] seed={seed}")
+    print(f"[MTL_bp_stockpp{tag_liq}{tag_b}{tag_s}{tag_norm_sr}{fold_str}] seed={seed}")
+    if val_csv is not None:
+        print(f"  val_csv = {val_csv}")
     print(f"  cond   = {COLS_COND}    (D_COND={len(COLS_COND)})")
     print(f"  target = {COLS_TARGET}  (D_TARGET={len(COLS_TARGET)})  joint")
     print(f"  mask_future_ch = {MASK_FUTURE_CH} → {masked_names} masked in future")
     print(f"  normalize_bondpp = {normalize_bondpp} (idx {BONDPP_TARGET_IDX})")
     print(f"  normalize_stockpp= {normalize_stockpp} (idx {STOCKPP_TARGET_IDX})")
+    print(f"  normalize_sp     = {normalize_sp} (idx {SP_TARGET_IDX})")
     print(f"{'=' * 70}")
 
     indices = []
+    if normalize_sp:      indices.append(SP_TARGET_IDX)
     if normalize_bondpp:  indices.append(BONDPP_TARGET_IDX)
     if normalize_stockpp: indices.append(STOCKPP_TARGET_IDX)
 
@@ -150,6 +165,8 @@ def run(train_csv, test_csv, save_dir, seed=42,
         test_csv,  COLS_COND, COLS_TARGET, L=L,
         cond_stats=stats_c, target_stats_list=stats_t, normalize_indices=indices)
 
+    stats_targets_all = {int(s["channel"]): s for s in stats_t}
+
     print(f"  cond z-score stats (train): mean={[round(m,5) for m in stats_c['mean']]}")
     print(f"                                std={[round(s,5) for s in stats_c['std']]}")
     for s in stats_t:
@@ -158,11 +175,19 @@ def run(train_csv, test_csv, save_dir, seed=42,
     Ctr = mask_future_channels(Ctr, PAST_LEN, MASK_FUTURE_CH)
     Cte = mask_future_channels(Cte, PAST_LEN, MASK_FUTURE_CH)
 
-    n_w_tr = Xtr.shape[0]
-    n_val = max(int(n_w_tr * 0.15), 1)
-    Xtr_, Ctr_ = Xtr[:-n_val], Ctr[:-n_val]
-    Xv,  Cv  = Xtr[-n_val:], Ctr[-n_val:]
-    print(f"  train_windows={Xtr_.shape[0]}, val_windows={Xv.shape[0]}, test_windows={Xte.shape[0]}")
+    if val_csv is not None:
+        Xv, Cv, _, _ = load_windows_two_norm(val_csv, COLS_COND, COLS_TARGET, L=L,
+                                             cond_stats=stats_c, target_stats_list=stats_t,
+                                             normalize_indices=indices)
+        Cv = mask_future_channels(Cv, PAST_LEN, MASK_FUTURE_CH)
+        Xtr_, Ctr_ = Xtr, Ctr
+        print(f"  train_windows={Xtr_.shape[0]} (full), val_windows={Xv.shape[0]} (val_csv), test_windows={Xte.shape[0]}")
+    else:
+        n_w_tr = Xtr.shape[0]
+        n_val = max(int(n_w_tr * 0.15), 1)
+        Xtr_, Ctr_ = Xtr[:-n_val], Ctr[:-n_val]
+        Xv,  Cv  = Xtr[-n_val:], Ctr[-n_val:]
+        print(f"  train_windows={Xtr_.shape[0]}, val_windows={Xv.shape[0]} (auto 15%), test_windows={Xte.shape[0]}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = MultiStepFAVARFlow(
@@ -227,8 +252,7 @@ def run(train_csv, test_csv, save_dir, seed=42,
     print(f"    test per channel: " + ", ".join([f"{c}={v:+.4f}" for c, v in zip(COLS_TARGET, best_test_per_ch)]))
 
     os.makedirs(save_dir, exist_ok=True)
-    tag = f"mtl_bp_stockpp{tag_liq}{tag_b}{tag_s}_seed{seed}"
-    ckpt_path    = os.path.join(save_dir, f"{tag}_best.pt")
+    tag = tag_full
     log_path     = os.path.join(save_dir, f"{tag}_trainlog.csv")
     summary_path = os.path.join(save_dir, f"{tag}_summary.json")
 
@@ -239,9 +263,11 @@ def run(train_csv, test_csv, save_dir, seed=42,
             "target_cols":   COLS_TARGET,
             "stats_cond":    stats_c,
             "stats_target_list": stats_t,
+            "stats_targets_all": stats_targets_all,
             "mask_future_ch": MASK_FUTURE_CH,
             "normalize_bondpp":  normalize_bondpp,
             "normalize_stockpp": normalize_stockpp,
+            "normalize_sp":  normalize_sp,
             "no_liq": no_liq,
             "config": dict(K=K_STEPS, d_model=D_MODEL, n_heads=N_HEADS, n_layers=N_LAYERS,
                            d_cond=len(COLS_COND), d_target=len(COLS_TARGET),
@@ -249,14 +275,17 @@ def run(train_csv, test_csv, save_dir, seed=42,
         }, ckpt_path)
     pd.DataFrame(log).to_csv(log_path, index=False)
     summary = dict(
-        stage=f"mtl_bp_stockpp{tag_liq}{tag_b}{tag_s}",
+        stage=f"mtl_bp_stockpp{tag_liq}{tag_b}{tag_s}{tag_norm_sr}{fold_str}",
+        fold=fold_tag,
         seed=seed,
         cond_cols=COLS_COND,
         target_cols=COLS_TARGET,
         normalize_bondpp=normalize_bondpp,
         normalize_stockpp=normalize_stockpp,
+        normalize_sp=normalize_sp,
         no_liq=no_liq,
         target_stats_list=stats_t,
+        stats_targets_all={int(k): v for k, v in stats_targets_all.items()},
         best_epoch=best_epoch,
         val=best_val,
         test=best_test,
@@ -274,12 +303,17 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--seeds", nargs="+", type=int, default=[42])
     ap.add_argument("--train-csv", default=os.path.join(HERE, "data", "weekly_ppbond_train.csv"))
+    ap.add_argument("--val-csv",   default=None)
     ap.add_argument("--test-csv",  default=os.path.join(HERE, "data", "weekly_ppbond_test.csv"))
     ap.add_argument("--out-dir",   default=os.path.join(HERE, "result"))
+    ap.add_argument("--fold", default=None, choices=["F1", "F2", "F3"],
+                    help="walk-forward fold")
     ap.add_argument("--no-normalize-bondpp",  dest="normalize_bondpp",  action="store_false",
                     help="bondpp 정규화 끄기 (디폴트 켜짐)")
     ap.add_argument("--no-normalize-stockpp", dest="normalize_stockpp", action="store_false",
                     help="stockpp 정규화 끄기 (디폴트 켜짐)")
+    ap.add_argument("--normalize-sp", action="store_true",
+                    help="train mean/std 로 sp_return target 정규화")
     ap.add_argument("--no-liq", action="store_true",
                     help="cond 에서 excess_liq_wr 제거 (cond=[tbill_wr] 1ch)")
     ap.set_defaults(normalize_bondpp=True, normalize_stockpp=True)
@@ -291,20 +325,31 @@ def main():
         MASK_FUTURE_CH = []
         print(f"[--no-liq] cond = {COLS_COND}, mask = {MASK_FUTURE_CH}")
 
+    if args.fold is not None:
+        repo_root = os.path.normpath(os.path.join(HERE, "..", ".."))
+        folds_dir = os.path.join(repo_root, "data", "folds")
+        args.train_csv = os.path.join(folds_dir, f"{args.fold}_train.csv")
+        args.val_csv   = os.path.join(folds_dir, f"{args.fold}_val.csv")
+        args.test_csv  = os.path.join(folds_dir, f"{args.fold}_test.csv")
+        print(f"[--fold {args.fold}] train={args.train_csv}")
+
     os.makedirs(args.out_dir, exist_ok=True)
     results = []
     for seed in args.seeds:
         r = run(args.train_csv, args.test_csv, args.out_dir, seed=seed,
                 normalize_bondpp=args.normalize_bondpp,
                 normalize_stockpp=args.normalize_stockpp,
-                no_liq=args.no_liq)
+                normalize_sp=args.normalize_sp,
+                no_liq=args.no_liq, val_csv=args.val_csv, fold_tag=args.fold)
         if r is not None:
             results.append(r)
 
     if len(results) > 1:
-        tag_b   = "_normbp" if args.normalize_bondpp  else ""
-        tag_s   = "_normsp" if args.normalize_stockpp else ""
-        tag_liq = "_noliq"  if args.no_liq            else ""
+        tag_b       = "_normbp" if args.normalize_bondpp  else ""
+        tag_s       = "_normsp" if args.normalize_stockpp else ""
+        tag_norm_sr = "_normsr" if args.normalize_sp      else ""
+        tag_liq     = "_noliq"  if args.no_liq            else ""
+        fold_str    = f"_{args.fold}" if args.fold else ""
         df_rows = []
         for r in results:
             row = {"seed": r["seed"], "best_epoch": r["best_epoch"], "val": r["val"], "test_mean": r["test"]}
@@ -312,9 +357,9 @@ def main():
                 row[f"test_{c}"] = v
             df_rows.append(row)
         df = pd.DataFrame(df_rows)
-        out_csv = os.path.join(args.out_dir, f"mtl_bp_stockpp{tag_liq}{tag_b}{tag_s}_multiseed_results.csv")
+        out_csv = os.path.join(args.out_dir, f"mtl_bp_stockpp{tag_liq}{tag_b}{tag_s}{tag_norm_sr}{fold_str}_multiseed_results.csv")
         df.to_csv(out_csv, index=False)
-        print(f"\n[MTL_bp_stockpp{tag_liq}{tag_b}{tag_s}] multi-seed (n={len(df)})")
+        print(f"\n[MTL_bp_stockpp{tag_liq}{tag_b}{tag_s}{tag_norm_sr}{fold_str}] multi-seed (n={len(df)})")
         print(f"  val:                  mean={df.val.mean():+.4f} ± {df.val.std():.4f}  median={df.val.median():+.4f}")
         print(f"  test mean (3ch avg):  mean={df.test_mean.mean():+.4f} ± {df.test_mean.std():.4f}  median={df.test_mean.median():+.4f}")
         for c in COLS_TARGET:

@@ -55,6 +55,7 @@ COLS_COND = COLS_COND_NO_26W
 MASK_FUTURE_CH_NO_26W   = [1]      # mask excess_liq_wr in future (no 26w)
 MASK_FUTURE_CH_WITH_26W = [1, 2]   # mask tbill_26w_lag + excess_liq_wr (legacy)
 MASK_FUTURE_CH = MASK_FUTURE_CH_NO_26W
+SP_TARGET_IDX  = 0       # sp_return 위치 in COLS_TARGET
 VIX_TARGET_IDX = 1       # vix_wr 위치 in COLS_TARGET
 
 LOG2PI = math.log(2 * math.pi)
@@ -123,13 +124,22 @@ def loss_fn(X, C, model, past_len, device):
 
 
 def run(train_csv, test_csv, save_dir, seed=42, normalize_vix=False,
-        no_liq=False, val_csv=None, fold_tag=None):
+        no_liq=False, normalize_sp=False, val_csv=None, fold_tag=None):
     torch.manual_seed(seed)
     np.random.seed(seed)
     masked_names = [COLS_COND[i] for i in MASK_FUTURE_CH]
-    tag_norm  = "_normvix" if normalize_vix else ""
-    tag_liq   = "_noliq"   if no_liq        else ""
-    fold_str  = f"_{fold_tag}" if fold_tag else ""
+    tag_norm_v  = "_normvix" if normalize_vix else ""
+    tag_norm_sr = "_normsr"  if normalize_sp  else ""
+    tag_norm    = tag_norm_v + tag_norm_sr
+    tag_liq     = "_noliq"   if no_liq        else ""
+    fold_str    = f"_{fold_tag}" if fold_tag else ""
+    tag_full    = f"mtl_2ch_vix{tag_liq}{tag_norm}{fold_str}_seed{seed}"
+    ckpt_path   = os.path.join(save_dir, f"{tag_full}_best.pt")
+    summary_path_pre = os.path.join(save_dir, f"{tag_full}_summary.json")
+    if os.path.exists(ckpt_path) and os.path.exists(summary_path_pre):
+        print(f"[SKIP] {tag_full} — ckpt + summary 이미 존재")
+        with open(summary_path_pre) as f:
+            return json.load(f)
     print(f"\n{'=' * 70}")
     print(f"[MTL_2ch_vix{tag_liq}{tag_norm}{fold_str}] seed={seed}")
     if val_csv is not None:
@@ -147,6 +157,19 @@ def run(train_csv, test_csv, save_dir, seed=42, normalize_vix=False,
                                               L=L, cond_stats=stats_c,
                                               normalize_target_idx=norm_idx, target_stats=stats_t)
 
+    stats_targets_all = {}
+    if stats_t is not None:
+        stats_targets_all[int(stats_t["channel"])] = stats_t
+    if normalize_sp and SP_TARGET_IDX not in stats_targets_all:
+        smu = float(Xtr[..., SP_TARGET_IDX].mean())
+        ssd = float(Xtr[..., SP_TARGET_IDX].std()) + 1e-8
+        Xtr[..., SP_TARGET_IDX] = (Xtr[..., SP_TARGET_IDX] - smu) / ssd
+        Xte[..., SP_TARGET_IDX] = (Xte[..., SP_TARGET_IDX] - smu) / ssd
+        stats_targets_all[SP_TARGET_IDX] = {"mean": smu, "std": ssd,
+                                            "channel": int(SP_TARGET_IDX),
+                                            "channel_name": COLS_TARGET[SP_TARGET_IDX]}
+        print(f"  ★ target normalize sp_return (train): mean={smu:+.5f}, std={ssd:.5f}")
+
     print(f"  cond z-score stats (train): mean={[round(m,5) for m in stats_c['mean']]}")
     print(f"                                std={[round(s,5) for s in stats_c['std']]}")
     if stats_t is not None:
@@ -159,6 +182,9 @@ def run(train_csv, test_csv, save_dir, seed=42, normalize_vix=False,
         Xv, Cv, _, _ = load_windows(val_csv, COLS_COND, COLS_TARGET, L=L,
                                      cond_stats=stats_c, target_stats=stats_t,
                                      normalize_target_idx=norm_idx)
+        if normalize_sp and (norm_idx != SP_TARGET_IDX):
+            s = stats_targets_all[SP_TARGET_IDX]
+            Xv[..., SP_TARGET_IDX] = (Xv[..., SP_TARGET_IDX] - s["mean"]) / s["std"]
         Cv = mask_future_channels(Cv, PAST_LEN, MASK_FUTURE_CH)
         Xtr_, Ctr_ = Xtr, Ctr
         print(f"  train_windows={Xtr_.shape[0]} (full train), "
@@ -234,8 +260,7 @@ def run(train_csv, test_csv, save_dir, seed=42, normalize_vix=False,
     print(f"    test per channel: " + ", ".join([f"{c}={v:+.4f}" for c, v in zip(COLS_TARGET, best_test_per_ch)]))
 
     os.makedirs(save_dir, exist_ok=True)
-    tag = f"mtl_2ch_vix{tag_liq}{tag_norm}{fold_str}_seed{seed}"
-    ckpt_path    = os.path.join(save_dir, f"{tag}_best.pt")
+    tag = tag_full
     log_path     = os.path.join(save_dir, f"{tag}_trainlog.csv")
     summary_path = os.path.join(save_dir, f"{tag}_summary.json")
 
@@ -246,8 +271,10 @@ def run(train_csv, test_csv, save_dir, seed=42, normalize_vix=False,
             "target_cols":   COLS_TARGET,
             "stats_cond":    stats_c,
             "stats_target":  stats_t,
+            "stats_targets_all": stats_targets_all,
             "mask_future_ch": MASK_FUTURE_CH,
             "normalize_vix": normalize_vix,
+            "normalize_sp":  normalize_sp,
             "config": dict(K=K_STEPS, d_model=D_MODEL, n_heads=N_HEADS, n_layers=N_LAYERS,
                            d_cond=len(COLS_COND), d_target=len(COLS_TARGET),
                            past_len=PAST_LEN, total_len=L),
@@ -258,6 +285,8 @@ def run(train_csv, test_csv, save_dir, seed=42, normalize_vix=False,
         fold=fold_tag,
         seed=seed,
         no_liq=no_liq,
+        normalize_sp=normalize_sp,
+        stats_targets_all={int(k): v for k, v in stats_targets_all.items()},
         cond_cols=COLS_COND,
         target_cols=COLS_TARGET,
         mask_future_ch=MASK_FUTURE_CH,
@@ -288,6 +317,8 @@ def main():
                     help="walk-forward fold. 주어지면 data/folds/{fold}_{train,val,test}.csv 자동 매핑 + ckpt 에 _F{n} suffix")
     ap.add_argument("--normalize-vix", action="store_true",
                     help="train mean/std 로 vix_wr target 정규화")
+    ap.add_argument("--normalize-sp", action="store_true",
+                    help="train mean/std 로 sp_return target 정규화")
     ap.add_argument("--with-26w", action="store_true",
                     help="cond 에 tbill_26w_lag 포함 (legacy 3ch reproduce)")
     ap.add_argument("--no-liq", action="store_true",
@@ -320,14 +351,17 @@ def main():
     for seed in args.seeds:
         r = run(args.train_csv, args.test_csv, args.out_dir, seed=seed,
                 normalize_vix=args.normalize_vix, no_liq=args.no_liq,
+                normalize_sp=args.normalize_sp,
                 val_csv=args.val_csv, fold_tag=args.fold)
         if r is not None:
             results.append(r)
 
     if len(results) > 1:
-        tag_norm = "_normvix" if args.normalize_vix else ""
-        tag_liq  = "_noliq"   if args.no_liq        else ""
-        fold_str = f"_{args.fold}" if args.fold else ""
+        tag_norm_v  = "_normvix" if args.normalize_vix else ""
+        tag_norm_sr = "_normsr"  if args.normalize_sp  else ""
+        tag_norm    = tag_norm_v + tag_norm_sr
+        tag_liq     = "_noliq"   if args.no_liq        else ""
+        fold_str    = f"_{args.fold}" if args.fold else ""
         df_rows = []
         for r in results:
             row = {"seed": r["seed"], "best_epoch": r["best_epoch"], "val": r["val"], "test_mean": r["test"]}
