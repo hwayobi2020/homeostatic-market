@@ -199,47 +199,59 @@ def main():
                 rows.append(dict(variant=label, seed=seed, tail_nll_sp=float("nan")))
                 continue
             try:
-                _, tail_sp = evaluate_ckpt(ckpt_path, args.test_csv, tail_mask, device)
-                rows.append(dict(variant=label, seed=seed, tail_nll_sp=tail_sp))
+                full_sp, tail_sp = evaluate_ckpt(ckpt_path, args.test_csv, tail_mask, device)
+                rows.append(dict(variant=label, seed=seed,
+                                 full_nll_sp=full_sp, tail_nll_sp=tail_sp))
             except Exception as e:
-                rows.append(dict(variant=label, seed=seed, tail_nll_sp=float("nan")))
+                rows.append(dict(variant=label, seed=seed,
+                                 full_nll_sp=float("nan"), tail_nll_sp=float("nan")))
                 print(f"  ERROR  [{label}] seed={seed}: {e}")
 
     df = pd.DataFrame(rows)
 
-    # 변종별 집계 (표 순서 유지)
+    # 변종별 집계 (표 순서 유지) — full + tail 둘 다
     agg_rows = []
     for label, _, _ in VARIANTS:
-        sp_vals = df[df["variant"] == label]["tail_nll_sp"].dropna().values
-        if len(sp_vals) > 0:
+        full_vals = df[df["variant"] == label]["full_nll_sp"].dropna().values
+        tail_vals = df[df["variant"] == label]["tail_nll_sp"].dropna().values
+        if len(full_vals) > 0:
             agg_rows.append(dict(
                 variant=label,
-                median=float(np.median(sp_vals)),
-                mean=float(sp_vals.mean()),
-                std=float(sp_vals.std(ddof=1)) if len(sp_vals) > 1 else 0.0,
-                n=int(len(sp_vals)),
+                full_median=float(np.median(full_vals)),
+                full_mean  =float(full_vals.mean()),
+                full_std   =float(full_vals.std(ddof=1)) if len(full_vals) > 1 else 0.0,
+                tail_median=float(np.median(tail_vals)) if len(tail_vals) > 0 else None,
+                tail_mean  =float(tail_vals.mean())     if len(tail_vals) > 0 else None,
+                tail_std   =float(tail_vals.std(ddof=1)) if len(tail_vals) > 1 else 0.0,
+                n=int(len(full_vals)),
             ))
         else:
-            agg_rows.append(dict(variant=label, median=None, mean=None, std=None, n=0))
+            agg_rows.append(dict(variant=label, full_median=None, full_mean=None, full_std=None,
+                                 tail_median=None, tail_mean=None, tail_std=None, n=0))
 
-    # paper-style 표 — 콜라브 셀에 깔끔히 출력
-    title = (f"Tail-NLL  (sp_return 채널, 폭락 윈도우 = future "
-             f"{args.L - args.past_len}w 평균 하위 {args.percentile}%, n_tail={n_tail})")
-    print("=" * 90)
+    # paper-style 표 — full sp NLL + tail NLL 둘 다 출력
+    title = (f"sp_return Test NLL  (full + tail; 폭락 = future {args.L - args.past_len}w "
+             f"평균 하위 {args.percentile}%, n_tail={n_tail})")
+    print("=" * 130)
     print(title)
-    print("=" * 90)
-    head = f"{'#':>3}  {'variant':40s}  {'median':>10s}  {'mean ± std':>20s}  {'n':>3s}"
+    print("=" * 130)
+    head = (f"{'#':>3}  {'variant':40s}  "
+            f"{'full median':>11s}  {'full mean ± std':>20s}  "
+            f"{'tail median':>11s}  {'tail mean ± std':>20s}  {'n':>3s}")
     print(head)
-    print("-" * 90)
+    print("-" * 130)
     for i, r in enumerate(agg_rows, 1):
         if r["n"] > 0:
             print(f"{i:>3d}  {r['variant']:40s}  "
-                  f"{r['median']:>+10.4f}  "
-                  f"{r['mean']:>+8.4f} ± {r['std']:>6.3f}     "
+                  f"{r['full_median']:>+11.4f}  "
+                  f"{r['full_mean']:>+8.4f} ± {r['full_std']:>6.3f}     "
+                  f"{r['tail_median']:>+11.4f}  "
+                  f"{r['tail_mean']:>+8.4f} ± {r['tail_std']:>6.3f}     "
                   f"{r['n']:>3d}")
         else:
-            print(f"{i:>3d}  {r['variant']:40s}  {'—':>10s}  {'— (no ckpt)':>20s}  {0:>3d}")
-    print("=" * 90)
+            print(f"{i:>3d}  {r['variant']:40s}  {'—':>11s}  {'— (no ckpt)':>20s}  "
+                  f"{'—':>11s}  {'— (no ckpt)':>20s}  {0:>3d}")
+    print("=" * 130)
 
 
 if __name__ == "__main__":
