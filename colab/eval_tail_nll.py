@@ -65,6 +65,10 @@ VARIANTS = [
     ("MTL(3 채널, bondpp_3m, vix) [no-liq cond]",       "dual_3ch", "mtl_bp_vix_noliq"),
     ("MTL(3 채널, bondpp_3m정규, vix) [no-liq cond]",   "dual_3ch", "mtl_bp_vix_noliq_normbp"),
     ("MTL(3 채널, bondpp_3m, vix정규) [no-liq cond]",   "dual_3ch", "mtl_bp_vix_noliq_normvix"),
+    # stockpp 정규화 변종
+    ("MTL(2 채널, stockpp_3m정규)",                       "dual_3ch", "mtl_pps2_normsp"),
+    # bondpp + stockpp 동시 정규화 변종 (3채널)
+    ("MTL(3 채널, bondpp_3m정규, stockpp_3m정규)",        "dual_3ch", "mtl_bp_stockpp_normbp_normsp"),
 ]
 
 

@@ -1,18 +1,14 @@
-"""MTL 2채널 target — (sp_return, pp_stock_13w_lag) 동시 학습.
+"""MTL 3채널 target = (sp_return, pp_bond_13w_lag, pp_stock_13w_lag).
 
-bondpp 변종과 1대1 비교용 ablation. pp_stock 산식은 bondpp 와 대칭:
-  pp_stock[t] = pp_stock[t-1] × (1 + sp_return[t-1]) / (1 + metabolism_max[t])
-  pp_stock_13w_lag[t] = log(pp_stock[t-1] / pp_stock[t-14])
+bondpp + stockpp 둘 다 train mean/std 로 정규화 (둘 다 raw 분산이 커서 sp 학습 손상 방지).
+- normalize_bondpp 디폴트 True (paper 변종에서는 항상 정규화)
+- normalize_stockpp 디폴트 True
 
-cond past   (2ch × 52w): tbill_wr, excess_liq_wr (관측 — bondpp2 와 동일)
+cond past   (default 2ch × 52w): tbill_wr, excess_liq_wr (관측)
 cond future (1ch × 52w): tbill_wr 시나리오 활성, excess_liq_wr mask (=0)
-target       (2ch × past+future): sp_return, pp_stock_13w_lag (joint AR generation)
+target       (3ch × past+future): sp_return, pp_bond_13w_lag정규, pp_stock_13w_lag정규
 
-비교 대상:
-  MTL 2ch (sp + bondpp_3m):  sp_return median = -2.20 ★ (현 best)
-  이 모델 (sp + stockpp_3m): sp_return median = ? (예상: 약함 — pp_stock 은 sp_return 의 13주 누적 derived)
-
-Note: pp_stock 은 sp_return 자체의 누적이라 redundancy 큼. paper ablation 한 줄용.
+best ckpt 기준: sp_return val NLL 단독 (paper 주제와 일관)
 """
 import torch  # MUST be first
 
@@ -47,15 +43,26 @@ BATCH = 32
 MAX_EPOCHS = 60
 PATIENCE = 30
 
-COLS_TARGET = ["sp_return", "pp_stock_13w_lag"]
-COLS_COND      = ["tbill_wr", "excess_liq_wr"]   # 2ch (bondpp2 와 동일 패턴, default = NO_26W)
-MASK_FUTURE_CH = [1]                              # mask excess_liq_wr in future
+COLS_TARGET = ["sp_return", "pp_bond_13w_lag", "pp_stock_13w_lag"]
+COLS_COND_NO_26W   = ["tbill_wr", "excess_liq_wr"]
+COLS_COND_WITH_26W = ["tbill_wr", "tbill_26w_lag", "excess_liq_wr"]
+COLS_COND = COLS_COND_NO_26W
+MASK_FUTURE_CH_NO_26W   = [1]
+MASK_FUTURE_CH_WITH_26W = [1, 2]
+MASK_FUTURE_CH = MASK_FUTURE_CH_NO_26W
+BONDPP_TARGET_IDX  = 1
+STOCKPP_TARGET_IDX = 2
 
 LOG2PI = math.log(2 * math.pi)
 
 
-def load_windows(csv_path, cols_cond, cols_target, L=104,
-                 cond_stats=None, target_stats=None, normalize_target_idx=None):
+def load_windows_two_norm(csv_path, cols_cond, cols_target, L=104,
+                          cond_stats=None, target_stats_list=None,
+                          normalize_indices=()):
+    """
+    두 target 채널 동시 정규화 지원 — stats_t (list of dict) 반환.
+    normalize_indices: tuple/list of int — 정규화할 target 채널 idx.
+    """
     df = pd.read_csv(csv_path)
     n = len(df)
     n_w = n - L + 1
@@ -75,20 +82,20 @@ def load_windows(csv_path, cols_cond, cols_target, L=104,
         csd = np.asarray(cond_stats["std"],  dtype=np.float32)
     C = (C - cmu) / csd
 
-    tstats_out = None
-    if normalize_target_idx is not None:
-        if target_stats is None:
-            tmu = float(X[..., normalize_target_idx].mean())
-            tsd = float(X[..., normalize_target_idx].std()) + 1e-8
+    out_stats = []
+    for i, ch in enumerate(normalize_indices):
+        if target_stats_list is not None:
+            tmu = float(target_stats_list[i]["mean"])
+            tsd = float(target_stats_list[i]["std"])
         else:
-            tmu = float(target_stats["mean"])
-            tsd = float(target_stats["std"])
-        X[..., normalize_target_idx] = (X[..., normalize_target_idx] - tmu) / tsd
-        tstats_out = {"mean": tmu, "std": tsd, "channel": int(normalize_target_idx),
-                      "channel_name": cols_target[normalize_target_idx]}
+            tmu = float(X[..., ch].mean())
+            tsd = float(X[..., ch].std()) + 1e-8
+        X[..., ch] = (X[..., ch] - tmu) / tsd
+        out_stats.append({"mean": tmu, "std": tsd, "channel": int(ch),
+                          "channel_name": cols_target[ch]})
 
     return torch.from_numpy(X), torch.from_numpy(C), \
-           {"mean": cmu.tolist(), "std": csd.tolist()}, tstats_out
+           {"mean": cmu.tolist(), "std": csd.tolist()}, out_stats
 
 
 def mask_future_channels(C, past_len, mask_channels):
@@ -116,31 +123,37 @@ def loss_fn(X, C, model, past_len, device):
     return (nll_future / (F_ * D)).mean()
 
 
-STOCKPP_TARGET_IDX = 1   # pp_stock_13w_lag 위치
-
-
-def run(train_csv, test_csv, save_dir, seed=42, normalize_stockpp=False):
+def run(train_csv, test_csv, save_dir, seed=42,
+        normalize_bondpp=True, normalize_stockpp=True, no_liq=False):
     torch.manual_seed(seed)
     np.random.seed(seed)
     masked_names = [COLS_COND[i] for i in MASK_FUTURE_CH]
-    tag_norm = "_normsp" if normalize_stockpp else ""
+    tag_b   = "_normbp" if normalize_bondpp  else ""
+    tag_s   = "_normsp" if normalize_stockpp else ""
+    tag_liq = "_noliq"  if no_liq            else ""
     print(f"\n{'=' * 70}")
-    print(f"[MTL_pps2{tag_norm}] seed={seed}")
+    print(f"[MTL_bp_stockpp{tag_liq}{tag_b}{tag_s}] seed={seed}")
     print(f"  cond   = {COLS_COND}    (D_COND={len(COLS_COND)})")
     print(f"  target = {COLS_TARGET}  (D_TARGET={len(COLS_TARGET)})  joint")
     print(f"  mask_future_ch = {MASK_FUTURE_CH} → {masked_names} masked in future")
-    print(f"  normalize_stockpp = {normalize_stockpp} (target idx {STOCKPP_TARGET_IDX} = {COLS_TARGET[STOCKPP_TARGET_IDX]})")
+    print(f"  normalize_bondpp = {normalize_bondpp} (idx {BONDPP_TARGET_IDX})")
+    print(f"  normalize_stockpp= {normalize_stockpp} (idx {STOCKPP_TARGET_IDX})")
     print(f"{'=' * 70}")
 
-    norm_idx = STOCKPP_TARGET_IDX if normalize_stockpp else None
-    Xtr, Ctr, stats_c, stats_t = load_windows(train_csv, COLS_COND, COLS_TARGET, L=L,
-                                              normalize_target_idx=norm_idx)
-    Xte, Cte, _, _             = load_windows(test_csv,  COLS_COND, COLS_TARGET, L=L,
-                                              cond_stats=stats_c,
-                                              normalize_target_idx=norm_idx, target_stats=stats_t)
+    indices = []
+    if normalize_bondpp:  indices.append(BONDPP_TARGET_IDX)
+    if normalize_stockpp: indices.append(STOCKPP_TARGET_IDX)
+
+    Xtr, Ctr, stats_c, stats_t = load_windows_two_norm(
+        train_csv, COLS_COND, COLS_TARGET, L=L, normalize_indices=indices)
+    Xte, Cte, _, _ = load_windows_two_norm(
+        test_csv,  COLS_COND, COLS_TARGET, L=L,
+        cond_stats=stats_c, target_stats_list=stats_t, normalize_indices=indices)
 
     print(f"  cond z-score stats (train): mean={[round(m,5) for m in stats_c['mean']]}")
     print(f"                                std={[round(s,5) for s in stats_c['std']]}")
+    for s in stats_t:
+        print(f"  ★ target normalize (train) {s['channel_name']}: mean={s['mean']:+.5f}, std={s['std']:.5f}")
 
     Ctr = mask_future_channels(Ctr, PAST_LEN, MASK_FUTURE_CH)
     Cte = mask_future_channels(Cte, PAST_LEN, MASK_FUTURE_CH)
@@ -194,7 +207,7 @@ def run(train_csv, test_csv, save_dir, seed=42, normalize_stockpp=False):
             row[f"test_{c}"] = float(v)
         log.append(row)
 
-        # best ckpt 기준: sp_return 단독 val NLL (paper 주제와 일관)
+        # best ckpt 기준: sp_return 단독
         sp_idx_val = COLS_TARGET.index("sp_return")
         val_metric = float(val_per_ch[sp_idx_val])
         if val_metric < best_val - 1e-4:
@@ -214,7 +227,7 @@ def run(train_csv, test_csv, save_dir, seed=42, normalize_stockpp=False):
     print(f"    test per channel: " + ", ".join([f"{c}={v:+.4f}" for c, v in zip(COLS_TARGET, best_test_per_ch)]))
 
     os.makedirs(save_dir, exist_ok=True)
-    tag = f"mtl_pps2{tag_norm}_seed{seed}"
+    tag = f"mtl_bp_stockpp{tag_liq}{tag_b}{tag_s}_seed{seed}"
     ckpt_path    = os.path.join(save_dir, f"{tag}_best.pt")
     log_path     = os.path.join(save_dir, f"{tag}_trainlog.csv")
     summary_path = os.path.join(save_dir, f"{tag}_summary.json")
@@ -225,22 +238,25 @@ def run(train_csv, test_csv, save_dir, seed=42, normalize_stockpp=False):
             "cond_cols":     COLS_COND,
             "target_cols":   COLS_TARGET,
             "stats_cond":    stats_c,
-            "stats_target":  stats_t,
+            "stats_target_list": stats_t,
             "mask_future_ch": MASK_FUTURE_CH,
+            "normalize_bondpp":  normalize_bondpp,
             "normalize_stockpp": normalize_stockpp,
+            "no_liq": no_liq,
             "config": dict(K=K_STEPS, d_model=D_MODEL, n_heads=N_HEADS, n_layers=N_LAYERS,
                            d_cond=len(COLS_COND), d_target=len(COLS_TARGET),
                            past_len=PAST_LEN, total_len=L),
         }, ckpt_path)
     pd.DataFrame(log).to_csv(log_path, index=False)
     summary = dict(
-        stage=f"mtl_pps2{tag_norm}",
+        stage=f"mtl_bp_stockpp{tag_liq}{tag_b}{tag_s}",
         seed=seed,
-        normalize_stockpp=normalize_stockpp,
         cond_cols=COLS_COND,
         target_cols=COLS_TARGET,
-        stats_target=stats_t,
-        mask_future_ch=MASK_FUTURE_CH,
+        normalize_bondpp=normalize_bondpp,
+        normalize_stockpp=normalize_stockpp,
+        no_liq=no_liq,
+        target_stats_list=stats_t,
         best_epoch=best_epoch,
         val=best_val,
         test=best_test,
@@ -260,20 +276,35 @@ def main():
     ap.add_argument("--train-csv", default=os.path.join(HERE, "data", "weekly_ppbond_train.csv"))
     ap.add_argument("--test-csv",  default=os.path.join(HERE, "data", "weekly_ppbond_test.csv"))
     ap.add_argument("--out-dir",   default=os.path.join(HERE, "result"))
-    ap.add_argument("--normalize-stockpp", action="store_true",
-                    help="train mean/std 로 pp_stock_13w_lag target 정규화")
+    ap.add_argument("--no-normalize-bondpp",  dest="normalize_bondpp",  action="store_false",
+                    help="bondpp 정규화 끄기 (디폴트 켜짐)")
+    ap.add_argument("--no-normalize-stockpp", dest="normalize_stockpp", action="store_false",
+                    help="stockpp 정규화 끄기 (디폴트 켜짐)")
+    ap.add_argument("--no-liq", action="store_true",
+                    help="cond 에서 excess_liq_wr 제거 (cond=[tbill_wr] 1ch)")
+    ap.set_defaults(normalize_bondpp=True, normalize_stockpp=True)
     args = ap.parse_args()
+
+    global COLS_COND, MASK_FUTURE_CH
+    if args.no_liq:
+        COLS_COND = ["tbill_wr"]
+        MASK_FUTURE_CH = []
+        print(f"[--no-liq] cond = {COLS_COND}, mask = {MASK_FUTURE_CH}")
 
     os.makedirs(args.out_dir, exist_ok=True)
     results = []
     for seed in args.seeds:
         r = run(args.train_csv, args.test_csv, args.out_dir, seed=seed,
-                normalize_stockpp=args.normalize_stockpp)
+                normalize_bondpp=args.normalize_bondpp,
+                normalize_stockpp=args.normalize_stockpp,
+                no_liq=args.no_liq)
         if r is not None:
             results.append(r)
 
     if len(results) > 1:
-        tag_norm = "_normsp" if args.normalize_stockpp else ""
+        tag_b   = "_normbp" if args.normalize_bondpp  else ""
+        tag_s   = "_normsp" if args.normalize_stockpp else ""
+        tag_liq = "_noliq"  if args.no_liq            else ""
         df_rows = []
         for r in results:
             row = {"seed": r["seed"], "best_epoch": r["best_epoch"], "val": r["val"], "test_mean": r["test"]}
@@ -281,15 +312,15 @@ def main():
                 row[f"test_{c}"] = v
             df_rows.append(row)
         df = pd.DataFrame(df_rows)
-        out_csv = os.path.join(args.out_dir, f"mtl_pps2{tag_norm}_multiseed_results.csv")
+        out_csv = os.path.join(args.out_dir, f"mtl_bp_stockpp{tag_liq}{tag_b}{tag_s}_multiseed_results.csv")
         df.to_csv(out_csv, index=False)
-        print(f"\n[MTL_pps2{tag_norm}] multi-seed (n={len(df)})")
+        print(f"\n[MTL_bp_stockpp{tag_liq}{tag_b}{tag_s}] multi-seed (n={len(df)})")
         print(f"  val:                  mean={df.val.mean():+.4f} ± {df.val.std():.4f}  median={df.val.median():+.4f}")
-        print(f"  test mean (2ch avg):  mean={df.test_mean.mean():+.4f} ± {df.test_mean.std():.4f}  median={df.test_mean.median():+.4f}")
+        print(f"  test mean (3ch avg):  mean={df.test_mean.mean():+.4f} ± {df.test_mean.std():.4f}  median={df.test_mean.median():+.4f}")
         for c in COLS_TARGET:
             col = f"test_{c}"
             print(f"  test {c:<18s}: mean={df[col].mean():+.4f} ± {df[col].std():.4f}  median={df[col].median():+.4f}")
-        print(f"\n  ★ vs MTL 2ch (sp+bp) sp_return median=-2.20: this sp_return median={df['test_sp_return'].median():+.4f}")
+        print(f"\n  ★ vs MTL 3ch (liq+bondpp정규) sp_return median=-2.19: this sp_return median={df['test_sp_return'].median():+.4f}")
 
 
 if __name__ == "__main__":
