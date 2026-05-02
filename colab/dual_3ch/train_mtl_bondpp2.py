@@ -121,13 +121,17 @@ def loss_fn(X, C, model, past_len, device):
     return (nll_future / (F_ * D)).mean()
 
 
-def run(train_csv, test_csv, save_dir, seed=42, normalize_bondpp=False):
+def run(train_csv, test_csv, save_dir, seed=42, normalize_bondpp=False,
+        val_csv=None, fold_tag=None):
     torch.manual_seed(seed)
     np.random.seed(seed)
     masked_names = [COLS_COND[i] for i in MASK_FUTURE_CH]
-    tag_norm = "_normbp" if normalize_bondpp else ""
+    tag_norm  = "_normbp" if normalize_bondpp else ""
+    fold_str  = f"_{fold_tag}" if fold_tag else ""
     print(f"\n{'=' * 70}")
-    print(f"[MTL_bp2{tag_norm}] seed={seed}")
+    print(f"[MTL_bp2{tag_norm}{fold_str}] seed={seed}")
+    if val_csv is not None:
+        print(f"  val_csv = {val_csv}  (별도 val sliding window)")
     print(f"  cond   = {COLS_COND}    (D_COND={len(COLS_COND)})")
     print(f"  target = {COLS_TARGET}  (D_TARGET={len(COLS_TARGET)})  joint")
     print(f"  mask_future_ch = {MASK_FUTURE_CH} → {masked_names} masked in future")
@@ -149,11 +153,23 @@ def run(train_csv, test_csv, save_dir, seed=42, normalize_bondpp=False):
     Ctr = mask_future_channels(Ctr, PAST_LEN, MASK_FUTURE_CH)
     Cte = mask_future_channels(Cte, PAST_LEN, MASK_FUTURE_CH)
 
-    n_w_tr = Xtr.shape[0]
-    n_val = max(int(n_w_tr * 0.15), 1)
-    Xtr_, Ctr_ = Xtr[:-n_val], Ctr[:-n_val]
-    Xv,  Cv  = Xtr[-n_val:], Ctr[-n_val:]
-    print(f"  train_windows={Xtr_.shape[0]}, val_windows={Xv.shape[0]}, test_windows={Xte.shape[0]}")
+    if val_csv is not None:
+        # 별도 val CSV 로드 (sliding window)
+        Xv, Cv, _, _ = load_windows(val_csv, COLS_COND, COLS_TARGET, L=L,
+                                     cond_stats=stats_c, target_stats=stats_t,
+                                     normalize_target_idx=norm_idx)
+        Cv = mask_future_channels(Cv, PAST_LEN, MASK_FUTURE_CH)
+        Xtr_, Ctr_ = Xtr, Ctr
+        print(f"  train_windows={Xtr_.shape[0]} (full train), "
+              f"val_windows={Xv.shape[0]} (from val_csv), test_windows={Xte.shape[0]}")
+    else:
+        # legacy: train 마지막 15% 자동 split
+        n_w_tr = Xtr.shape[0]
+        n_val = max(int(n_w_tr * 0.15), 1)
+        Xtr_, Ctr_ = Xtr[:-n_val], Ctr[:-n_val]
+        Xv,  Cv    = Xtr[-n_val:], Ctr[-n_val:]
+        print(f"  train_windows={Xtr_.shape[0]}, val_windows={Xv.shape[0]} (auto split 15%), "
+              f"test_windows={Xte.shape[0]}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = MultiStepFAVARFlow(
@@ -215,7 +231,7 @@ def run(train_csv, test_csv, save_dir, seed=42, normalize_bondpp=False):
     print(f"    test per channel: " + ", ".join([f"{c}={v:+.4f}" for c, v in zip(COLS_TARGET, best_test_per_ch)]))
 
     os.makedirs(save_dir, exist_ok=True)
-    tag = f"mtl_bp2{tag_norm}_seed{seed}"
+    tag = f"mtl_bp2{tag_norm}{fold_str}_seed{seed}"
     ckpt_path    = os.path.join(save_dir, f"{tag}_best.pt")
     log_path     = os.path.join(save_dir, f"{tag}_trainlog.csv")
     summary_path = os.path.join(save_dir, f"{tag}_summary.json")
@@ -235,7 +251,8 @@ def run(train_csv, test_csv, save_dir, seed=42, normalize_bondpp=False):
         }, ckpt_path)
     pd.DataFrame(log).to_csv(log_path, index=False)
     summary = dict(
-        stage=f"mtl_bp2{tag_norm}",
+        stage=f"mtl_bp2{tag_norm}{fold_str}",
+        fold=fold_tag,
         seed=seed,
         cond_cols=COLS_COND,
         target_cols=COLS_TARGET,
@@ -259,8 +276,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--seeds", nargs="+", type=int, default=[42])
     ap.add_argument("--train-csv", default=os.path.join(HERE, "data", "weekly_ppbond_train.csv"))
+    ap.add_argument("--val-csv",   default=None,
+                    help="별도 val CSV (sliding window NLL). None이면 train 마지막 15% 자동 split")
     ap.add_argument("--test-csv",  default=os.path.join(HERE, "data", "weekly_ppbond_test.csv"))
     ap.add_argument("--out-dir",   default=os.path.join(HERE, "result"))
+    ap.add_argument("--fold", default=None, choices=["F1", "F2", "F3"],
+                    help="walk-forward fold. 주어지면 data/folds/{fold}_{train,val,test}.csv 자동 매핑 + ckpt 에 _F{n} suffix")
     ap.add_argument("--normalize-bondpp", action="store_true",
                     help="train mean/std 로 pp_bond_13w_lag target 정규화")
     ap.add_argument("--with-26w", action="store_true",
@@ -272,16 +293,28 @@ def main():
         MASK_FUTURE_CH = MASK_FUTURE_CH_WITH_26W
         print(f"[--with-26w] cond = {COLS_COND}, mask = {MASK_FUTURE_CH}")
 
+    if args.fold is not None:
+        repo_root = os.path.normpath(os.path.join(HERE, "..", ".."))
+        folds_dir = os.path.join(repo_root, "data", "folds")
+        args.train_csv = os.path.join(folds_dir, f"{args.fold}_train.csv")
+        args.val_csv   = os.path.join(folds_dir, f"{args.fold}_val.csv")
+        args.test_csv  = os.path.join(folds_dir, f"{args.fold}_test.csv")
+        print(f"[--fold {args.fold}] train={args.train_csv}")
+        print(f"               val  ={args.val_csv}")
+        print(f"               test ={args.test_csv}")
+
     os.makedirs(args.out_dir, exist_ok=True)
     results = []
     for seed in args.seeds:
         r = run(args.train_csv, args.test_csv, args.out_dir, seed=seed,
-                normalize_bondpp=args.normalize_bondpp)
+                normalize_bondpp=args.normalize_bondpp,
+                val_csv=args.val_csv, fold_tag=args.fold)
         if r is not None:
             results.append(r)
 
     if len(results) > 1:
         tag_norm = "_normbp" if args.normalize_bondpp else ""
+        fold_str = f"_{args.fold}" if args.fold else ""
         df_rows = []
         for r in results:
             row = {"seed": r["seed"], "best_epoch": r["best_epoch"], "val": r["val"], "test_mean": r["test"]}
@@ -289,9 +322,9 @@ def main():
                 row[f"test_{c}"] = v
             df_rows.append(row)
         df = pd.DataFrame(df_rows)
-        out_csv = os.path.join(args.out_dir, f"mtl_bp2{tag_norm}_multiseed_results.csv")
+        out_csv = os.path.join(args.out_dir, f"mtl_bp2{tag_norm}{fold_str}_multiseed_results.csv")
         df.to_csv(out_csv, index=False)
-        print(f"\n[MTL_bp2{tag_norm}] multi-seed (n={len(df)})")
+        print(f"\n[MTL_bp2{tag_norm}{fold_str}] multi-seed (n={len(df)})")
         print(f"  val:                  mean={df.val.mean():+.4f} ± {df.val.std():.4f}  median={df.val.median():+.4f}")
         print(f"  test mean (2ch avg):  mean={df.test_mean.mean():+.4f} ± {df.test_mean.std():.4f}  median={df.test_mean.median():+.4f}")
         for c in COLS_TARGET:
