@@ -122,7 +122,8 @@ STOCKPP_TARGET_IDX = 1   # pp_stock_13w_lag 위치
 
 
 def run(train_csv, test_csv, save_dir, seed=42, normalize_stockpp=False, no_liq=False,
-        normalize_sp=False, val_csv=None, fold_tag=None):
+        normalize_sp=False, val_csv=None, fold_tag=None,
+        warmup_epochs=0, patience=PATIENCE):
     torch.manual_seed(seed)
     np.random.seed(seed)
     masked_names = [COLS_COND[i] for i in MASK_FUTURE_CH]
@@ -131,7 +132,9 @@ def run(train_csv, test_csv, save_dir, seed=42, normalize_stockpp=False, no_liq=
     tag_norm    = tag_norm_s + tag_norm_sr
     tag_liq     = "_noliq"  if no_liq            else ""
     fold_str    = f"_{fold_tag}" if fold_tag else ""
-    tag_full    = f"mtl_pps2{tag_liq}{tag_norm}{fold_str}_seed{seed}"
+    tag_extra   = (f"_warmup{warmup_epochs}" if warmup_epochs > 0 else "") + \
+                  (f"_pat{patience}"          if patience != PATIENCE else "")
+    tag_full    = f"mtl_pps2{tag_liq}{tag_norm}{tag_extra}{fold_str}_seed{seed}"
     ckpt_path   = os.path.join(save_dir, f"{tag_full}_best.pt")
     summary_path_pre = os.path.join(save_dir, f"{tag_full}_summary.json")
     if os.path.exists(ckpt_path) and os.path.exists(summary_path_pre):
@@ -238,7 +241,8 @@ def run(train_csv, test_csv, save_dir, seed=42, normalize_stockpp=False, no_liq=
         # best ckpt 기준: sp_return 단독 val NLL (paper 주제와 일관)
         sp_idx_val = COLS_TARGET.index("sp_return")
         val_metric = float(val_per_ch[sp_idx_val])
-        if val_metric < best_val - 1e-4:
+        # Warmup: epoch < warmup_epochs 에선 best 갱신 무시 (early saturation 차단)
+        if epoch >= warmup_epochs and val_metric < best_val - 1e-4:
             best_val = val_metric
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
             best_test = test_nll
@@ -247,7 +251,7 @@ def run(train_csv, test_csv, save_dir, seed=42, normalize_stockpp=False, no_liq=
             pat = 0
         else:
             pat += 1
-        if pat >= PATIENCE:
+        if pat >= patience:
             print(f"  early stop at epoch {epoch}")
             break
 
@@ -276,9 +280,11 @@ def run(train_csv, test_csv, save_dir, seed=42, normalize_stockpp=False, no_liq=
         }, ckpt_path)
     pd.DataFrame(log).to_csv(log_path, index=False)
     summary = dict(
-        stage=f"mtl_pps2{tag_liq}{tag_norm}{fold_str}",
+        stage=f"mtl_pps2{tag_liq}{tag_norm}{tag_extra}{fold_str}",
         fold=fold_tag,
         seed=seed,
+        warmup_epochs=warmup_epochs,
+        patience=patience,
         no_liq=no_liq,
         normalize_sp=normalize_sp,
         stats_targets_all={int(k): v for k, v in stats_targets_all.items()},
@@ -315,6 +321,10 @@ def main():
                     help="train mean/std 로 sp_return target 정규화")
     ap.add_argument("--no-liq", action="store_true",
                     help="cond 에서 excess_liq_wr 제거 (cond=[tbill_wr] 1ch only)")
+    ap.add_argument("--warmup-epochs", type=int, default=0,
+                    help="best ckpt 갱신 차단 구간 (early saturation 방지). default 0=끔")
+    ap.add_argument("--patience", type=int, default=PATIENCE,
+                    help=f"early stop patience. default {PATIENCE}")
     args = ap.parse_args()
     global COLS_COND, MASK_FUTURE_CH
     if args.no_liq:
@@ -336,7 +346,8 @@ def main():
         r = run(args.train_csv, args.test_csv, args.out_dir, seed=seed,
                 normalize_stockpp=args.normalize_stockpp, no_liq=args.no_liq,
                 normalize_sp=args.normalize_sp,
-                val_csv=args.val_csv, fold_tag=args.fold)
+                val_csv=args.val_csv, fold_tag=args.fold,
+                warmup_epochs=args.warmup_epochs, patience=args.patience)
         if r is not None:
             results.append(r)
 
@@ -346,6 +357,8 @@ def main():
         tag_norm    = tag_norm_s + tag_norm_sr
         tag_liq     = "_noliq"  if args.no_liq            else ""
         fold_str    = f"_{args.fold}" if args.fold else ""
+        tag_extra   = (f"_warmup{args.warmup_epochs}" if args.warmup_epochs > 0 else "") + \
+                      (f"_pat{args.patience}"          if args.patience != PATIENCE else "")
         df_rows = []
         for r in results:
             row = {"seed": r["seed"], "best_epoch": r["best_epoch"], "val": r["val"], "test_mean": r["test"]}
@@ -353,9 +366,9 @@ def main():
                 row[f"test_{c}"] = v
             df_rows.append(row)
         df = pd.DataFrame(df_rows)
-        out_csv = os.path.join(args.out_dir, f"mtl_pps2{tag_liq}{tag_norm}{fold_str}_multiseed_results.csv")
+        out_csv = os.path.join(args.out_dir, f"mtl_pps2{tag_liq}{tag_norm}{tag_extra}{fold_str}_multiseed_results.csv")
         df.to_csv(out_csv, index=False)
-        print(f"\n[MTL_pps2{tag_liq}{tag_norm}{fold_str}] multi-seed (n={len(df)})")
+        print(f"\n[MTL_pps2{tag_liq}{tag_norm}{tag_extra}{fold_str}] multi-seed (n={len(df)})")
         print(f"  val:                  mean={df.val.mean():+.4f} ± {df.val.std():.4f}  median={df.val.median():+.4f}")
         print(f"  test mean (2ch avg):  mean={df.test_mean.mean():+.4f} ± {df.test_mean.std():.4f}  median={df.test_mean.median():+.4f}")
         for c in COLS_TARGET:
