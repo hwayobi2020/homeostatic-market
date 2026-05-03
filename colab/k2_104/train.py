@@ -104,13 +104,14 @@ def nll_per_step_channel(X, C, model, past_len, device):
 
 def run(condition_name, cols_cond, train_csv, test_csv, save_dir, seed=42,
         normalize_sp=False, val_csv=None, fold_tag=None,
-        warmup_epochs=0, patience=PATIENCE):
+        warmup_epochs=0, patience=PATIENCE, max_epochs=MAX_EPOCHS):
     torch.manual_seed(seed)
     np.random.seed(seed)
     tag_norm_sr = "_normsr" if normalize_sp else ""
     fold_str    = f"_{fold_tag}" if fold_tag else ""
     tag_extra   = (f"_warmup{warmup_epochs}" if warmup_epochs > 0 else "") + \
-                  (f"_pat{patience}"          if patience != PATIENCE else "")
+                  (f"_pat{patience}"          if patience != PATIENCE else "") + \
+                  (f"_max{max_epochs}"        if max_epochs != MAX_EPOCHS else "")
     tag_full    = f"{condition_name}{tag_norm_sr}{tag_extra}{fold_str}_seed{seed}"
     ckpt_path   = os.path.join(save_dir, f"{tag_full}_best.pt")
     summary_path_pre = os.path.join(save_dir, f"{tag_full}_summary.json")
@@ -185,7 +186,7 @@ def run(condition_name, cols_cond, train_csv, test_csv, save_dir, seed=42,
     pat = 0
     log = []
 
-    for epoch in range(1, MAX_EPOCHS + 1):
+    for epoch in range(1, max_epochs + 1):
         model.train()
         perm = torch.randperm(Xtr_.shape[0])
         losses = []
@@ -282,6 +283,8 @@ def main():
                     help="best ckpt 갱신 차단 구간 (early saturation 방지). default 0=끔")
     ap.add_argument("--patience", type=int, default=PATIENCE,
                     help=f"early stop patience. default {PATIENCE}")
+    ap.add_argument("--max-epochs", type=int, default=MAX_EPOCHS,
+                    help=f"최대 학습 epoch. default {MAX_EPOCHS}")
     args = ap.parse_args()
     if args.with_26w and args.no_liq:
         raise ValueError("--with-26w 와 --no-liq 동시 사용 불가")
@@ -313,7 +316,8 @@ def main():
         r = run(condition_name, COND_K2_104, args.train_csv, args.test_csv, args.out_dir,
                 seed=seed, normalize_sp=args.normalize_sp,
                 val_csv=args.val_csv, fold_tag=args.fold,
-                warmup_epochs=args.warmup_epochs, patience=args.patience)
+                warmup_epochs=args.warmup_epochs, patience=args.patience,
+                max_epochs=args.max_epochs)
         if r is not None:
             results.append(r)
 
@@ -321,7 +325,8 @@ def main():
         tag_norm_sr = "_normsr" if args.normalize_sp else ""
         fold_str    = f"_{args.fold}" if args.fold else ""
         tag_extra   = (f"_warmup{args.warmup_epochs}" if args.warmup_epochs > 0 else "") + \
-                      (f"_pat{args.patience}"          if args.patience != PATIENCE else "")
+                      (f"_pat{args.patience}"          if args.patience != PATIENCE else "") + \
+                      (f"_max{args.max_epochs}"        if args.max_epochs != MAX_EPOCHS else "")
         df = pd.DataFrame(results)
         df.to_csv(os.path.join(args.out_dir, f"{condition_name}{tag_norm_sr}{tag_extra}{fold_str}_multiseed_results.csv"), index=False)
         v_mean, v_std = df.val.mean(), df.val.std()
