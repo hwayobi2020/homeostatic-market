@@ -80,12 +80,26 @@ def load_test_windows(test_csv, ckpt):
     csd = np.asarray(stats_cond["std"],  dtype=np.float32)
     C = (C - cmu) / csd
 
-    stats_target = ckpt.get("stats_target", None)
-    if stats_target is not None:
-        ch = int(stats_target["channel"])
-        tmu = float(stats_target["mean"])
-        tsd = float(stats_target["std"])
-        X[..., ch] = (X[..., ch] - tmu) / tsd
+    # 모든 정규화 채널 적용 (stats_targets_all 우선, legacy stats_target / stats_target_extra / stats_target_list 호환)
+    stats_targets_all = ckpt.get("stats_targets_all")
+    if stats_targets_all:
+        for ch_key, s in stats_targets_all.items():
+            ch = int(ch_key)
+            X[..., ch] = (X[..., ch] - float(s["mean"])) / float(s["std"])
+    else:
+        st = ckpt.get("stats_target")
+        if st is not None:
+            ch = int(st["channel"])
+            X[..., ch] = (X[..., ch] - float(st["mean"])) / float(st["std"])
+        st_extra = ckpt.get("stats_target_extra")
+        if st_extra is not None:
+            ch = int(st_extra["channel"])
+            X[..., ch] = (X[..., ch] - float(st_extra["mean"])) / float(st_extra["std"])
+        st_list = ckpt.get("stats_target_list")
+        if st_list:
+            for s in st_list:
+                ch = int(s["channel"])
+                X[..., ch] = (X[..., ch] - float(s["mean"])) / float(s["std"])
 
     mask_future_ch = ckpt.get("mask_future_ch", []) or []
     for ch in mask_future_ch:
@@ -95,13 +109,16 @@ def load_test_windows(test_csv, ckpt):
 
 
 def sp_is_normalized(ckpt) -> bool:
-    """sp_return 자체가 stats_target 으로 정규화되었는가 — 두 모델이 같은 상태여야 NLL 비교 가능."""
+    """sp_return 이 정규화되었는가 — 두 모델이 같은 상태여야 NLL 단위 일치 (Vuong 비교 가능)."""
     target_cols = ckpt["target_cols"]
     if "sp_return" not in target_cols:
         return False
     sp_idx = target_cols.index("sp_return")
-    stats_target = ckpt.get("stats_target", None)
-    return stats_target is not None and int(stats_target["channel"]) == sp_idx
+    sta = ckpt.get("stats_targets_all", None)
+    if sta:
+        return any(int(k) == sp_idx for k in sta.keys())
+    st = ckpt.get("stats_target")
+    return st is not None and int(st["channel"]) == sp_idx
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -129,27 +146,40 @@ def per_window_sp_nll(ckpt_path, test_csv, device):
     return per_win, sp_is_normalized(ckpt)
 
 
-def avg_per_window_sp_nll(folder, prefix, root, test_csv, device):
-    seed_arrs = []
-    missing = []
+def avg_per_window_sp_nll(folder, prefix_template, root, out_subdir, folds, data_folds_dir, device):
+    """fold 별 ckpt × 5 seed 의 per-window NLL → seed 평균 → fold 별 NLL concat.
+
+    prefix_template: "{prefix}{fold_str}" 형태의 ckpt prefix. fold suffix 는 함수가 채움.
+    folds: ['F1', 'F2', 'F3'] 등.
+    """
+    fold_arrs = []
+    missing_total = []
     sp_norm_states = []
-    for seed in SEEDS:
-        ckpt_path = os.path.join(root, "colab", folder, "result",
-                                 f"{prefix}_seed{seed}_best.pt")
-        if not os.path.exists(ckpt_path):
-            missing.append(seed)
+    for fold in folds:
+        test_csv = os.path.join(data_folds_dir, f"{fold}_test.csv")
+        if not os.path.exists(test_csv):
+            print(f"  [WARN] {fold} test_csv missing: {test_csv}")
             continue
-        per_win, sp_norm = per_window_sp_nll(ckpt_path, test_csv, device)
-        if per_win is None:
-            raise RuntimeError(f"[{prefix} seed{seed}] target 에 sp_return 없음 (Vuong 불가 변종)")
-        seed_arrs.append(per_win)
-        sp_norm_states.append(sp_norm)
-    if not seed_arrs:
-        raise RuntimeError(f"[{prefix}] ckpt 하나도 못 찾음")
+        seed_arrs = []
+        for seed in SEEDS:
+            ckpt_path = os.path.join(root, "colab", folder, out_subdir,
+                                     f"{prefix_template}_{fold}_seed{seed}_best.pt")
+            if not os.path.exists(ckpt_path):
+                missing_total.append((fold, seed))
+                continue
+            per_win, sp_norm = per_window_sp_nll(ckpt_path, test_csv, device)
+            if per_win is None:
+                raise RuntimeError(f"[{prefix_template} {fold} seed{seed}] target 에 sp_return 없음")
+            seed_arrs.append(per_win)
+            sp_norm_states.append(sp_norm)
+        if seed_arrs:
+            fold_arrs.append(np.stack(seed_arrs, axis=0).mean(axis=0))   # [n_w_fold]
+    if not fold_arrs:
+        raise RuntimeError(f"[{prefix_template}] ckpt 하나도 못 찾음")
     if len(set(sp_norm_states)) > 1:
-        raise RuntimeError(f"[{prefix}] seed 간 sp_return 정규화 상태 불일치: {sp_norm_states}")
-    arr = np.stack(seed_arrs, axis=0)         # [n_seed, n_w]
-    return arr.mean(axis=0), len(seed_arrs), missing, sp_norm_states[0]
+        raise RuntimeError(f"[{prefix_template}] seed 간 sp_return 정규화 상태 불일치: {sp_norm_states}")
+    pooled = np.concatenate(fold_arrs, axis=0)      # [sum n_w]
+    return pooled, len(sp_norm_states), missing_total, sp_norm_states[0]
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -194,28 +224,33 @@ def vuong_stat(delta, hac_lag):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root",     default=ROOT)
-    ap.add_argument("--test-csv", default=os.path.join(ROOT, "data", "weekly_ppbond_test.csv"))
-    ap.add_argument("--a-folder", default="dual_3ch", help="모델 A folder under colab/")
-    ap.add_argument("--a-prefix", default="mtl_bp2",
-                    help="모델 A prefix (기본 best = mtl_bp2 = MTL 2ch sp+bondpp_3m)")
-    ap.add_argument("--b-folder", default="dual_3ch")
-    ap.add_argument("--b-prefix", default="mtl3",
-                    help="모델 B prefix (기본 vix baseline = mtl3 = MTL 3ch liq+vix)")
+    ap.add_argument("--out-subdir", default="result_paper_final",
+                    help="ckpt 폴더 (colab/<folder>/<out_subdir>/)")
+    ap.add_argument("--data-folds", default=os.path.join(ROOT, "data", "folds"),
+                    help="3-fold CSV 폴더 (F1/F2/F3_test.csv)")
+    ap.add_argument("--folds", nargs="+", default=["F1", "F2", "F3"])
+    ap.add_argument("--a-folder", default="dual_3ch")
+    ap.add_argument("--a-prefix", default="mtl_pps2_noliq_normsp_normsr",
+                    help="모델 A prefix (default: best = mtl_pps2 noliq sp+stockpp 정규)")
+    ap.add_argument("--b-folder", default="k2_104")
+    ap.add_argument("--b-prefix", default="K2_104_2ch_normsr",
+                    help="모델 B prefix (default: simplest baseline = K2_104_2ch cond=tbill 1ch)")
     ap.add_argument("--hac-lag",  type=int, default=52,
                     help="HAC Bartlett lag (기본 52w=1y, 0 으로 끄기)")
     args = ap.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    print(f"\n# Vuong Closeness Test  (sp_return 채널, future 52w per-window NLL, seed-mean)")
+    print(f"\n# Vuong Closeness Test  (sp_return 채널, future 52w per-window NLL, seed-mean, 3-fold pooled)")
     print(f"# A : folder={args.a_folder:8s}  prefix={args.a_prefix}")
     print(f"# B : folder={args.b_folder:8s}  prefix={args.b_prefix}")
+    print(f"# folds = {args.folds}  |  out_subdir = {args.out_subdir}")
     print(f"# device = {device}  |  HAC lag = {args.hac_lag} (Bartlett kernel)\n")
 
     nll_a, n_seed_a, miss_a, sp_norm_a = avg_per_window_sp_nll(
-        args.a_folder, args.a_prefix, args.root, args.test_csv, device)
+        args.a_folder, args.a_prefix, args.root, args.out_subdir, args.folds, args.data_folds, device)
     nll_b, n_seed_b, miss_b, sp_norm_b = avg_per_window_sp_nll(
-        args.b_folder, args.b_prefix, args.root, args.test_csv, device)
+        args.b_folder, args.b_prefix, args.root, args.out_subdir, args.folds, args.data_folds, device)
 
     if sp_norm_a != sp_norm_b:
         raise RuntimeError(
@@ -231,9 +266,9 @@ def main():
     mean_b = float(nll_b.mean())
     out = vuong_stat(delta, args.hac_lag)
 
-    print(f"# A seeds used = {n_seed_a}/5  (missing: {miss_a})")
-    print(f"# B seeds used = {n_seed_b}/5  (missing: {miss_b})")
-    print(f"# n_w (test windows) = {n}")
+    print(f"# A measurements used = {n_seed_a}/{5*len(args.folds)}  (missing: {miss_a})")
+    print(f"# B measurements used = {n_seed_b}/{5*len(args.folds)}  (missing: {miss_b})")
+    print(f"# n_w (pooled test windows across folds) = {n}")
     print(f"# sp_return 정규화 상태 일치: {sp_norm_a}\n")
 
     print("=" * 80)
