@@ -66,8 +66,9 @@ VARIANTS = [
     (11, "MTL(2 채널, stockpp정규) [no-liq]",                        "dual_3ch", "mtl_pps2_noliq_normsp_normsr{fold}"),
     (12, "MTL(3 채널, bondpp+vix정규) [no-liq]",                     "dual_3ch", "mtl_bp_vix_noliq_normbp_normvix_normsr{fold}"),
     (13, "MTL(3 채널, bondpp+stockpp정규) [no-liq]",                 "dual_3ch", "mtl_bp_stockpp_noliq_normbp_normsp_normsr{fold}"),
-    # 14-17: MTL 3 채널, liq with cond
-    (14, "MTL(3 채널, liq, bondpp정규)",                             "dual_3ch", "mtl_bp3_normbp_normsr{fold}"),
+    # 14-17: MTL 3 채널
+    # 행 14 는 cond=1ch 통일 (target 에 excess_liq 있는 redundancy 제거) → 행 16 과 동일 ckpt 매핑.
+    (14, "MTL(3 채널, bondpp정규) [no-liq, = 행16]",                 "dual_3ch", "mtl_bp3_noliq_normbp_normsr{fold}"),
     (15, "MTL(3 채널, liq, vix정규)",                                "dual_3ch", "mtl3_normvix_normsr{fold}"),
     (16, "MTL(3 채널, bondpp정규) [no-liq]",                         "dual_3ch", "mtl_bp3_noliq_normbp_normsr{fold}"),
     (17, "MTL(3 채널, bondpp+vix정규) [no-liq]",                     "dual_3ch", "mtl_bp_vix_noliq_normbp_normvix_normsr{fold}"),
