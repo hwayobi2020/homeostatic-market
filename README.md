@@ -7,61 +7,38 @@
 
 ---
 
-## 0. 지난 경과 (narrative)
+## 0. 경과 요약
 
-### 0.1 어디서 출발했나 — 항상성 강화학습
+### 0.1 출발점 — 항상성 강화학습
 
-처음 가설은 *행동 출현(emergence)* 이었다.
+- **가설**: 생체의 항상성(homeostasis)이 reward 매개로 복합 행동을 자발적으로 출현시킨다는 결과(Yoshida et al. 2024)를 금융 에이전트에 이식. 명시적 투자 보상 없이 구매력(purchasing power) 유지 압력만으로 투자 행동이 출현하는지 검증.
+- **구현**: PPO(Proximal Policy Optimization) 단일 에이전트, 2층 항상성(생존 + 사회적 비교), GBM(Geometric Brownian Motion) 환경 → 실제 S&P 500 + FRED(Federal Reserve Economic Data).
+- **확장 모듈** (Phase 1 ~ 14): High-Water-Mark / Equanimity reward, 분위별 기초대사(DFA Distributional Financial Accounts 3분위), 분기·반기 rebalancing, LightGBM 예측 신호 + Selective leverage, Population evolution / Neuroevolution(CMA-ES로 Tiny MLP 진화), Mamba-기반 weight learner.
+- **상세 기록**: [`docs/project_documentation.md`](docs/project_documentation.md).
 
-생물은 체온·혈당 같은 내부 상태를 **항상성(homeostasis)** 으로 유지하려는 압력만 받아도 걷기·먹이찾기 같은 복합 행동을 자발적으로 출현시킨다 (Yoshida et al. 2024, homeostatic reinforcement learning). 금융 에이전트도 동일한 구조 — *"투자해라"라는 보상 없이* 구매력(purchasing power)을 일정 수준으로 유지하라는 항상성 목표만 부여 — 로 만들면, 투자 행동이 자발적으로 출현하는지 검증하는 게 1차 목표였다.
+### 0.2 패러다임 전환의 본질적 이유
 
-PPO(Proximal Policy Optimization, 강화학습 알고리즘)로 단일 에이전트를 학습시킨 결과:
+**항상성 reward는 학습 신호로서 간접적이다.**
 
-- 1층 항상성(생존 = 구매력 절대값 유지)만으로도 비선형 투자 반응 함수 출현
-- 2층(사회적 항상성, 즉 시장 평균 대비 상대 위치) 추가 시 적극성 증가
-- 관측 지연(lag)을 늘리면 트레이더 → 일반 투자자(과잉반응, fat tail) → 예금자(포기) 분화
+항상성 setpoint를 보상에 주입한 뒤 에이전트가 이를 만족시키는 행동을 *간접적으로* 학습하기를 기다리는 구조에서, 학습 신호와 관심 대상(주가 분포·tail risk) 사이에는 *reward → policy → action → return* 의 다단계 매개가 존재한다. 이 간접성은 다음 두 한계를 야기한다:
 
-여기까지는 **GBM(Geometric Brownian Motion, 단순 가격 프로세스)** 환경에서의 결과였고, 그 후 실제 S&P 500 + FRED(Federal Reserve Economic Data) 데이터로 옮겨 다음을 점진적으로 추가했다:
+1. **학습 신호의 정보 손실**: 풍부한 거시경제 신호를 단일 scalar reward로 압축한 뒤, policy gradient를 통해 다시 복원해야 한다.
+2. **학계 차별화의 약화**: "행동이 출현했다"는 정성적 결과는 흥미롭지만, 그 자체로 정량 metric을 통한 외부 검증이 어렵다.
 
-- High-Water-Mark / Equanimity reward
-- 분위별 기초대사 (DFA Distributional Financial Accounts 상위 1% / 50-90 / 하위 50)
-- 분기/반기 rebalancing
-- LightGBM 예측 신호 + Selective leverage
-- Population evolution + Neuroevolution (Tiny MLP를 CMA-ES로 진화)
-- Mamba-기반 weight learner
+부수적 검증 결과 — Walk-forward(3-fold) 설계에서 alpha 생성은 통계적 power 부족(test 161개월에 −10% 이벤트 3건), 예측 분류 AUC ≈ 0.5, Sharpe 극대화는 momentum 추격으로 수렴 — 도 위 본질적 통찰을 보강한다.
 
-지도교수께 마지막으로 보여드린 게 이 흐름의 초·중반(강화학습 + 항상성 보상) 까지였다.
+### 0.3 새 프레임 — 화폐가치절하 신호의 직접 임베딩
 
-### 0.2 왜 강화학습을 떠났나
+위 통찰에서 두 가지 구조 변경:
 
-엄격한 walk-forward 설계(20년 train / 6개월 gap / 4.5년 test, 3-fold)에서 검증한 결과 **누적적인 기각 신호**가 모였다:
+**(1) 비중 결정 → 분포 추정.** 출력 단위를 single weight $w \in [0,1]$ 에서 조건부 시계열 분포 $p(\text{주가 시퀀스} \mid \text{macro 시퀀스})$ 로 격상. 모델은 **Conditional Normalizing Flow** (가역 확률밀도 변환). 선택 근거:
+- 정확한 likelihood 계산 (VAE의 ELBO 또는 GAN의 implicit density와 대비)
+- 가역성으로 past 시점 보존 + future 시점만 재샘플링 가능
+- 조건부 분포 직접 학습 (counterfactual / scenario sweep 지원)
 
-1. **Alpha 생성 한계.** 월간(monthly) 데이터에서 3개월 지평의 systematic alpha는 *3개월 ≤ −10% 하락 이벤트* 가 test 161개월에 단 3건뿐 — 통계 power가 구조적으로 부족하다.
-2. **"예측 지능 출현"은 환상이었다.** AUC(Area Under Curve, 분류 성능 지표)가 0.5 근방. 에이전트가 더 잘 예측하는 게 아니라 *낮은 노출 + 운*이 좋아 보이는 것뿐.
-3. **시장 timing 자체가 비용.** Sharpe 극대화 에이전트는 모멘텀 추격자로 진화했고, "샀다 팔았다"는 양의 추세 환경(positive drift)에서 본질적 손실원이었다. Static allocation이 optimal.
-4. **본질적 질문이 바뀌었다.** "어떻게 시장을 이기나"가 아니라 *"왜 인간/에이전트는 가만히 있지 못하나"* 가 진짜 질문임이 드러났다.
+**(2) 항상성 reward → MTL target.** 항상성 신호를 reward 매개를 거치지 않고 **다중목표 학습(Multi-Target Learning, MTL)의 학습 target** 으로 직접 부여. 항상성의 정량적 본질은 *화폐가치절하(Purchasing-Power Debasement) 압력의 누적* — M2 통화량 증가, 무위험 금리(T-bill), 기대 인플레이션(MICH) 중 최대 채널로 구매력이 침식되는 과정 — 이며, 이를 채권 누적 구매력 변화 `bondpp_3m` (13주 누적) 으로 환산한다.
 
-여기서 페이퍼 contribution이 약해졌다 — *"강화학습이 B&H를 약간 이긴다"* 는 학계 기여가 미미하고, *"예측력 없음"* 은 negative result로만 남는다.
-
-### 0.3 어떻게 시나리오 생성으로 넘어왔나
-
-위 막다름에서 두 가지 reframing을 했다.
-
-**Reframing 1 — 비중 결정 → 분포 추정**.
-정답이 *"얼마 살까"* 가 아니라 *"이 거시 환경에서 주가 분포는 어떻게 생겼는가"* 라면, 출력은 한 점(point estimate)이 아니라 분포 그 자체여야 한다. 그래야 tail-risk · counterfactual · 시나리오 sweep 같은 의사결정 지원이 가능해진다.
-
-분포를 학습할 모델로는 **Conditional Normalizing Flow** (가역 확률밀도 변환 + 조건부 학습)를 채택했다. Flow는
-
-- 정확한 likelihood 계산이 가능 (VAE / GAN과 달리 lower bound 아님)
-- 가역(invertible) — past 시점은 그대로 보존하고 future 시점만 새로 샘플링 가능
-- 조건부 분포 `p(주가 시퀀스 | macro 시퀀스)` 를 직접 학습
-
-**Reframing 2 — 항상성을 "화폐가치절하 압력"으로 재해석**.
-*"구매력을 일정하게 유지하라"* 는 항상성의 setpoint 압력은, 사실 정량적으로 보면 **화폐가치절하(Purchasing-Power Debasement) 압력의 누적**이다. M2 통화량 증가율, 무위험 금리(T-bill), 기대 인플레이션(MICH) 중 어느 채널이든 자산을 안 들고 있으면 구매력이 침식된다.
-
-이 침식 압력을 채권의 누적 구매력 변화로 환산한 것이 `bondpp_3m` (13주 누적 채권 purchasing-power 변화) 이다. 항상성 RL에서 reward 함수의 일부였던 신호를, **다중목표 학습(Multi-Target Learning, MTL)의 학습 target** 으로 옮겼다.
-
-→ 한 모델이 *주가 분포* 와 *화폐가치절하 신호* 를 동시 학습하면서, 둘의 결합 의존성을 표현 공간에 임베딩한다.
+결과적으로 모델은 *주가 분포* 와 *화폐가치절하 신호* 의 결합 분포를 단일 표현공간에서 학습한다. reward 매개의 간접성이 제거되고, 신호가 gradient에 직접 들어간다.
 
 ---
 
@@ -69,30 +46,26 @@ PPO(Proximal Policy Optimization, 강화학습 알고리즘)로 단일 에이전
 
 ### 1.1 모델 흐름
 
+**한 줄 요약**: 향후 거시경제 시나리오(금리·통화량 등)를 입력받아 주가의 가능한 미래 경로 1,000개를 분포로 출력한다. *화폐가치 침식 압력*을 보조 학습 신호로 함께 받아서, 주가–거시 결합 의존성을 단일 분포로 표현한다.
+
 ```mermaid
-flowchart LR
-    subgraph IN["입력 (조건)"]
-      A["Past 52주<br/>M2, T-bill, CPI"]
-      B["Future 52주<br/>T-bill 시나리오"]
-    end
-    subgraph DERIV["화폐가치절하 산식 (deterministic)"]
-      C["기초대사 metab_max<br/>= max(M2증가, T-bill, MICH)"]
-      D["bondpp_3m<br/>= 13주 누적 채권 구매력 변화"]
-    end
-    subgraph MODEL["Conditional Flow (K=2 multi-step, MTL)"]
-      F["Causal Transformer<br/>+ Affine Coupling Flow<br/>(822k params)"]
-    end
-    subgraph OUT["출력 분포"]
-      G["주가 수익률 시퀀스<br/>(52주, N=1000 시나리오)"]
-      H["bondpp 시퀀스<br/>(MTL 학습신호)"]
-    end
-    A --> F
-    B --> F
-    A --> C --> D
-    D -.MTL target.-> F
-    F --> G
-    F --> H
+flowchart TB
+    A["입력 (시나리오)<br/><br/>향후 1년치 거시경제 경로<br/>예: 금리 4%로 유지, 통화량 5% 증가"]
+    B["① 화폐가치 침식 압력 계산<br/><br/>같은 시나리오에서 현금/채권만 들고 있을 때<br/>구매력이 얼마나 깎이는지 정량화<br/>(채권 누적 구매력 변화)"]
+    C["② 조건부 분포 모델<br/>(Conditional Normalizing Flow)<br/><br/>침식 압력을 보조 학습 신호로 받으면서<br/>주가의 가능한 미래 분포를 학습·생성"]
+    D["출력 (분포)<br/><br/>주가 시나리오 1,000개 × 향후 52주<br/>→ tail-risk · EMD · CVaR 평가에 사용"]
+
+    A --> B
+    A --> C
+    B -. "보조 학습 신호" .-> C
+    C --> D
 ```
+
+박스의 의미:
+- **입력**: 사용자가 자유롭게 설정 가능한 거시경제 시나리오. 예컨대 "금리가 갑자기 0%가 되면 주가는?" 같은 *반사실(counterfactual)* 질문이 직접 입력 형태.
+- **① 침식 압력 계산**: 모델 외부에서 결정적(deterministic)으로 산출. 학습 대상이 아니라 *학습 신호*. §1.2.
+- **② 분포 모델**: 822k 파라미터, Causal Transformer backbone + Affine coupling flow K=2 stack. 학습 후에는 입력 시나리오를 받아 주가 분포를 *생성*하는 역할.
+- **출력**: 단일 점추정이 아닌 1,000개 경로의 분포. tail-risk와 분포 거리(EMD, Earth Mover's Distance)를 직접 측정 가능.
 
 ### 1.2 화폐가치절하 산식 (모델 외부, 결정적 변환)
 
