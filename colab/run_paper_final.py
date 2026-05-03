@@ -45,9 +45,7 @@ COMMANDS = [
     (11, "dual_3ch/train_mtl_ppstock2.py",  "--no-liq --normalize-stockpp --normalize-sp"),
     (12, "dual_3ch/train_mtl_bondpp_vix.py","--no-liq --normalize-bondpp --normalize-vix --normalize-sp"),
     (13, "dual_3ch/train_mtl_bp_stockpp.py","--no-liq --normalize-sp"),  # bondpp/stockpp 정규화 default True
-    # 행 14 = 행 16 동일 변종으로 통일 (cond=1ch, target redundancy 제거).
-    # 이미 행 16 ckpt 가 같은 prefix 로 학습돼 있으므로 skip 분기에서 자동 처리, 추가 학습 0건.
-    (14, "dual_3ch/train_mtl_bondpp3.py",   "--no-liq --normalize-bondpp --normalize-sp"),
+    (14, "dual_3ch/train_mtl_bondpp3.py",   "--normalize-bondpp --normalize-sp"),
     (15, "dual_3ch/train_mtl_3ch.py",       "--normalize-vix --normalize-sp"),
     (16, "dual_3ch/train_mtl_bondpp3.py",   "--no-liq --normalize-bondpp --normalize-sp"),
     # 17 은 12 와 동일 명령어 (skip 분기에서 자동 처리) — 명시 X
