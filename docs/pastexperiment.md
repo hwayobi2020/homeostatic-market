@@ -982,3 +982,134 @@ Overlapping rolling window 분석엔 반드시:
 - **X-2**: (tbill, metab) perturbation → 주가 variation 축 경제적 의미 확인
 - **X-3**: Manifold-constrained variation (1D regime arc 따라 움직이기)
 - **X-4**: Fat-tail 정복을 위한 Neural Spline Flow (RQ-spline) 또는 K=5+
+
+---
+
+## Phase 2 (PINN 시기, 2026-04-21 ~ 2026-04-27)
+
+### 배경 및 문제 제기
+
+Phase 1~15 (RL + Mamba weight learner) 이후, 거시경제 제약(물리 방정식)을 Normalizing Flow 학습에 직접 주입하는 PINN (Physics-Informed Neural Network, 물리 지식 내장 신경망) 접근을 시도. 핵심 가설: Fisher 방정식 기반 자연이자율 제약이 생성 분포의 경제적 타당성을 보장할 수 있다.
+
+데이터: 주별(Weekly) 1980-2025, 피처 `tbill_wr`, `mich_wr`, `sp_return`, `m2_growth`. Train 1834주, Test 522주. v32 데이터빌드부터 MICH (미시간대 기대인플레이션) 복원, Fisher 실질금리 연율 mean=+0.547%, std=2.831%.
+
+### Phase 2 Baseline — FAVAR-Flow (PINN 미도입)
+
+CVR (Constraint Violation Rate, 제약 위반율) baseline 측정. 제약 2개:
+- C1: Fisher-like 실질금리 스프레드가 ±4.183%/yr (Q1~Q99 2.5σ 밴드) 안에 유지
+- C2: 유동성 누적 초과가 Q99 +0.3111을 넘지 않음
+
+**Full run 결과 (33 origin, N=200 샘플)**:
+
+| 모델 | CVR_C1 | CVR_C2 | Median MSE |
+|---|---|---|---|
+| 실제 데이터 | 60.61% | 0.00% | — |
+| SVAR/ARDL | 60.61% | 5.09% | 6.245e-04 |
+| Flow K=3 (baseline) | 60.61% | 25.52% | 6.891e-04 |
+
+Flow가 SVAR 대비 C2 위반 5배 → "AI 환각" 가설 확인. FAVAR phase2 baseline best: epoch=194, test NLL/step·channel = **-4.2783**.
+
+### 자연이자율 매니폴드 (Natural Rate Manifold) — v1/v2/v3
+
+자연이자율 r*(x, y)를 M2-gap(x)·금리-gap(y) 공간에서 학습.
+
+| 버전 | 방식 | Train R² | Test R² | 판단 |
+|---|---|---|---|---|
+| v1 GAM (raw) | 일반화 가산 모델, 직접 피팅 | +0.4054 | **-21.4476** | 외삽 발산, 폐기 |
+| v2 GAM (tanh 압축 + 경계 앵커) | ±15% asymptote, 8개 boundary anchor | +0.4053 | **-0.2480** | 발산 봉쇄 |
+| v3 parametric tanh | r̄ + 0.15·tanh(-β₁x - β₂y), curve_fit | +0.1956 | **-0.1378** | train R²=0.20으로 낮음, 하지만 asymptote 안정 |
+
+v3 확정 파라미터: r̄=-0.5765%/yr, β₁=+0.0869, β₂=-0.0740. 자연이자율 점근범위 [-15.58%, +14.42%]/yr.
+
+### PINN v1 — GAM 기반, λ sweep {1.0, 10.0, 100.0, 500.0}
+
+Colab A100-SXM4-40GB에서 실행. λ=1.0 첫 epoch에서 L_Fisher=1.594e+03 폭주 (Fisher loss 항이 NLL gradient 압도). 분석: **λ 스케일 1350배 폭등** → 생성 분포의 분산(variance) 압살. v1 폐기.
+
+### PINN v2 — Warm-up + Grad Clip, λ ∈ {0.5, 1.0, 3.0, 5.0}
+
+개선: epoch 1~10 순수 NLL, epoch 11~30 λ 선형 증가, gradient clip max_norm=5.0.
+
+결과: **λ=0.5 test NLL=-4.00** (baseline -4.28 대비 -0.28 악화), gap variance 과수축. NLL 개선 없이 제약만 강화되는 구조적 문제 확인. v2 폐기.
+
+### PINN v3 — ReLU Band Loss + tanh Equation Physics
+
+`L_Fisher = ReLU(|gap - r*| - τ)²` 밴드 손실(Band Loss), τ=2.0% (decimal 0.02). v3.2에서 제곱 → L1 robust loss 로 교체 (gradient bounded ±1).
+
+**v3 sweep 최종 결과 (Colab A100-80GB)**:
+
+| λ | Test NLL | CVR_C1 | CVR_C2 | Gen Gap Std |
+|---|---|---|---|---|
+| 0.3 | -3.0189 | 92.20% | 95.38% | — (붕괴) |
+| 1.0 | **-4.1801** | 11.05% | 10.29% | 4.638% |
+| 3.0 | -4.104 | **7.00%** | **6.79%** | 3.913% |
+
+λ=3.0이 CVR 최저지만 Gen Gap Std 3.913% (실측 std=1.875% 대비 2배 초과). NLL도 baseline -4.28에 못 미침 → 제약과 생성 품질 트레이드오프 상한 도달. v3 역시 NLL 개선에 실패.
+
+### v4 — CUSUM Physics (3년 이동 앵커)
+
+과거 context 52주 → 156주(3년)로 확장, L=208. CUSUM = Σ(pred - anchor) 누적 제약. baseline test NLL ~ -5.78 (입력 길이 증가 효과, 직접 비교 불공정). 코랩 7시간 timeout으로 학습 중단. v4 자체 결과 비확정.
+
+### v5 — VECM (벡터 오차수정 모델) 시도
+
+Johansen 공적분 검정: trace statistic r≤0 → 68.107 (기각 임계 47.855), rank=1 확인. 공적분 벡터 β: log_sp=+1.000, log_m2=-0.3549, tbill=-0.0129, mich=-0.1775.
+
+OOS 검증: **COVID 기 ECT(오차수정항) 평균 |z|=2.35σ, 최대 3.66σ** — train 분포 명백히 이탈. ADF p=0.2290 (test 기간 자체로 정상성 불확인). 자연이자율 제약 자체를 포기하고 v5 VECM 폐기.
+
+### v6 — M2 → SP 직접 검증 (5단계)
+
+M2와 주가 수익률 간 직접 물리 관계 탐색. BIS 방식 초과 유동성(ExcessLiq = M2_yoy − GDP_yoy − CPI_yoy) 기준 CCF:
+
+- k=0주 corr = **-0.5335** (p<0.001), k=13주 corr = **-0.5729** (p<0.001)
+- OLS k=0: γ=-2.3217, R²=**0.2846** (p=0.001)
+
+그러나 방향이 직관 반대 (유동성 공급 → 주가 하락). 24개월 누적 margin → 24개월 SP 검증(엄격 lag k≥2)에서 **R²=0.6523** (γ=-0.4876) 확인. 음의 부호 안정.
+
+### v7 — Retail/Margin 신호 탐색 및 데이터 누출(Data Leakage) 검증
+
+FINRA margin_yoy → sp_yoy (lag 2개월 보정, publish lag 차단) sub-period 안정성:
+
+| 기간 | R² | γ |
+|---|---|---|
+| 1998-2007 | 0.5901 | +0.5028 |
+| 2008-2015 | **0.7204** | +0.7353 |
+| 2016-2019 | 0.4114 | +0.3740 |
+| 2020-2025 | **0.7304** | +0.5283 |
+
+OOS (Train 1997-2015 → Test 2016-2025): **R²_oos=0.2173** (음수, baseline 미달) — timing artifact 의심 잔존. 24개월 누적 기준 sub-period 모두 안정적 음의 부호(R²=0.22~0.72)이나, PINN constraint로 적용할 이론적 방향 불일치(유동성↑ → SP↓) 미해결.
+
+### v33 — PINN Soft Penalty 본질적 결함 확인
+
+사분면 분석 (Ground truth vs 생성 분포):
+
+| 모델 | P(m+\|sp+) | P(m-\|sp-) | sp_mean |
+|---|---|---|---|
+| 실제 test | 74% | 99% | — |
+| NLL only K=2 | 61% | 63% | +0.034 |
+| Hinge λ=0.5 | 82% | **4.7%** | +0.28 |
+| Tanh λ=0.5 | 95% | **38.5%** | +0.90 |
+
+Soft penalty가 모두 sp_mean shift(양수 방향)로 제약을 회피. "부호 일치 80~96%"는 sp+ share가 99.4%가 되어 생기는 통계 착시. **v33 폐기, PINN soft penalty 패러다임 본질적 결함 확정.**
+
+### v34 — Wavelet-PINF (웨이블릿 물리 정보 내장 정규화 흐름)
+
+Mexican Hat Wavelet 활성화 ψ(t)=(1-t²)·exp(-t²/2) 삽입 (compact support → gradient 차단으로 mean shift 회피 기대).
+
+**v34 첫 시도** (Wavelet + Hinge λ=0.5): P(m+|sp+)=17.8%, P(m-|sp-)=96.9%, margin_mean=-0.92 (새 회피 경로).
+
+**v34 K2_balanced_heuristic** (50:50 balanced loader + Zhang 1992 heuristic init, 60 epoch, best epoch 47):
+
+| 척도 | 값 |
+|---|---|
+| val NLL/step | -2.372 |
+| test NLL/step·ch | **+2.789** (양수, 붕괴) |
+| P(m+\|sp+) | **3.3%** |
+| P(m-\|sp-) | 99.9% |
+| sp_mean | **-11.029** |
+
+회피 메커니즘: sp와 margin 모두 깊은 음수 → 곱이 양수 → Hinge penalty=0. train-test gap 5.16 (과적합). **v34 폐기.**
+
+위기 게이팅(Gate) 분석: r* gate가 Lehman 2008 |r*|=0.48%, COVID 2020 |r*|=0.25% (위기 시 침묵). |y| gate는 test에서 q90=1.000 포화(OOD). VIX 1차원 게이트 후보(vix_raw_medium_top25_OR)가 Lehman 0.68, GFC 0.83, COVID 0.69로 가장 양호했으나 세션 종료로 적용 미완.
+
+### PINN 시기 결론 (왜 dual_3ch MTL로 전환했는가)
+
+총 6회 이상의 PINN 변형(v1 λ 폭주 → v2 분산 압살 → v3 NLL 미복구 → v4 CUSUM 미완 → v5 VECM OOD → v33/v34 mean shift 회피)을 거치며 공통 실패 패턴이 드러났다: Normalizing Flow가 soft penalty를 받으면 분포 평균(mean)을 이동시켜 penalty 영역 자체를 빠져나가는 구조적 회피를 하며, 이는 constraint 설계(ReLU band, tanh, hinge, wavelet compact support)와 무관하게 반복됐다. 자연이자율 manifold 자체도 단기 미국 데이터만으론 test R²=-0.14 수준으로 일반화 불가였다. 이 실패들은 "거시 물리 제약을 loss 항에 외삽하는 방식"의 한계를 실증했고, 이를 바탕으로 패러다임을 전환했다: 제약을 loss에 주입하는 대신, 구매력 침식(Purchasing-Power Debasement) 신호를 MTL(Multi-Target Learning, 다중 목표 학습)의 직접 학습 타겟으로 삼아 dual_3ch 구조로 이동했다.
