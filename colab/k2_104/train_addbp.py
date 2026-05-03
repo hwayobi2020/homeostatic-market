@@ -49,6 +49,8 @@ PATIENCE = 30
 COLS_TARGET = ["sp_return"]
 SP_TARGET_IDX = 0
 COLS_COND = ["tbill_wr", "excess_liq_wr", "pp_bond_13w_lag"]   # 3ch (paper 표 행 3 정의 — tbill_26w_lag 제거)
+# future cond mask: tbill_wr 외 channels mask (paper main thesis: 금리 시나리오만 활성)
+MASK_FUTURE_CH = [1, 2]   # mask excess_liq_wr (idx 1) + pp_bond_13w_lag (idx 2) in future
 
 LOG2PI = math.log(2 * math.pi)
 
@@ -72,6 +74,14 @@ def load_windows(csv_path, cols_cond, cols_target, L=104, stats=None):
         sd = np.asarray(stats["std"],  dtype=np.float32)
     C = (C - mu) / sd
     return torch.from_numpy(X), torch.from_numpy(C), {"mean": mu.tolist(), "std": sd.tolist()}
+
+
+def mask_future_channels(C, past_len, mask_channels):
+    """Set future portion of specified cond channels to 0 (= train mean in z-space)."""
+    C = C.clone()
+    for ch in mask_channels:
+        C[:, past_len:, ch] = 0.0
+    return C
 
 
 def nll_per_step_channel(X, C, model, past_len, device):
@@ -111,6 +121,12 @@ def run(condition_name, cols_cond, train_csv, test_csv, save_dir, seed=42,
         print("[FAIL] not enough windows")
         return None
 
+    # future cond mask 적용 (paper main thesis: 금리 시나리오만 활성)
+    masked_names = [cols_cond[i] for i in MASK_FUTURE_CH]
+    print(f"  mask_future_ch = {MASK_FUTURE_CH} -> {masked_names} masked in future")
+    Ctr = mask_future_channels(Ctr, PAST_LEN, MASK_FUTURE_CH)
+    Cte = mask_future_channels(Cte, PAST_LEN, MASK_FUTURE_CH)
+
     # cond bondpp 채널 (idx 2) 은 cond z-score 자동 적용됨 (load_windows 내부).
     # target sp_return 정규화는 별도 manual.
     stats_targets_all = {}
@@ -126,6 +142,7 @@ def run(condition_name, cols_cond, train_csv, test_csv, save_dir, seed=42,
 
     if val_csv is not None:
         Xv, Cv, _ = load_windows(val_csv, cols_cond, COLS_TARGET, L=L, stats=stats_tr)
+        Cv = mask_future_channels(Cv, PAST_LEN, MASK_FUTURE_CH)
         if normalize_sp:
             s = stats_targets_all[SP_TARGET_IDX]
             Xv[..., SP_TARGET_IDX] = (Xv[..., SP_TARGET_IDX] - s["mean"]) / s["std"]
@@ -202,6 +219,7 @@ def run(condition_name, cols_cond, train_csv, test_csv, save_dir, seed=42,
             "target_cols": COLS_TARGET,
             "stats_train": stats_tr,
             "stats_targets_all": stats_targets_all,
+            "mask_future_ch": MASK_FUTURE_CH,
             "normalize_sp": normalize_sp,
             "normalize_bondpp": normalize_bondpp,
             "config": dict(K=K_STEPS, d_model=D_MODEL, n_heads=N_HEADS, n_layers=N_LAYERS,
@@ -218,6 +236,7 @@ def run(condition_name, cols_cond, train_csv, test_csv, save_dir, seed=42,
         n_cond=len(cols_cond),
         cond_cols=cols_cond,
         target_cols=COLS_TARGET,
+        mask_future_ch=MASK_FUTURE_CH,
         stats_targets_all={int(k): v for k, v in stats_targets_all.items()},
         best_epoch=best_epoch,
         val=best_val,

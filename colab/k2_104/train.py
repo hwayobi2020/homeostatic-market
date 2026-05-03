@@ -47,6 +47,11 @@ COND_K2_104_NO_26W   = ["tbill_wr", "excess_liq_wr"]                       # def
 COND_K2_104_WITH_26W = ["tbill_wr", "tbill_26w_lag", "excess_liq_wr"]      # legacy reproduce
 COND_K2_104_NO_LIQ   = ["tbill_wr"]                                         # 1ch (행 2 without liquidity)
 COND_K2_104 = COND_K2_104_NO_26W
+# future cond mask: tbill_wr 외 channels mask (paper main thesis: 금리 시나리오만 활성)
+MASK_FUTURE_CH_NO_26W   = [1]      # mask excess_liq_wr in future
+MASK_FUTURE_CH_WITH_26W = [1, 2]   # mask tbill_26w_lag + excess_liq_wr (legacy)
+MASK_FUTURE_CH_NO_LIQ   = []        # cond 1ch tbill only — mask 무관
+MASK_FUTURE_CH = MASK_FUTURE_CH_NO_26W
 
 LOG2PI = math.log(2 * math.pi)
 
@@ -77,6 +82,14 @@ def load_windows(csv_path, cols_cond, cols_target, L=104, stats=None):
         sd = np.asarray(stats["std"],  dtype=np.float32)
     C = (C - mu) / sd
     return torch.from_numpy(X), torch.from_numpy(C), {"mean": mu.tolist(), "std": sd.tolist()}
+
+
+def mask_future_channels(C, past_len, mask_channels):
+    """Set future portion of specified cond channels to 0 (= train mean in z-space)."""
+    C = C.clone()
+    for ch in mask_channels:
+        C[:, past_len:, ch] = 0.0
+    return C
 
 
 def nll_per_step_channel(X, C, model, past_len, device):
@@ -115,6 +128,12 @@ def run(condition_name, cols_cond, train_csv, test_csv, save_dir, seed=42,
         print("[FAIL] not enough windows")
         return None
 
+    # future cond mask 적용 (paper main thesis: 금리 시나리오만 활성)
+    masked_names = [cols_cond[i] for i in MASK_FUTURE_CH]
+    print(f"  mask_future_ch = {MASK_FUTURE_CH} -> {masked_names} masked in future")
+    Ctr = mask_future_channels(Ctr, PAST_LEN, MASK_FUTURE_CH)
+    Cte = mask_future_channels(Cte, PAST_LEN, MASK_FUTURE_CH)
+
     stats_targets_all = {}
     if normalize_sp:
         smu = float(Xtr[..., SP_TARGET_IDX].mean())
@@ -128,6 +147,7 @@ def run(condition_name, cols_cond, train_csv, test_csv, save_dir, seed=42,
 
     if val_csv is not None:
         Xv, Cv, _ = load_windows(val_csv, cols_cond, COLS_TARGET, L=L, stats=stats_tr)
+        Cv = mask_future_channels(Cv, PAST_LEN, MASK_FUTURE_CH)
         if normalize_sp:
             s = stats_targets_all[SP_TARGET_IDX]
             Xv[..., SP_TARGET_IDX] = (Xv[..., SP_TARGET_IDX] - s["mean"]) / s["std"]
@@ -209,6 +229,7 @@ def run(condition_name, cols_cond, train_csv, test_csv, save_dir, seed=42,
             "target_cols": COLS_TARGET,
             "stats_train": stats_tr,
             "stats_targets_all": stats_targets_all,
+            "mask_future_ch": MASK_FUTURE_CH,
             "normalize_sp": normalize_sp,
             "config": dict(K=K_STEPS, d_model=D_MODEL, n_heads=N_HEADS, n_layers=N_LAYERS,
                             d_cond=len(cols_cond), d_target=len(COLS_TARGET),
@@ -223,6 +244,7 @@ def run(condition_name, cols_cond, train_csv, test_csv, save_dir, seed=42,
         n_cond=len(cols_cond),
         cond_cols=cols_cond,
         target_cols=COLS_TARGET,
+        mask_future_ch=MASK_FUTURE_CH,
         stats_targets_all={int(k): v for k, v in stats_targets_all.items()},
         best_epoch=best_epoch,
         val=best_val,
@@ -253,15 +275,17 @@ def main():
     args = ap.parse_args()
     if args.with_26w and args.no_liq:
         raise ValueError("--with-26w 와 --no-liq 동시 사용 불가")
-    global COND_K2_104
+    global COND_K2_104, MASK_FUTURE_CH
     if args.with_26w:
         COND_K2_104 = COND_K2_104_WITH_26W
+        MASK_FUTURE_CH = MASK_FUTURE_CH_WITH_26W
         condition_name = "K2_104"
-        print(f"[--with-26w] cond = {COND_K2_104}")
+        print(f"[--with-26w] cond = {COND_K2_104}, mask = {MASK_FUTURE_CH}")
     elif args.no_liq:
         COND_K2_104 = COND_K2_104_NO_LIQ
+        MASK_FUTURE_CH = MASK_FUTURE_CH_NO_LIQ
         condition_name = "K2_104_2ch"   # paper 표 행 2 라벨 ("without liquidity")
-        print(f"[--no-liq] cond = {COND_K2_104}")
+        print(f"[--no-liq] cond = {COND_K2_104}, mask = {MASK_FUTURE_CH}")
     else:
         condition_name = "K2_104"        # 행 1 default
 
