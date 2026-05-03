@@ -48,9 +48,9 @@ FOLDS = ["F1", "F2", "F3"]
 # paper 표 17 행 정의 — (paper_row, label, folder, prefix_template)
 # prefix_template 의 {fold} 자리는 _F1/_F2/_F3 또는 빈 문자열 (fold 없는 경우)
 VARIANTS = [
-    # 1-3: Base — k2_104 폴더 (별도 작업 필요)
-    ( 1, "Base (K2_pure_ppbond)",                                   "k2_104",   "K2_104{fold}"),
-    ( 2, "Base (without liquidity)",                                "k2_104",   "K2_104_2ch{fold}"),
+    # 1-3: Base — k2_104 폴더 (sp 정규화 적용 → ckpt 명에 _normsr 포함)
+    ( 1, "Base (K2_pure_ppbond)",                                   "k2_104",   "K2_104_normsr{fold}"),
+    ( 2, "Base (without liquidity)",                                "k2_104",   "K2_104_2ch_normsr{fold}"),
     ( 3, "Base (add bondpp_3m정규)",                                 "k2_104",   "K2_104_addbp_normbp_normsr{fold}"),
     # 4-5: Stage 1 (sp target 없음 → eval 시 n/a)
     ( 4, "Stage 1 (MacroExpander)",                                 "dual_3ch", "stage1{fold}"),
