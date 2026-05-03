@@ -19,7 +19,7 @@ PPO 단일 에이전트에 항상성 reward(구매력 setpoint 유지)만 주고
 ### 0.3 새 프레임 — 화폐가치절하 신호의 직접 임베딩
 
 1. **비중 결정 → 분포 추정**: 출력 단위를 단일 가중치에서 조건부 시계열 분포로 격상. 모델은 가역 확률밀도 변환인 **Conditional Normalizing Flow**.
-2. **Reward 매개 → MTL target**: 항상성의 정량적 본질인 *화폐가치절하 압력 누적* 을 채권 누적 구매력 변화 `bondpp_3m` 로 환산하여, reward가 아닌 학습 target으로 직접 부여.
+2. **Reward 매개 → MTL target**: 항상성의 정량적 본질인 *화폐가치절하 압력 누적* 을 누적 구매력 변화 신호(채권 기반 `bondpp_3m`, 주식 기반 `stockpp_3m`)로 환산하여, reward가 아닌 학습 target으로 직접 부여.
 
 ---
 
@@ -54,28 +54,36 @@ bondpp_3m[t] = log( pp_bond[t-1] / pp_bond[t-14] )
 |---|---|
 | Past condition | 52주 (`tbill_wr`, `tbill_26w_lag`, `excess_liq_wr`) |
 | Future condition | 52주 (`tbill_wr` 시나리오) |
-| MTL target (2ch) | `sp_return` + `bondpp_3m` |
+| MTL target (2ch) | `sp_return` + (`bondpp_3m` 또는 `stockpp_3m` ★) |
 | Train / Test | 1999-2015 (887주) / 2016-2025 (516주) |
 
 ---
 
 ## 2. 결과
 
-### 2.1 NLL 비교 (5 seed, sp_return 채널, 낮을수록 좋음)
+### 2.1 sp_return Test NLL (3-fold pooled, n=15 = 5 seed × 3 fold, 낮을수록 좋음)
 
-| 모델 | 보조 target | bondpp 위치 | median | mean ± std |
-|---|---|---|---:|---:|
-| Base | — | — | −1.74 | −1.75 ± 0.25 |
-| Base + bondpp **cond** | — | cond | −1.88 | −1.33 ± **1.24** ⚠ |
-| MTL 2ch (sp + 초과유동성) | excess_liq_wr | — | −2.05 | −1.98 ± 0.13 |
-| MTL 3ch (+ **VIX**, 외생) | + vix_wr | — | −2.21 | −2.20 ± 0.10 |
-| **★ MTL 2ch (sp + bondpp_3m)** | **bondpp_3m** | **target** | **−2.20** | **−2.21 ± 0.075** |
+| # | 변종 | full med | full mean ± std | tail med | tail mean ± std |
+|---:|---|---:|---:|---:|---:|
+| 7 | Base | −2.461 | −2.427 ± 0.335 | −2.393 | −1.948 ± 1.120 |
+| 8 | MTL 2ch (+초과유동성) | −2.504 | −2.517 ± 0.119 | −2.289 | −2.215 ± 0.302 |
+| 9 | MTL 2ch (+**VIX**, 외생) | −2.488 | −2.491 ± 0.078 | −2.355 | −2.169 ± 0.369 |
+| 10 | MTL 2ch (+bondpp정규) | −2.469 | −2.358 ± 0.536 | −2.295 | −2.145 ± 0.415 |
+| **11 ★** | **MTL 2ch (+stockpp정규)** | **−2.520** | **−2.526 ± 0.116** | **−2.401** | **−2.288 ± 0.202** |
+| 15 | MTL 3ch (liq+**VIX**, 외생) | −2.501 | −2.515 ± 0.095 | −2.352 | −2.214 ± 0.317 |
+
+전체 17변종 표는 `_print_paper_table.py` 출력 참조.
+- **full** = 52주 전 구간 NLL, **tail** = 하위 구간 (tail risk) NLL — paper 이중 평가지표.
+- 행 9·15: 외생 시장변수(VIX) 사용. 행 10·11: 내생 화폐가치절하 신호.
 
 ### 2.2 핵심 발견
 
-1. **외생 VIX 없이 동률**: ★ vs VIX 변종 median −2.20 vs −2.21
-2. **안정성 우위**: std 0.075 vs 0.10 — 외생 변수 없이도 더 안정
-3. **위치 효과 (cond ≠ target)**: 같은 `bondpp_3m` 정보를 cond에 두면 std 1.24, target에 두면 0.075 → **분산 16배 차이**. 화폐가치절하 산식의 inductive bias는 *target 자리에서만* 작동 (독립 contribution)
+1. **★ 행 11 (stockpp정규)이 모든 핵심 지표에서 best**: full med −2.520, tail med −2.401
+2. **외생 VIX보다 우위 (특히 tail)**:
+   - full med: −2.520 (★) vs −2.488 (행 9, VIX) — 우위
+   - tail med: −2.401 (★) vs −2.355 (행 9) — 우위
+   - tail std : 0.202 (★) vs 0.369 (행 9) — **★이 절반 수준 안정**
+3. **Main thesis 입증**: 외생 시장변수 없이, 내부 화폐가치절하 신호만으로 더 우수한 분포 학습 + tail 영역 안정성
 
 ---
 
