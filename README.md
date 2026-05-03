@@ -25,18 +25,26 @@ PPO 단일 에이전트에 항상성 reward(구매력 setpoint 유지)만 주고
 
 ## 1. 현재 모델
 
-### 1.1 흐름
+### 1.1 흐름 — Multi-Task Learning (Hard Parameter Sharing)
 
 ```mermaid
-flowchart LR
-    A["거시 시나리오<br/>입력"] --> B["분포 모델"] --> C["주가 분포<br/>출력"]
+flowchart TB
+    A["거시 시나리오 입력<br/>(향후 52주: 금리·통화량·인플레)"]
+    B["공유 backbone<br/>Conditional Normalizing Flow<br/>(Causal Transformer + Affine Coupling K=2)"]
+    H1["Task 1 head<br/>주가 분포<br/>(메인)"]
+    H2["Task 2 head<br/>구매력 변화 신호<br/>(보조 — 외생 VIX 대체)"]
+
+    A --> B
+    B --> H1
+    B --> H2
 ```
 
 | 박스 | 내용 |
 |---|---|
-| **입력** | 향후 52주 금리·통화량·인플레이션 경로 (사용자 자유 설정, counterfactual 가능) |
-| **모델** | Conditional Normalizing Flow, Causal Transformer + Affine coupling K=2, 822k params. 주가 분포와 *화폐가치 침식 신호*를 동시 학습 (MTL) |
-| **출력** | 주가 시나리오 1,000개 × 52주 → tail-risk · EMD · CVaR 평가 |
+| **입력** | 향후 52주 거시 시나리오 (사용자 자유 설정, counterfactual 가능) |
+| **공유 backbone** | Conditional Normalizing Flow, 822k 파라미터. 두 task가 *모든 파라미터 공유* (Caruana 1993, hard parameter sharing) |
+| **Task 1 (메인)** | 주가 분포 → 시나리오 1,000개 × 52주 → tail-risk · EMD · CVaR 평가 |
+| **Task 2 (보조)** | 구매력 변화 신호 (`stockpp_3m` / `bondpp_3m`) — backbone 표현을 화폐가치절하 정보로 정렬, 외생 VIX 없이도 메인 task 성능 향상 |
 
 ### 1.2 화폐가치 침식 신호
 
