@@ -47,7 +47,8 @@ MAX_EPOCHS = 60
 PATIENCE = 30
 
 COLS_TARGET = ["sp_return"]
-COLS_COND = ["tbill_wr", "tbill_26w_lag", "excess_liq_wr", "pp_bond_13w_lag"]   # 4ch
+SP_TARGET_IDX = 0
+COLS_COND = ["tbill_wr", "excess_liq_wr", "pp_bond_13w_lag"]   # 3ch (paper 표 행 3 정의 — tbill_26w_lag 제거)
 
 LOG2PI = math.log(2 * math.pi)
 
@@ -82,10 +83,22 @@ def nll_per_step_channel(X, C, model, past_len, device):
     return nll_future / (F * D)
 
 
-def run(condition_name, cols_cond, train_csv, test_csv, save_dir, seed=42):
+def run(condition_name, cols_cond, train_csv, test_csv, save_dir, seed=42,
+        normalize_sp=False, normalize_bondpp=False, val_csv=None, fold_tag=None):
     torch.manual_seed(seed)
     np.random.seed(seed)
-    print(f"\n{'=' * 70}\n[{condition_name}] seed={seed} cond={cols_cond} (D_COND={len(cols_cond)})\n{'=' * 70}")
+    tag_norm_b  = "_normbp" if normalize_bondpp else ""
+    tag_norm_sr = "_normsr" if normalize_sp     else ""
+    tag_norm    = tag_norm_b + tag_norm_sr
+    fold_str    = f"_{fold_tag}" if fold_tag else ""
+    tag_full    = f"{condition_name}{tag_norm}{fold_str}_seed{seed}"
+    ckpt_path   = os.path.join(save_dir, f"{tag_full}_best.pt")
+    summary_path_pre = os.path.join(save_dir, f"{tag_full}_summary.json")
+    if os.path.exists(ckpt_path) and os.path.exists(summary_path_pre):
+        print(f"[SKIP] {tag_full} — ckpt + summary 이미 존재")
+        with open(summary_path_pre) as f:
+            return json.load(f)
+    print(f"\n{'=' * 70}\n[{condition_name}{tag_norm}{fold_str}] seed={seed} cond={cols_cond} (D_COND={len(cols_cond)}) normalize_sp={normalize_sp} normalize_bondpp={normalize_bondpp}\n{'=' * 70}")
 
     Xtr, Ctr, stats_tr = load_windows(train_csv, cols_cond, COLS_TARGET, L=L)
     Xte, Cte, _        = load_windows(test_csv,  cols_cond, COLS_TARGET, L=L, stats=stats_tr)
@@ -98,11 +111,32 @@ def run(condition_name, cols_cond, train_csv, test_csv, save_dir, seed=42):
         print("[FAIL] not enough windows")
         return None
 
-    n_w_tr = Xtr.shape[0]
-    n_val = max(int(n_w_tr * 0.15), 1)
-    Xtr_, Ctr_ = Xtr[:-n_val], Ctr[:-n_val]
-    Xv,  Cv  = Xtr[-n_val:], Ctr[-n_val:]
-    print(f"  train_windows={Xtr_.shape[0]}, val_windows={Xv.shape[0]}, test_windows={Xte.shape[0]}")
+    # cond bondpp 채널 (idx 2) 은 cond z-score 자동 적용됨 (load_windows 내부).
+    # target sp_return 정규화는 별도 manual.
+    stats_targets_all = {}
+    if normalize_sp:
+        smu = float(Xtr[..., SP_TARGET_IDX].mean())
+        ssd = float(Xtr[..., SP_TARGET_IDX].std()) + 1e-8
+        Xtr[..., SP_TARGET_IDX] = (Xtr[..., SP_TARGET_IDX] - smu) / ssd
+        Xte[..., SP_TARGET_IDX] = (Xte[..., SP_TARGET_IDX] - smu) / ssd
+        stats_targets_all[SP_TARGET_IDX] = {"mean": smu, "std": ssd,
+                                            "channel": int(SP_TARGET_IDX),
+                                            "channel_name": COLS_TARGET[SP_TARGET_IDX]}
+        print(f"  ★ target normalize sp_return (train): mean={smu:+.5f}, std={ssd:.5f}")
+
+    if val_csv is not None:
+        Xv, Cv, _ = load_windows(val_csv, cols_cond, COLS_TARGET, L=L, stats=stats_tr)
+        if normalize_sp:
+            s = stats_targets_all[SP_TARGET_IDX]
+            Xv[..., SP_TARGET_IDX] = (Xv[..., SP_TARGET_IDX] - s["mean"]) / s["std"]
+        Xtr_, Ctr_ = Xtr, Ctr
+        print(f"  train_windows={Xtr_.shape[0]} (full), val_windows={Xv.shape[0]} (val_csv), test_windows={Xte.shape[0]}")
+    else:
+        n_w_tr = Xtr.shape[0]
+        n_val = max(int(n_w_tr * 0.15), 1)
+        Xtr_, Ctr_ = Xtr[:-n_val], Ctr[:-n_val]
+        Xv,  Cv  = Xtr[-n_val:], Ctr[-n_val:]
+        print(f"  train_windows={Xtr_.shape[0]}, val_windows={Xv.shape[0]} (auto 15%), test_windows={Xte.shape[0]}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = MultiStepFAVARFlow(
@@ -157,8 +191,7 @@ def run(condition_name, cols_cond, train_csv, test_csv, save_dir, seed=42):
     print(f"\n  best epoch {best_epoch}: val={best_val:+.4f}, test={best_test:+.4f}")
 
     os.makedirs(save_dir, exist_ok=True)
-    tag = f"{condition_name}_seed{seed}"
-    ckpt_path    = os.path.join(save_dir, f"{tag}_best.pt")
+    tag = tag_full
     log_path     = os.path.join(save_dir, f"{tag}_trainlog.csv")
     summary_path = os.path.join(save_dir, f"{tag}_summary.json")
 
@@ -168,6 +201,9 @@ def run(condition_name, cols_cond, train_csv, test_csv, save_dir, seed=42):
             "cond_cols":   cols_cond,
             "target_cols": COLS_TARGET,
             "stats_train": stats_tr,
+            "stats_targets_all": stats_targets_all,
+            "normalize_sp": normalize_sp,
+            "normalize_bondpp": normalize_bondpp,
             "config": dict(K=K_STEPS, d_model=D_MODEL, n_heads=N_HEADS, n_layers=N_LAYERS,
                            d_cond=len(cols_cond), d_target=len(COLS_TARGET),
                            past_len=PAST_LEN, total_len=L),
@@ -175,10 +211,14 @@ def run(condition_name, cols_cond, train_csv, test_csv, save_dir, seed=42):
     pd.DataFrame(log).to_csv(log_path, index=False)
     summary = dict(
         condition=condition_name,
+        fold=fold_tag,
         seed=seed,
+        normalize_sp=normalize_sp,
+        normalize_bondpp=normalize_bondpp,
         n_cond=len(cols_cond),
         cond_cols=cols_cond,
         target_cols=COLS_TARGET,
+        stats_targets_all={int(k): v for k, v in stats_targets_all.items()},
         best_epoch=best_epoch,
         val=best_val,
         test=best_test,
@@ -195,29 +235,47 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--seeds", nargs="+", type=int, default=[42])
     ap.add_argument("--train-csv", default=os.path.join(HERE, "data", "weekly_ppbond_train.csv"))
+    ap.add_argument("--val-csv",   default=None)
     ap.add_argument("--test-csv",  default=os.path.join(HERE, "data", "weekly_ppbond_test.csv"))
     ap.add_argument("--out-dir",   default=os.path.join(HERE, "result"))
+    ap.add_argument("--fold", default=None, choices=["F1", "F2", "F3"],
+                    help="walk-forward fold")
+    ap.add_argument("--normalize-sp", action="store_true",
+                    help="train mean/std 로 sp_return target 정규화")
+    ap.add_argument("--normalize-bondpp", action="store_true",
+                    help="cond bondpp 채널은 cond z-score 자동 적용 — 이 옵션은 ckpt 명에 _normbp 표시용 (paper 표 라벨 일관성)")
     args = ap.parse_args()
+
+    if args.fold is not None:
+        repo_root = os.path.normpath(os.path.join(HERE, "..", ".."))
+        folds_dir = os.path.join(repo_root, "data", "folds")
+        args.train_csv = os.path.join(folds_dir, f"{args.fold}_train.csv")
+        args.val_csv   = os.path.join(folds_dir, f"{args.fold}_val.csv")
+        args.test_csv  = os.path.join(folds_dir, f"{args.fold}_test.csv")
+        print(f"[--fold {args.fold}] train={args.train_csv}")
 
     os.makedirs(args.out_dir, exist_ok=True)
     results = []
     for seed in args.seeds:
-        r = run("K2_104_addbp", COLS_COND, args.train_csv, args.test_csv, args.out_dir, seed=seed)
+        r = run("K2_104_addbp", COLS_COND, args.train_csv, args.test_csv, args.out_dir,
+                seed=seed, normalize_sp=args.normalize_sp, normalize_bondpp=args.normalize_bondpp,
+                val_csv=args.val_csv, fold_tag=args.fold)
         if r is not None:
             results.append(r)
 
     if len(results) > 1:
+        tag_norm_b  = "_normbp" if args.normalize_bondpp else ""
+        tag_norm_sr = "_normsr" if args.normalize_sp     else ""
+        tag_norm    = tag_norm_b + tag_norm_sr
+        fold_str    = f"_{args.fold}" if args.fold else ""
         df = pd.DataFrame(results)
-        df.to_csv(os.path.join(args.out_dir, "K2_104_addbp_multiseed_results.csv"), index=False)
+        df.to_csv(os.path.join(args.out_dir, f"K2_104_addbp{tag_norm}{fold_str}_multiseed_results.csv"), index=False)
         v_mean, v_std = df.val.mean(), df.val.std()
         t_mean, t_std = df.test.mean(), df.test.std()
         t_med = df.test.median()
-        print(f"\n[K2_104_addbp] multi-seed (n={len(df)})")
+        print(f"\n[K2_104_addbp{tag_norm}{fold_str}] multi-seed (n={len(df)})")
         print(f"  val:  mean={v_mean:+.4f} ± {v_std:.4f}")
         print(f"  test: mean={t_mean:+.4f} ± {t_std:.4f}  median={t_med:+.4f}")
-        print(f"\n  ★ Base K2_104 (no bondpp): test median = -1.744")
-        print(f"  ★ MTL 2ch (sp + bondpp target): test median = -2.199")
-        print(f"  ★ this cond-only bondpp: test median = {t_med:+.4f}")
 
 
 if __name__ == "__main__":

@@ -35,6 +35,9 @@ FOLDS = ["F1", "F2", "F3"]
 # (paper_row, train_script_relative, args)
 # train_script_relative: colab/ 기준 상대 경로
 COMMANDS = [
+    ( 1, "k2_104/train.py",                 "--normalize-sp"),
+    ( 2, "k2_104/train.py",                 "--no-liq --normalize-sp"),
+    ( 3, "k2_104/train_addbp.py",           "--normalize-bondpp --normalize-sp"),
     ( 4, "dual_3ch/train_stage1.py",        ""),
     ( 5, "dual_3ch/train_stage1_vix.py",    "--normalize-vix"),
     ( 6, "dual_3ch/train_stage2.py",        "--normalize-sp"),
