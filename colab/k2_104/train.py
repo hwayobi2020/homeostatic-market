@@ -103,12 +103,15 @@ def nll_per_step_channel(X, C, model, past_len, device):
 
 
 def run(condition_name, cols_cond, train_csv, test_csv, save_dir, seed=42,
-        normalize_sp=False, val_csv=None, fold_tag=None):
+        normalize_sp=False, val_csv=None, fold_tag=None,
+        warmup_epochs=0, patience=PATIENCE):
     torch.manual_seed(seed)
     np.random.seed(seed)
     tag_norm_sr = "_normsr" if normalize_sp else ""
     fold_str    = f"_{fold_tag}" if fold_tag else ""
-    tag_full    = f"{condition_name}{tag_norm_sr}{fold_str}_seed{seed}"
+    tag_extra   = (f"_warmup{warmup_epochs}" if warmup_epochs > 0 else "") + \
+                  (f"_pat{patience}"          if patience != PATIENCE else "")
+    tag_full    = f"{condition_name}{tag_norm_sr}{tag_extra}{fold_str}_seed{seed}"
     ckpt_path   = os.path.join(save_dir, f"{tag_full}_best.pt")
     summary_path_pre = os.path.join(save_dir, f"{tag_full}_summary.json")
     if os.path.exists(ckpt_path) and os.path.exists(summary_path_pre):
@@ -203,7 +206,8 @@ def run(condition_name, cols_cond, train_csv, test_csv, save_dir, seed=42,
         print(f"  ep{epoch:>3d}  train={train_nll:+.4f}  val={val_nll:+.4f}  test={test_nll:+.4f}")
         log.append(dict(epoch=epoch, train=train_nll, val=val_nll, test=test_nll))
 
-        if val_nll < best_val - 1e-4:
+        # Warmup: epoch < warmup_epochs 에선 best 갱신 무시 (early saturation 차단)
+        if epoch >= warmup_epochs and val_nll < best_val - 1e-4:
             best_val = val_nll
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
             best_test = test_nll
@@ -211,7 +215,7 @@ def run(condition_name, cols_cond, train_csv, test_csv, save_dir, seed=42,
             pat = 0
         else:
             pat += 1
-        if pat >= PATIENCE:
+        if pat >= patience:
             print(f"  early stop at epoch {epoch}")
             break
 
@@ -240,6 +244,8 @@ def run(condition_name, cols_cond, train_csv, test_csv, save_dir, seed=42,
         condition=condition_name,
         fold=fold_tag,
         seed=seed,
+        warmup_epochs=warmup_epochs,
+        patience=patience,
         normalize_sp=normalize_sp,
         n_cond=len(cols_cond),
         cond_cols=cols_cond,
@@ -272,6 +278,10 @@ def main():
     ap.add_argument("--no-liq", action="store_true",
                     help="cond 에서 excess_liq_wr 제거 (cond=[tbill_wr] 1ch only) — 행 2 'without liquidity'")
     ap.add_argument("--with-26w", action="store_true", help="Include tbill_26w_lag in cond (legacy reproduce)")
+    ap.add_argument("--warmup-epochs", type=int, default=0,
+                    help="best ckpt 갱신 차단 구간 (early saturation 방지). default 0=끔")
+    ap.add_argument("--patience", type=int, default=PATIENCE,
+                    help=f"early stop patience. default {PATIENCE}")
     args = ap.parse_args()
     if args.with_26w and args.no_liq:
         raise ValueError("--with-26w 와 --no-liq 동시 사용 불가")
@@ -302,18 +312,21 @@ def main():
     for seed in args.seeds:
         r = run(condition_name, COND_K2_104, args.train_csv, args.test_csv, args.out_dir,
                 seed=seed, normalize_sp=args.normalize_sp,
-                val_csv=args.val_csv, fold_tag=args.fold)
+                val_csv=args.val_csv, fold_tag=args.fold,
+                warmup_epochs=args.warmup_epochs, patience=args.patience)
         if r is not None:
             results.append(r)
 
     if len(results) > 1:
         tag_norm_sr = "_normsr" if args.normalize_sp else ""
         fold_str    = f"_{args.fold}" if args.fold else ""
+        tag_extra   = (f"_warmup{args.warmup_epochs}" if args.warmup_epochs > 0 else "") + \
+                      (f"_pat{args.patience}"          if args.patience != PATIENCE else "")
         df = pd.DataFrame(results)
-        df.to_csv(os.path.join(args.out_dir, f"{condition_name}{tag_norm_sr}{fold_str}_multiseed_results.csv"), index=False)
+        df.to_csv(os.path.join(args.out_dir, f"{condition_name}{tag_norm_sr}{tag_extra}{fold_str}_multiseed_results.csv"), index=False)
         v_mean, v_std = df.val.mean(), df.val.std()
         t_mean, t_std = df.test.mean(), df.test.std()
-        print(f"\n[{condition_name}{tag_norm_sr}{fold_str}] multi-seed (n={len(df)}): val={v_mean:+.4f}±{v_std:.4f}  test={t_mean:+.4f}±{t_std:.4f}")
+        print(f"\n[{condition_name}{tag_norm_sr}{tag_extra}{fold_str}] multi-seed (n={len(df)}): val={v_mean:+.4f}±{v_std:.4f}  test={t_mean:+.4f}±{t_std:.4f}")
 
 
 if __name__ == "__main__":
