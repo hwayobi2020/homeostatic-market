@@ -45,7 +45,9 @@ COMMANDS = [
     (11, "dual_3ch/train_mtl_ppstock2.py",  "--no-liq --normalize-stockpp --normalize-sp"),
     (12, "dual_3ch/train_mtl_bondpp_vix.py","--no-liq --normalize-bondpp --normalize-vix --normalize-sp"),
     (13, "dual_3ch/train_mtl_bp_stockpp.py","--no-liq --normalize-sp"),  # bondpp/stockpp 정규화 default True
-    (14, "dual_3ch/train_mtl_bondpp3.py",   "--normalize-bondpp --normalize-sp"),
+    # 행 14: cond=1ch (no-liq) 로 학습. target 에 excess_liq 있어 cond redundancy 제거.
+    # ckpt 명 = mtl_bp3_noliq_normbp_normsr → 행 16 ckpt 와 동일 (paper 표 라벨만 다름).
+    (14, "dual_3ch/train_mtl_bondpp3.py",   "--no-liq --normalize-bondpp --normalize-sp"),
     (15, "dual_3ch/train_mtl_3ch.py",       "--normalize-vix --normalize-sp"),
     (16, "dual_3ch/train_mtl_bondpp3.py",   "--no-liq --normalize-bondpp --normalize-sp"),
     # 17 은 12 와 동일 명령어 (skip 분기에서 자동 처리) — 명시 X

@@ -66,8 +66,10 @@ VARIANTS = [
     (11, "MTL(2 채널, stockpp정규) [no-liq]",                        "dual_3ch", "mtl_pps2_noliq_normsp_normsr{fold}"),
     (12, "MTL(3 채널, bondpp+vix정규) [no-liq]",                     "dual_3ch", "mtl_bp_vix_noliq_normbp_normvix_normsr{fold}"),
     (13, "MTL(3 채널, bondpp+stockpp정규) [no-liq]",                 "dual_3ch", "mtl_bp_stockpp_noliq_normbp_normsp_normsr{fold}"),
-    # 14-17: MTL 3 채널, liq with cond
-    (14, "MTL(3 채널, liq, bondpp정규)",                             "dual_3ch", "mtl_bp3_normbp_normsr{fold}"),
+    # 14-17: MTL 3 채널.
+    # 행 14: cond=1ch (no-liq) 로 학습 → ckpt 명이 행 16 과 동일 (mtl_bp3_noliq_normbp_normsr).
+    # paper 표 라벨은 "MTL(3 채널, liq, bondpp정규)" 그대로 (target 에 liq 있음 의미). 결과값은 행 16 과 동일.
+    (14, "MTL(3 채널, liq, bondpp정규)",                             "dual_3ch", "mtl_bp3_noliq_normbp_normsr{fold}"),
     (15, "MTL(3 채널, liq, vix정규)",                                "dual_3ch", "mtl3_normvix_normsr{fold}"),
     (16, "MTL(3 채널, bondpp정규) [no-liq]",                         "dual_3ch", "mtl_bp3_noliq_normbp_normsr{fold}"),
     (17, "MTL(3 채널, bondpp+vix정규) [no-liq]",                     "dual_3ch", "mtl_bp_vix_noliq_normbp_normvix_normsr{fold}"),
