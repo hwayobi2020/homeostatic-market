@@ -55,11 +55,24 @@ def cvar(x, q=0.05):
     return float(x[x <= threshold].mean())
 
 
+def terminal_return_ks(gen, real_future):
+    """옵션 A — 52주 누적 log-return (terminal return) 분포 KS test.
+    sp_return 이 weekly log-return 이므로 sum(axis=-1) = log(1 + 52w simple return).
+    gen:        [N, n_w, F]
+    real_future:[n_w, F]
+    Returns (ks_stat, ks_p).
+    """
+    gen_terminal  = gen.sum(axis=-1).reshape(-1)    # [N * n_w]
+    real_terminal = real_future.sum(axis=-1)        # [n_w]
+    ks_stat, ks_p = stats.ks_2samp(real_terminal, gen_terminal)
+    return float(ks_stat), float(ks_p)
+
+
 def evaluate_one(scenarios_path, real_future):
     """
     scenarios_path: .npy [N, n_w, F] (sp_return raw)
     real_future:    np.array [n_w, F] (sp_return raw)
-    Returns dict with EMD, CVaR_real, CVaR_gen, CVaR_err, n_real, n_gen.
+    Returns dict with EMD, CVaR_real, CVaR_gen, CVaR_err, KS_term_stat, KS_term_p, n_real, n_gen.
     """
     if not os.path.exists(scenarios_path):
         return None
@@ -67,7 +80,7 @@ def evaluate_one(scenarios_path, real_future):
     if gen.shape[1] != real_future.shape[0] or gen.shape[2] != real_future.shape[1]:
         raise RuntimeError(f"shape mismatch: gen={gen.shape} vs real={real_future.shape}")
 
-    # marginal pooling: 모든 (window, time) 점 통합
+    # marginal pooling: 모든 (window, time) 점 통합 (EMD/CVaR 용)
     real_pooled = real_future.flatten()                       # [n_w * F]
     gen_pooled  = gen.reshape(-1)                              # [N * n_w * F]
 
@@ -76,11 +89,16 @@ def evaluate_one(scenarios_path, real_future):
     cvar_gen  = cvar(gen_pooled,  0.05)
     cvar_err  = abs(cvar_real - cvar_gen)
 
+    # 옵션 A — terminal 52w cumulative log-return KS
+    ks_term_stat, ks_term_p = terminal_return_ks(gen, real_future)
+
     return dict(
         EMD=emd,
         CVaR_real=cvar_real,
         CVaR_gen=cvar_gen,
         CVaR_err=cvar_err,
+        KS_term_stat=ks_term_stat,
+        KS_term_p=ks_term_p,
         n_real=len(real_pooled),
         n_gen=len(gen_pooled),
     )
@@ -110,7 +128,8 @@ def main():
                 if m is None:
                     rows.append(dict(paper_row=paper_row, label=label, fold=fold, seed=seed,
                                      EMD=float('nan'), CVaR_real=float('nan'),
-                                     CVaR_gen=float('nan'), CVaR_err=float('nan'), n_gen=0))
+                                     CVaR_gen=float('nan'), CVaR_err=float('nan'),
+                                     KS_term_stat=float('nan'), KS_term_p=float('nan'), n_gen=0))
                     continue
                 rows.append(dict(paper_row=paper_row, label=label, fold=fold, seed=seed, **m))
 
