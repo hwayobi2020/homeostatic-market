@@ -118,6 +118,10 @@ def main():
         - df["gdp_13w_proxy_lag"]
         - df["cpi_13w_cum_lag"]
     )
+    # excess_liq_yoy_lag = m2_yoy(lag) - gdp_yoy(lag) - cpi_yoy(lag) (BIS 통합 cond, stale 분리 회피)
+    df["excess_liq_yoy_lag"] = (
+        df["m2_yoy_lag"] - df["gdp_yoy_lag"] - df["cpi_yoy_lag"]
+    )
     df["bondpp_13w_lag"]  = np.log((1.0 + df["tbill_13w_cum"]) / (1.0 + df["metab_13w"]))
     df["stockpp_13w_lag"] = np.log((1.0 + df["sp_13w_cum"])    / (1.0 + df["metab_13w"]))
     print(f"[6] metab_13w + bondpp/stockpp_13w_lag (BIS)")
@@ -128,6 +132,7 @@ def main():
         "m2_growth_lag", "m2_yoy_lag", "cpi_wr_lag", "cpi_yoy_lag", "gdp_yoy_lag",
         "m2_13w_cum_lag", "cpi_13w_cum_lag", "tbill_13w_cum", "sp_13w_cum",
         "gdp_13w_proxy_lag", "metab_13w", "bondpp_13w_lag", "stockpp_13w_lag",
+        "excess_liq_yoy_lag",
     ]
     n_before = len(df)
     df = df.dropna(subset=NEED).reset_index(drop=True)
