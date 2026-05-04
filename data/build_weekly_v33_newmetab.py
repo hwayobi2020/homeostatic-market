@@ -121,7 +121,18 @@ def main():
         print(f"  {col:20s} n={len(v):4d}  mean={v.mean()*ann*100:+7.3f}%/yr  "
               f"std={v.std()*ann*100:6.3f}%  min={v.min()*ann*100:+7.3f}%  max={v.max()*ann*100:+7.3f}%")
 
-    # 6) 정렬 + 출력 (train/test split — 기존 weekly_ppbond split 기준)
+    # 6) 필수 lag 컬럼 NaN 행 drop (학습 시 NaN propagate 차단)
+    NEED_COLS = [
+        "m2_growth_lag", "m2_yoy_lag", "cpi_wr_lag", "cpi_yoy_lag", "gdp_yoy_lag",
+        "m2_13w_cum_lag", "cpi_13w_cum_lag", "tbill_13w_cum", "sp_13w_cum",
+        "gdp_13w_proxy_lag", "metab_13w", "bondpp_13w_lag", "stockpp_13w_lag",
+    ]
+    n_before = len(df)
+    df = df.dropna(subset=NEED_COLS).reset_index(drop=True)
+    print(f"\n[5a] dropna(필수 lag/13w 컬럼): {n_before} → {len(df)} rows "
+          f"({n_before - len(df)} dropped, 첫 valid={df.date.iloc[0].date()})")
+
+    # 정렬 + 출력 (train/test split — 기존 weekly_ppbond split 기준)
     cutoff = pd.Timestamp("2016-01-01")  # 기존 train/test 경계
     df_tr = df[df["date"] < cutoff].reset_index(drop=True)
     df_te = df[df["date"] >= cutoff].reset_index(drop=True)
