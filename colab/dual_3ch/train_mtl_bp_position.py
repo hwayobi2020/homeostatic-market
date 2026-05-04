@@ -132,7 +132,7 @@ def run(train_csv, test_csv, save_dir, seed=42, normalize_bondpp=False,
     tag_norm    = tag_norm_b + tag_norm_sr
     tag_liq     = "_noliq"  if no_liq           else ""
     fold_str    = f"_{fold_tag}" if fold_tag else ""
-    tag_full    = f"mtl_bp_pos{tag_liq}{tag_norm}{fold_str}_seed{seed}"
+    tag_full    = f"mtl_bp_pos_v2{tag_liq}{tag_norm}{fold_str}_seed{seed}"
     ckpt_path   = os.path.join(save_dir, f"{tag_full}_best.pt")
     summary_path_pre = os.path.join(save_dir, f"{tag_full}_summary.json")
     if os.path.exists(ckpt_path) and os.path.exists(summary_path_pre):

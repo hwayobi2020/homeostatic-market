@@ -277,7 +277,7 @@ def main():
     os.makedirs(args.out_dir, exist_ok=True)
     results = []
     for seed in args.seeds:
-        r = run("base_bp_pos", COLS_COND, args.train_csv, args.test_csv, args.out_dir,
+        r = run("base_bp_pos_v2", COLS_COND, args.train_csv, args.test_csv, args.out_dir,
                 seed=seed, normalize_sp=args.normalize_sp, normalize_bondpp=args.normalize_bondpp,
                 val_csv=args.val_csv, fold_tag=args.fold)
         if r is not None:
@@ -289,11 +289,11 @@ def main():
         tag_norm    = tag_norm_b + tag_norm_sr
         fold_str    = f"_{args.fold}" if args.fold else ""
         df = pd.DataFrame(results)
-        df.to_csv(os.path.join(args.out_dir, f"base_bp_pos{tag_norm}{fold_str}_multiseed_results.csv"), index=False)
+        df.to_csv(os.path.join(args.out_dir, f"base_bp_pos_v2{tag_norm}{fold_str}_multiseed_results.csv"), index=False)
         v_mean, v_std = df.val.mean(), df.val.std()
         t_mean, t_std = df.test.mean(), df.test.std()
         t_med = df.test.median()
-        print(f"\n[base_bp_pos{tag_norm}{fold_str}] multi-seed (n={len(df)})")
+        print(f"\n[base_bp_pos_v2{tag_norm}{fold_str}] multi-seed (n={len(df)})")
         print(f"  val:  mean={v_mean:+.4f} ± {v_std:.4f}")
         print(f"  test: mean={t_mean:+.4f} ± {t_std:.4f}  median={t_med:+.4f}")
 
