@@ -46,8 +46,8 @@ MAX_EPOCHS = 60
 PATIENCE = 30
 
 COLS_TARGET = ["sp_return", "bondpp_13w_lag"]   # v33: 새 metab(BIS) + 13w 누적 정합 산식
-COLS_COND_NO_26W   = ["tbill_wr", "excess_liq_yoy_lag"]   # 2ch (v33 통합 BIS cond)
-COLS_COND_WITH_26W = ["tbill_wr", "tbill_26w_lag", "excess_liq_yoy_lag"]   # 3ch with 26w
+COLS_COND_NO_26W   = ["tbill_wr", "metab_13w"]   # 2ch (bondpp 단위 정합 13w cum)
+COLS_COND_WITH_26W = ["tbill_wr", "tbill_26w_lag", "metab_13w"]   # 3ch with 26w
 COLS_COND = COLS_COND_NO_26W
 MASK_FUTURE_CH_NO_26W   = [1]      # mask excess_liq in future
 MASK_FUTURE_CH_WITH_26W = [1, 2]   # mask 26w + excess_liq
