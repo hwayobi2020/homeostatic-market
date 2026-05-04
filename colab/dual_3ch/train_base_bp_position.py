@@ -50,8 +50,8 @@ COLS_TARGET = ["sp_return"]
 SP_TARGET_IDX = 0
 # v33 position-effect 실험 (cond 통합 ver): 모델 1 (base bondpp = LUPI input)
 # m2/gdp/cpi yoy 따로 (gdp 91% / cpi 73% stale) → excess_liq_yoy = m2-gdp-cpi 1ch 통합
-COLS_COND = ["tbill_wr", "bondpp_13w_lag"]   # 2ch (cond 최소화, metab_13w 빠짐)
-MASK_FUTURE_CH = [1]   # mask bondpp in future (only tbill 시나리오)
+COLS_COND = ["tbill_wr", "m2_yoy_lag", "gdp_yoy_lag", "cpi_yoy_lag", "bondpp_13w_lag"]   # 5ch (원천 변수 + bondpp, LUPI input)
+MASK_FUTURE_CH = [1, 2, 3, 4]   # mask m2/gdp/cpi/bondpp in future (only tbill 시나리오)
 
 LOG2PI = math.log(2 * math.pi)
 
