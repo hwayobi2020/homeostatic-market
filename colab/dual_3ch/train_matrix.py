@@ -167,32 +167,36 @@ def loss_fn(X, C, model, past_len, device):
 
 def run(spec, train_csv, val_csv, test_csv, save_dir, seed,
         max_epochs, patience, batch, lr, fold_tag,
-        normalize_bondpp, normalize_stockpp, normalize_excess):
+        normalize_bondpp, normalize_stockpp, normalize_excess, normalize_sp):
     torch.manual_seed(seed)
     np.random.seed(seed)
     cols_cond   = spec["cols_cond"]
     cols_target = spec["cols_target"]
     mask_future = spec["mask_future_ch"]
 
+    sp_idx = cols_target.index("sp_return")  # best-ckpt 기준 채널 (& 정규화 적용 시 idx)
+
     # target idxs to normalize — only when the variable is in target
     norm_idxs = []
     apply_normbp = bool(normalize_bondpp  and "bondpp_13w_lag"     in cols_target)
     apply_normsp = bool(normalize_stockpp and "stockpp_13w_lag"    in cols_target)
     apply_normex = bool(normalize_excess  and "excess_liq_yoy_lag" in cols_target)
+    apply_normsr = bool(normalize_sp)  # sp_return 은 항상 target 에 있음
     if apply_normbp:
         norm_idxs.append(cols_target.index("bondpp_13w_lag"))
     if apply_normsp:
         norm_idxs.append(cols_target.index("stockpp_13w_lag"))
     if apply_normex:
         norm_idxs.append(cols_target.index("excess_liq_yoy_lag"))
-
-    sp_idx = cols_target.index("sp_return")  # best-ckpt 기준 채널
+    if apply_normsr:
+        norm_idxs.append(sp_idx)
 
     # tag 구성
     fold_str = f"_{fold_tag}" if fold_tag else ""
     norm_tag = (("_normbp" if apply_normbp else "")
                 + ("_normsp" if apply_normsp else "")
-                + ("_normex" if apply_normex else ""))
+                + ("_normex" if apply_normex else "")
+                + ("_normsr" if apply_normsr else ""))
     tag_full = f"matrix_v{spec['variant_id']}_{spec['name']}{norm_tag}{fold_str}_seed{seed}"
     ckpt_path    = os.path.join(save_dir, f"{tag_full}_best.pt")
     summary_path = os.path.join(save_dir, f"{tag_full}_summary.json")
@@ -209,8 +213,10 @@ def run(spec, train_csv, val_csv, test_csv, save_dir, seed,
     print(f"  target = {cols_target}  (D_TARGET={len(cols_target)})")
     print(f"  mask_future_ch = {mask_future} → "
           f"{[cols_cond[i] for i in mask_future]} masked in future")
-    print(f"  normalize target idxs = {norm_idxs}  (sp_return idx 0 raw)")
-    print(f"  normbp={apply_normbp}, normsp={apply_normsp}, normex={apply_normex}")
+    print(f"  normalize target idxs = {norm_idxs}")
+    print(f"  normbp={apply_normbp}, normsp={apply_normsp}, "
+          f"normex={apply_normex}, normsr={apply_normsr}  "
+          f"(normsr=True → sp_return val NLL 정규화 단위, raw 환산: + log(σ_sp))")
     print(f"{'='*72}")
 
     # train/test 윈도우
@@ -337,6 +343,7 @@ def run(spec, train_csv, val_csv, test_csv, save_dir, seed,
             "normalize_bondpp":  apply_normbp,
             "normalize_stockpp": apply_normsp,
             "normalize_excess":  apply_normex,
+            "normalize_sp":      apply_normsr,
             "config": dict(K=K_STEPS, d_model=D_MODEL, n_heads=N_HEADS, n_layers=N_LAYERS,
                            d_cond=len(cols_cond), d_target=len(cols_target),
                            past_len=PAST_LEN, total_len=L),
@@ -354,6 +361,7 @@ def run(spec, train_csv, val_csv, test_csv, save_dir, seed,
         normalize_bondpp=apply_normbp,
         normalize_stockpp=apply_normsp,
         normalize_excess=apply_normex,
+        normalize_sp=apply_normsr,
         target_stats_map={int(k): v for k, v in stats_t_map.items()},
         best_epoch=best_epoch,
         val_sp_return=best_val_sp,
@@ -388,6 +396,10 @@ def main():
                     help="apply z-score to stockpp_13w_lag target channel (only if it's in target)")
     ap.add_argument("--normalize-excess", action="store_true",
                     help="apply z-score to excess_liq_yoy_lag target channel (only if it's in target)")
+    ap.add_argument("--normalize-sp", action="store_true",
+                    help="apply z-score to sp_return target channel "
+                         "(mtl 변종 권장 — multi-task gradient balance). "
+                         "True 시 출력 NLL 단위가 정규화이므로 raw 환산: + log(σ_sp)")
     ap.add_argument("--max-epochs", type=int, default=MAX_EPOCHS)
     ap.add_argument("--patience",   type=int, default=PATIENCE)
     ap.add_argument("--batch",      type=int, default=BATCH)
@@ -426,7 +438,8 @@ def main():
                 batch=args.batch, lr=args.lr, fold_tag=args.fold,
                 normalize_bondpp=args.normalize_bondpp,
                 normalize_stockpp=args.normalize_stockpp,
-                normalize_excess=args.normalize_excess)
+                normalize_excess=args.normalize_excess,
+                normalize_sp=args.normalize_sp)
         if r is not None:
             results.append(r)
 
@@ -434,9 +447,11 @@ def main():
         apply_normbp = bool(args.normalize_bondpp  and "bondpp_13w_lag"     in spec["cols_target"])
         apply_normsp = bool(args.normalize_stockpp and "stockpp_13w_lag"    in spec["cols_target"])
         apply_normex = bool(args.normalize_excess  and "excess_liq_yoy_lag" in spec["cols_target"])
+        apply_normsr = bool(args.normalize_sp)
         norm_tag = (("_normbp" if apply_normbp else "")
                     + ("_normsp" if apply_normsp else "")
-                    + ("_normex" if apply_normex else ""))
+                    + ("_normex" if apply_normex else "")
+                    + ("_normsr" if apply_normsr else ""))
         fold_str = f"_{args.fold}" if args.fold else ""
         df_rows = []
         for r in results:

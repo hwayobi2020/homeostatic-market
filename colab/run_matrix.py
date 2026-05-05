@@ -25,6 +25,7 @@ TRAIN_SCRIPT = os.path.join(HERE, "dual_3ch", "train_matrix.py")
 NORMBP_VARIANTS = {5, 7}    # mtl_bp, mtl_bp_sp
 NORMSP_VARIANTS = {6, 7}    # mtl_sp, mtl_bp_sp
 NORMEX_VARIANTS = {8, 9}    # best_base_mtl, best_excess_liq_mtl (excess_liq_yoy_lag target)
+NORMSR_VARIANTS = {5, 6, 7, 8, 9}  # mtl 변종 — sp_return 도 정규화 (multi-task gradient balance)
 
 
 def main():
@@ -76,6 +77,8 @@ def main():
                 cmd.append("--normalize-stockpp")
             if variant in NORMEX_VARIANTS:
                 cmd.append("--normalize-excess")
+            if variant in NORMSR_VARIANTS:
+                cmd.append("--normalize-sp")
             done += 1
             print(f"\n{'=' * 72}")
             print(f"[{done}/{total}] variant={variant}, fold={fold}, seeds={args.seeds}")
