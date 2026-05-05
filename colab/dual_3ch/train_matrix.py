@@ -50,10 +50,12 @@ K_STEPS = 2
 D_MODEL = 64
 N_HEADS = 4
 N_LAYERS = 2
-LR = 5e-4
+LR = 1e-4   # 5e-4 → 1e-4 (mtl 변종 안정성 ↑, normbp+normsr 동시 적용 시 발산 방지)
 BATCH = 32
 MAX_EPOCHS = 60
 PATIENCE = 30
+GRAD_CLIP = 1.0   # 5.0 → 1.0 (학습 후반 test NLL 폭발 방지)
+DIVERGENCE_TEST_NLL = 100.0  # test_nll > 이 값 또는 non-finite 면 즉시 early termination
 
 LOG2PI = math.log(2 * math.pi)
 
@@ -291,7 +293,7 @@ def run(spec, train_csv, val_csv, test_csv, save_dir, seed,
             opt.zero_grad()
             loss = loss_fn(Xtr_[idx], Ctr_[idx], model, PAST_LEN, device)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=GRAD_CLIP)
             opt.step()
             losses.append(loss.item())
 
@@ -310,9 +312,13 @@ def run(spec, train_csv, val_csv, test_csv, save_dir, seed,
             row[f"test_{c}"] = float(v)
         log.append(row)
 
-        # best ckpt 기준: sp_return 단독 val NLL (raw 단위)
+        # best ckpt 기준: sp_return 단독 val NLL (정규화 단위 또는 raw)
         val_sp = float(val_per_ch[sp_idx])
-        if val_sp < best_val_sp - 1e-4:
+        # NaN/Inf detect: val_sp 비정상이면 best ckpt 갱신 차단, patience 카운트만
+        if not np.isfinite(val_sp):
+            print(f"  ⚠ val_sp non-finite ({val_sp}) — best ckpt 갱신 차단")
+            pat += 1
+        elif val_sp < best_val_sp - 1e-4:
             best_val_sp = val_sp
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
             best_test = test_nll
@@ -322,6 +328,10 @@ def run(spec, train_csv, val_csv, test_csv, save_dir, seed,
             pat = 0
         else:
             pat += 1
+        # 학습 발산 detect: test_nll 폭발 시 즉시 early termination (patience 무관)
+        if (not np.isfinite(test_nll)) or test_nll > DIVERGENCE_TEST_NLL:
+            print(f"  ⚠ divergence detected (test_nll={test_nll:+.2f}) — early termination")
+            break
         if pat >= patience:
             print(f"  early stop at epoch {epoch}")
             break
