@@ -12,6 +12,11 @@ colab/dual_mamba/result/*.pt
 colab/dual_mamba/result/*.pth
 colab/dual_mamba/result/*.npz
 
+# Dual-3ch result artifacts (same policy — keep csv/json/log, drop binaries)
+colab/dual_3ch/result/*.pt
+colab/dual_3ch/result/*.pth
+colab/dual_3ch/result/*.npz
+
 # chat/ folder is local-only (per CLAUDE.md rule)
 chat/
 
