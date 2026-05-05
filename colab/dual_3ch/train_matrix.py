@@ -71,6 +71,8 @@ VARIANTS = {
     7: dict(name="mtl_bp_sp",       cond_extra=[],                                                    target_extra=["bondpp_13w_lag", "stockpp_13w_lag"]),
     # 변종 8: 변종 4 (best base) cond 그대로 + mtl 형태로 target 에 excess_liq_yoy_lag (BIS 초과유동성 누적) 추가
     8: dict(name="best_base_mtl",   cond_extra=["bondpp_13w_lag", "stockpp_13w_lag"],                 target_extra=["excess_liq_yoy_lag"]),
+    # 변종 9: cond 4채널 (tbill, m2_yoy, gdp_yoy, cpi_yoy, base 와 동일) + target 에 sp + excess_liq_yoy_lag (mtl 형태, bondpp/stockpp 없음)
+    9: dict(name="best_excess_liq_mtl", cond_extra=[],                                                target_extra=["excess_liq_yoy_lag"]),
 }
 
 

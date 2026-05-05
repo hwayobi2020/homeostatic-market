@@ -24,12 +24,12 @@ TRAIN_SCRIPT = os.path.join(HERE, "dual_3ch", "train_matrix.py")
 # 변종별 정규화 자동 적용 — target 위치에 보조 채널 있는 변종만
 NORMBP_VARIANTS = {5, 7}    # mtl_bp, mtl_bp_sp
 NORMSP_VARIANTS = {6, 7}    # mtl_sp, mtl_bp_sp
-NORMEX_VARIANTS = {8}       # best_base_mtl (excess_liq_yoy_lag target)
+NORMEX_VARIANTS = {8, 9}    # best_base_mtl, best_excess_liq_mtl (excess_liq_yoy_lag target)
 
 
 def main():
     ap = argparse.ArgumentParser(description="Paper matrix batch runner (7 variants × 3 folds × N seeds)")
-    ap.add_argument("--variants", nargs="+", type=int, default=[1, 2, 3, 4, 5, 6, 7, 8])
+    ap.add_argument("--variants", nargs="+", type=int, default=[1, 2, 3, 4, 5, 6, 7, 8, 9])
     ap.add_argument("--folds",    nargs="+", default=["F1", "F2", "F3"])
     ap.add_argument("--seeds",    nargs="+", type=int, default=[42, 43, 44, 45, 46])
     ap.add_argument("--max-epochs", type=int, default=60)
