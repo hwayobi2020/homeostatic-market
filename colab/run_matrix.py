@@ -21,14 +21,15 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 TRAIN_SCRIPT = os.path.join(HERE, "dual_3ch", "train_matrix.py")
 
-# 변종별 정규화 자동 적용 — target 위치에 bondpp/stockpp 있는 변종만
-NORMBP_VARIANTS = {5, 7}   # mtl_bp, mtl_bp_sp
-NORMSP_VARIANTS = {6, 7}   # mtl_sp, mtl_bp_sp
+# 변종별 정규화 자동 적용 — target 위치에 보조 채널 있는 변종만
+NORMBP_VARIANTS = {5, 7}    # mtl_bp, mtl_bp_sp
+NORMSP_VARIANTS = {6, 7}    # mtl_sp, mtl_bp_sp
+NORMEX_VARIANTS = {8}       # best_base_mtl (excess_liq_yoy_lag target)
 
 
 def main():
     ap = argparse.ArgumentParser(description="Paper matrix batch runner (7 variants × 3 folds × N seeds)")
-    ap.add_argument("--variants", nargs="+", type=int, default=[1, 2, 3, 4, 5, 6, 7])
+    ap.add_argument("--variants", nargs="+", type=int, default=[1, 2, 3, 4, 5, 6, 7, 8])
     ap.add_argument("--folds",    nargs="+", default=["F1", "F2", "F3"])
     ap.add_argument("--seeds",    nargs="+", type=int, default=[42, 43, 44, 45, 46])
     ap.add_argument("--max-epochs", type=int, default=60)
@@ -73,6 +74,8 @@ def main():
                 cmd.append("--normalize-bondpp")
             if variant in NORMSP_VARIANTS:
                 cmd.append("--normalize-stockpp")
+            if variant in NORMEX_VARIANTS:
+                cmd.append("--normalize-excess")
             done += 1
             print(f"\n{'=' * 72}")
             print(f"[{done}/{total}] variant={variant}, fold={fold}, seeds={args.seeds}")

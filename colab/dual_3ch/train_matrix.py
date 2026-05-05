@@ -62,13 +62,15 @@ COLS_COND_BASE = ["tbill_wr", "m2_yoy_lag", "gdp_yoy_lag", "cpi_yoy_lag"]
 
 # 7 변종 정의 — paper_plan.txt 매트릭스 1:1 매핑
 VARIANTS = {
-    1: dict(name="base",          cond_extra=[],                                       target_extra=[]),
-    2: dict(name="base_bp",       cond_extra=["bondpp_13w_lag"],                       target_extra=[]),
-    3: dict(name="base_sp",       cond_extra=["stockpp_13w_lag"],                      target_extra=[]),
-    4: dict(name="base_bp_sp",    cond_extra=["bondpp_13w_lag", "stockpp_13w_lag"],    target_extra=[]),
-    5: dict(name="mtl_bp",        cond_extra=[],                                       target_extra=["bondpp_13w_lag"]),
-    6: dict(name="mtl_sp",        cond_extra=[],                                       target_extra=["stockpp_13w_lag"]),
-    7: dict(name="mtl_bp_sp",     cond_extra=[],                                       target_extra=["bondpp_13w_lag", "stockpp_13w_lag"]),
+    1: dict(name="base",            cond_extra=[],                                                    target_extra=[]),
+    2: dict(name="base_bp",         cond_extra=["bondpp_13w_lag"],                                    target_extra=[]),
+    3: dict(name="base_sp",         cond_extra=["stockpp_13w_lag"],                                   target_extra=[]),
+    4: dict(name="base_bp_sp",      cond_extra=["bondpp_13w_lag", "stockpp_13w_lag"],                 target_extra=[]),
+    5: dict(name="mtl_bp",          cond_extra=[],                                                    target_extra=["bondpp_13w_lag"]),
+    6: dict(name="mtl_sp",          cond_extra=[],                                                    target_extra=["stockpp_13w_lag"]),
+    7: dict(name="mtl_bp_sp",       cond_extra=[],                                                    target_extra=["bondpp_13w_lag", "stockpp_13w_lag"]),
+    # 변종 8: 변종 4 (best base) cond 그대로 + mtl 형태로 target 에 excess_liq_yoy_lag (BIS 초과유동성 누적) 추가
+    8: dict(name="best_base_mtl",   cond_extra=["bondpp_13w_lag", "stockpp_13w_lag"],                 target_extra=["excess_liq_yoy_lag"]),
 }
 
 
@@ -163,7 +165,7 @@ def loss_fn(X, C, model, past_len, device):
 
 def run(spec, train_csv, val_csv, test_csv, save_dir, seed,
         max_epochs, patience, batch, lr, fold_tag,
-        normalize_bondpp, normalize_stockpp):
+        normalize_bondpp, normalize_stockpp, normalize_excess):
     torch.manual_seed(seed)
     np.random.seed(seed)
     cols_cond   = spec["cols_cond"]
@@ -172,18 +174,23 @@ def run(spec, train_csv, val_csv, test_csv, save_dir, seed,
 
     # target idxs to normalize — only when the variable is in target
     norm_idxs = []
-    apply_normbp = bool(normalize_bondpp and "bondpp_13w_lag" in cols_target)
-    apply_normsp = bool(normalize_stockpp and "stockpp_13w_lag" in cols_target)
+    apply_normbp = bool(normalize_bondpp  and "bondpp_13w_lag"     in cols_target)
+    apply_normsp = bool(normalize_stockpp and "stockpp_13w_lag"    in cols_target)
+    apply_normex = bool(normalize_excess  and "excess_liq_yoy_lag" in cols_target)
     if apply_normbp:
         norm_idxs.append(cols_target.index("bondpp_13w_lag"))
     if apply_normsp:
         norm_idxs.append(cols_target.index("stockpp_13w_lag"))
+    if apply_normex:
+        norm_idxs.append(cols_target.index("excess_liq_yoy_lag"))
 
     sp_idx = cols_target.index("sp_return")  # best-ckpt 기준 채널
 
     # tag 구성
     fold_str = f"_{fold_tag}" if fold_tag else ""
-    norm_tag = ("_normbp" if apply_normbp else "") + ("_normsp" if apply_normsp else "")
+    norm_tag = (("_normbp" if apply_normbp else "")
+                + ("_normsp" if apply_normsp else "")
+                + ("_normex" if apply_normex else ""))
     tag_full = f"matrix_v{spec['variant_id']}_{spec['name']}{norm_tag}{fold_str}_seed{seed}"
     ckpt_path    = os.path.join(save_dir, f"{tag_full}_best.pt")
     summary_path = os.path.join(save_dir, f"{tag_full}_summary.json")
@@ -201,7 +208,7 @@ def run(spec, train_csv, val_csv, test_csv, save_dir, seed,
     print(f"  mask_future_ch = {mask_future} → "
           f"{[cols_cond[i] for i in mask_future]} masked in future")
     print(f"  normalize target idxs = {norm_idxs}  (sp_return idx 0 raw)")
-    print(f"  normbp={apply_normbp}, normsp={apply_normsp}")
+    print(f"  normbp={apply_normbp}, normsp={apply_normsp}, normex={apply_normex}")
     print(f"{'='*72}")
 
     # train/test 윈도우
@@ -327,6 +334,7 @@ def run(spec, train_csv, val_csv, test_csv, save_dir, seed,
             "mask_future_ch":    mask_future,
             "normalize_bondpp":  apply_normbp,
             "normalize_stockpp": apply_normsp,
+            "normalize_excess":  apply_normex,
             "config": dict(K=K_STEPS, d_model=D_MODEL, n_heads=N_HEADS, n_layers=N_LAYERS,
                            d_cond=len(cols_cond), d_target=len(cols_target),
                            past_len=PAST_LEN, total_len=L),
@@ -343,6 +351,7 @@ def run(spec, train_csv, val_csv, test_csv, save_dir, seed,
         mask_future_ch=mask_future,
         normalize_bondpp=apply_normbp,
         normalize_stockpp=apply_normsp,
+        normalize_excess=apply_normex,
         target_stats_map={int(k): v for k, v in stats_t_map.items()},
         best_epoch=best_epoch,
         val_sp_return=best_val_sp,
@@ -375,6 +384,8 @@ def main():
                     help="apply z-score to bondpp_13w_lag target channel (only if it's in target)")
     ap.add_argument("--normalize-stockpp", action="store_true",
                     help="apply z-score to stockpp_13w_lag target channel (only if it's in target)")
+    ap.add_argument("--normalize-excess", action="store_true",
+                    help="apply z-score to excess_liq_yoy_lag target channel (only if it's in target)")
     ap.add_argument("--max-epochs", type=int, default=MAX_EPOCHS)
     ap.add_argument("--patience",   type=int, default=PATIENCE)
     ap.add_argument("--batch",      type=int, default=BATCH)
@@ -412,14 +423,18 @@ def main():
                 max_epochs=args.max_epochs, patience=args.patience,
                 batch=args.batch, lr=args.lr, fold_tag=args.fold,
                 normalize_bondpp=args.normalize_bondpp,
-                normalize_stockpp=args.normalize_stockpp)
+                normalize_stockpp=args.normalize_stockpp,
+                normalize_excess=args.normalize_excess)
         if r is not None:
             results.append(r)
 
     if len(results) > 1:
-        apply_normbp = bool(args.normalize_bondpp  and "bondpp_13w_lag"  in spec["cols_target"])
-        apply_normsp = bool(args.normalize_stockpp and "stockpp_13w_lag" in spec["cols_target"])
-        norm_tag = ("_normbp" if apply_normbp else "") + ("_normsp" if apply_normsp else "")
+        apply_normbp = bool(args.normalize_bondpp  and "bondpp_13w_lag"     in spec["cols_target"])
+        apply_normsp = bool(args.normalize_stockpp and "stockpp_13w_lag"    in spec["cols_target"])
+        apply_normex = bool(args.normalize_excess  and "excess_liq_yoy_lag" in spec["cols_target"])
+        norm_tag = (("_normbp" if apply_normbp else "")
+                    + ("_normsp" if apply_normsp else "")
+                    + ("_normex" if apply_normex else ""))
         fold_str = f"_{args.fold}" if args.fold else ""
         df_rows = []
         for r in results:
