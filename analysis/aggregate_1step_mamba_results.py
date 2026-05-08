@@ -227,7 +227,7 @@ def main():
         sys.exit(1)
     df_1s = pd.DataFrame(gaussian_rows(s1_recs, "1step"))
     df_1s = df_1s.sort_values(["variant_id", "fold", "seed"])
-    agg_1s = print_tables(df_1s, H_avg, model_name="1-step Transformer")
+    agg_1s = print_tables(df_1s, H_avg, model_name="1-step Mamba")
 
     out_csv = os.path.join(result_dir, "1step_mamba_results.csv")
     df_1s.to_csv(out_csv, index=False)
