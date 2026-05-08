@@ -49,8 +49,9 @@ MAX_EPOCHS = 60
 PATIENCE = 30
 GRAD_CLIP = 1.0
 
-COLS_COND_BASE        = ["tbill_wr",        "m2_yoy_lag", "gdp_yoy_lag", "cpi_yoy_lag"]
-COLS_COND_BASE_VIX    = ["tbill_wr", "vix", "m2_yoy_lag", "gdp_yoy_lag", "cpi_yoy_lag"]
+# 3M (13w) horizon 일치 macro 변수 — yoy_lag (52w) → 13w_cum_lag 로 교체
+COLS_COND_BASE        = ["tbill_wr",        "m2_13w_cum_lag", "gdp_13w_proxy_lag", "cpi_13w_cum_lag"]
+COLS_COND_BASE_VIX    = ["tbill_wr", "vix", "m2_13w_cum_lag", "gdp_13w_proxy_lag", "cpi_13w_cum_lag"]
 
 VARIANTS = {
     1:  dict(name="base",                cond_extra=[]),
