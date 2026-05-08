@@ -224,7 +224,8 @@ def run(train_csv, val_csv, test_csv, save_dir, seed,
     mask_future = list(range(1, len(cols_cond)))  # tbill (idx 0) 만 future 활성
 
     fold_str = f"_{fold_tag}" if fold_tag else ""
-    tag_full = f"vol_pilot_mtl_excessliq{fold_str}_seed{seed}"
+    lam_str  = str(lambda_aux).replace(".", "p")  # 0.1 → 0p1, 0.01 → 0p01
+    tag_full = f"vol_pilot_mtl_excessliq_lam{lam_str}{fold_str}_seed{seed}"
     ckpt_path    = os.path.join(save_dir, f"{tag_full}_best.pt")
     summary_path = os.path.join(save_dir, f"{tag_full}_summary.json")
     log_path     = os.path.join(save_dir, f"{tag_full}_trainlog.csv")
