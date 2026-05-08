@@ -65,6 +65,9 @@ VARIANTS = {
     7: dict(name="mtl_bp_sp",           cond_extra=[],                                                    target_extra=["bondpp_13w_lag", "stockpp_13w_lag"]),
     8: dict(name="best_base_mtl",       cond_extra=["bondpp_13w_lag", "stockpp_13w_lag"],                 target_extra=["excess_liq_yoy_lag"]),
     9: dict(name="best_excess_liq_mtl", cond_extra=[],                                                    target_extra=["excess_liq_yoy_lag"]),
+    # 변종 10/11: bondpp/stockpp 의 metab 분모 없는 단순 합 ablation (사용자 의문: homeostatic 산식 vs simple cumulative)
+    10: dict(name="base_bondsum",       cond_extra=["tbill_13w_cum"],                                     target_extra=[]),
+    11: dict(name="base_stocksum",      cond_extra=["sp_13w_cum"],                                        target_extra=[]),
 }
 
 

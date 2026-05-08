@@ -44,6 +44,8 @@ VARIANT_LABELS = {
     7: "7.mtl_bp_sp",
     8: "8.best_base_mtl",
     9: "9.best_excess_liq_mtl",
+    10: "10.base_bondsum",
+    11: "11.base_stocksum",
 }
 
 NORMSR_VARIANTS_FLOW = {5, 6, 7, 8, 9}
