@@ -64,7 +64,8 @@ MAX_EPOCHS = 60
 PATIENCE = 30
 GRAD_CLIP = 1.0
 
-COLS_COND_BASE = ["tbill_wr", "m2_yoy_lag", "gdp_yoy_lag", "cpi_yoy_lag"]
+COLS_COND_BASE        = ["tbill_wr",        "m2_yoy_lag", "gdp_yoy_lag", "cpi_yoy_lag"]
+COLS_COND_BASE_VIX    = ["tbill_wr", "vix", "m2_yoy_lag", "gdp_yoy_lag", "cpi_yoy_lag"]
 
 VARIANTS = {
     1: dict(name="base",       cond_extra=[]),
@@ -74,11 +75,13 @@ VARIANTS = {
 }
 
 
-def build_spec(variant_id):
+def build_spec(variant_id, with_vix=False):
+    """with_vix=True 면 cond 에 vix 추가 (idx 1, lag 처럼 future mask=0)."""
     if variant_id not in VARIANTS:
         raise ValueError(f"variant must be in {list(VARIANTS)}, got {variant_id}")
     v = VARIANTS[variant_id]
-    cols_cond = COLS_COND_BASE + v["cond_extra"]
+    base = COLS_COND_BASE_VIX if with_vix else COLS_COND_BASE
+    cols_cond = base + v["cond_extra"]
     cols_target = ["sp_return"]
     mask_future_ch = list(range(1, len(cols_cond)))  # tbill (idx 0) 만 future 활성
     return dict(
@@ -87,6 +90,7 @@ def build_spec(variant_id):
         cols_cond=cols_cond,
         cols_target=cols_target,
         mask_future_ch=mask_future_ch,
+        with_vix=with_vix,
     )
 
 
@@ -252,7 +256,8 @@ def run(spec, train_csv, val_csv, test_csv, save_dir, seed,
     mask_future = spec["mask_future_ch"]
 
     fold_str = f"_{fold_tag}" if fold_tag else ""
-    tag_full = f"vol_pilot_v2_v{spec['variant_id']}_{spec['name']}{fold_str}_seed{seed}"
+    vix_tag  = "_vix" if spec.get("with_vix") else ""
+    tag_full = f"vol_pilot_v2{vix_tag}_v{spec['variant_id']}_{spec['name']}{fold_str}_seed{seed}"
     ckpt_path    = os.path.join(save_dir, f"{tag_full}_best.pt")
     summary_path = os.path.join(save_dir, f"{tag_full}_summary.json")
     log_path     = os.path.join(save_dir, f"{tag_full}_trainlog.csv")
@@ -457,7 +462,8 @@ def main():
     ap = argparse.ArgumentParser(description="Vol scalar regression pilot v2")
     ap.add_argument("--variant", type=int, default=1, choices=list(VARIANTS.keys()))
     ap.add_argument("--seeds", nargs="+", type=int, default=[42])
-    ap.add_argument("--fold", default="F1", choices=["F1", "F2", "F3"])
+    ap.add_argument("--fold", default=None,
+                    help="F1/F2/F3 (folds_v33) — pilot-split 사용 시 None")
     ap.add_argument("--train-csv", default=None)
     ap.add_argument("--val-csv",   default=None)
     ap.add_argument("--test-csv",  default=None)
@@ -466,28 +472,51 @@ def main():
     ap.add_argument("--patience",   type=int, default=PATIENCE)
     ap.add_argument("--batch",      type=int, default=BATCH)
     ap.add_argument("--lr",         type=float, default=LR)
+    ap.add_argument("--vix", action="store_true",
+                    help="cond 에 vix 추가 (data/pilot_split 사용 권장)")
+    ap.add_argument("--pilot-split", action="store_true",
+                    help="data/pilot_split/{train,val,test}.csv 사용 "
+                         "(2000-2015 train, 2016 val, 2017-2025 test)")
     args = ap.parse_args()
 
-    spec = build_spec(args.variant)
+    spec = build_spec(args.variant, with_vix=args.vix)
 
-    if args.fold is not None:
+    train_csv = val_csv = test_csv = None
+
+    if args.pilot_split:
         repo_root = os.path.normpath(os.path.join(HERE, "..", ".."))
-        folds_dir = os.path.join(repo_root, "data", "folds_v33")
+        split_dir = os.path.join(repo_root, "data", "pilot_split")
+        train_csv = os.path.join(split_dir, "train.csv")
+        val_csv   = os.path.join(split_dir, "val.csv")
+        test_csv  = os.path.join(split_dir, "test.csv")
+        print(f"[--pilot-split]")
+        print(f"  train = {train_csv}")
+        print(f"  val   = {val_csv}")
+        print(f"  test  = {test_csv}")
+    elif args.fold is not None:
+        repo_root = os.path.normpath(os.path.join(HERE, "..", ".."))
+        folds_dir = os.path.join(repo_root, "data",
+                                 "folds_v33_vix" if args.vix else "folds_v33")
         train_csv = os.path.join(folds_dir, f"{args.fold}_train.csv")
         val_csv   = os.path.join(folds_dir, f"{args.fold}_val.csv")
         test_csv  = os.path.join(folds_dir, f"{args.fold}_test.csv")
-        print(f"[--fold {args.fold}]")
+        print(f"[--fold {args.fold}]  ({folds_dir})")
 
     if args.train_csv: train_csv = args.train_csv
     if args.val_csv:   val_csv   = args.val_csv
     if args.test_csv:  test_csv  = args.test_csv
 
+    if train_csv is None or test_csv is None:
+        ap.error("Provide --pilot-split or --fold or explicit --train-csv/--test-csv")
+
     os.makedirs(args.out_dir, exist_ok=True)
+
+    fold_tag = "pilot" if args.pilot_split else args.fold
 
     for seed in args.seeds:
         run(spec, train_csv, val_csv, test_csv, args.out_dir, seed,
             max_epochs=args.max_epochs, patience=args.patience,
-            batch=args.batch, lr=args.lr, fold_tag=args.fold)
+            batch=args.batch, lr=args.lr, fold_tag=fold_tag)
 
 
 if __name__ == "__main__":
