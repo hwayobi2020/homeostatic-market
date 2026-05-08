@@ -27,8 +27,8 @@ SPLIT = dict(
     train_start="2000-01-01",
     train_end  ="2015-12-31",
     val_start  ="2016-01-01",
-    val_end    ="2016-12-31",
-    test_start ="2017-01-01",
+    val_end    ="2018-12-31",   # 3 yr (window L=104 위해 최소 2 yr 필요, 안정 위해 3 yr)
+    test_start ="2019-01-01",
     test_end   ="2025-12-31",
 )
 
