@@ -68,11 +68,15 @@ COLS_COND_BASE        = ["tbill_wr",        "m2_yoy_lag", "gdp_yoy_lag", "cpi_yo
 COLS_COND_BASE_VIX    = ["tbill_wr", "vix", "m2_yoy_lag", "gdp_yoy_lag", "cpi_yoy_lag"]
 
 VARIANTS = {
-    1: dict(name="base",          cond_extra=[]),
-    2: dict(name="base_bp",       cond_extra=["bondpp_13w_lag"]),
-    3: dict(name="base_sp",       cond_extra=["stockpp_13w_lag"]),
-    4: dict(name="base_bp_sp",    cond_extra=["bondpp_13w_lag", "stockpp_13w_lag"]),
-    5: dict(name="base_bp_sp_el", cond_extra=["bondpp_13w_lag", "stockpp_13w_lag", "excess_liq_yoy_lag"]),
+    1:  dict(name="base",                cond_extra=[]),
+    2:  dict(name="base_bp",             cond_extra=["bondpp_13w_lag"]),
+    3:  dict(name="base_sp",             cond_extra=["stockpp_13w_lag"]),
+    4:  dict(name="base_bp_sp",          cond_extra=["bondpp_13w_lag", "stockpp_13w_lag"]),
+    5:  dict(name="base_bp_sp_el",       cond_extra=["bondpp_13w_lag", "stockpp_13w_lag", "excess_liq_yoy_lag"]),
+    # 단순 누적합 (metab 분모 없는, 1-step 매트릭스에서 bp/sp 보다 도움됐던)
+    10: dict(name="base_bondsum",        cond_extra=["tbill_13w_cum"]),
+    11: dict(name="base_stocksum",       cond_extra=["sp_13w_cum"]),
+    12: dict(name="base_bondsum_stocksum", cond_extra=["tbill_13w_cum", "sp_13w_cum"]),
 }
 
 
