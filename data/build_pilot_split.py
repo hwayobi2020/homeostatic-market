@@ -25,10 +25,10 @@ OUT_DIR          = os.path.join(ROOT, "data", "pilot_split")
 
 SPLIT = dict(
     train_start="2000-01-01",
-    train_end  ="2015-12-31",
-    val_start  ="2016-01-01",
-    val_end    ="2018-12-31",   # 3 yr (window L=104 위해 최소 2 yr 필요, 안정 위해 3 yr)
-    test_start ="2019-01-01",
+    train_end  ="2010-12-31",   # 11 yr
+    val_start  ="2011-01-01",   # 10 yr — ZLB + 정상화 + 코로나 다양 regime
+    val_end    ="2020-12-31",
+    test_start ="2021-01-01",   # 5 yr — 인플레 + 금리인상
     test_end   ="2025-12-31",
 )
 
