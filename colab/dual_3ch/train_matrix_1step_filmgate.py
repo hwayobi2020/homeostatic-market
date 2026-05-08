@@ -107,7 +107,8 @@ class MacroGatedCausalTransformer1Step(nn.Module):
     forward(cond, target_past): 시그니처 동일. 내부에서 슬라이스.
     """
     MARKET_DIM = 2  # sp_return (target_past) + tbill_wr (cond idx 0)
-    MACRO_DIM  = 5  # m2_yoy_lag, gdp_yoy_lag, cpi_yoy_lag, bondpp_13w_lag, stockpp_13w_lag (cond idx 1-5)
+    MACRO_DIM  = 6  # tbill_wr + m2_yoy_lag, gdp_yoy_lag, cpi_yoy_lag, bondpp_13w_lag, stockpp_13w_lag (cond idx 0-5)
+                    # tbill 도 modulator 입력 (paper main thesis "tbill 시나리오 input" 일관성)
 
     def __init__(self, d_cond, target_cols, d_model, n_heads, n_layers,
                  past_len, future_len=1, dropout=0.1):
@@ -175,16 +176,15 @@ class MacroGatedCausalTransformer1Step(nn.Module):
         B = cond.shape[0]
         device = cond.device
 
-        # === 슬라이싱: x_market (past sp + tbill), x_macro (5 macro) ===
+        # === 슬라이싱: x_market (past sp + tbill), x_macro (tbill + 5 macro) ===
         tbill_full = cond[:, :, 0:1]                                # (B, 53, 1)
-        macro_full = cond[:, :, 1:6]                                # (B, 53, 5)
 
         # target_full sp: past 52 + future 1 mask (=0)
         target_full = torch.zeros(B, self.total_len, 1, dtype=cond.dtype, device=device)
         target_full[:, :self.past_len, :] = target_past             # (B, 52, 1)
 
         x_market = torch.cat([target_full, tbill_full], dim=-1)     # (B, 53, 2)
-        x_macro  = macro_full                                       # (B, 53, 5)
+        x_macro  = cond[:, :, 0:6]                                  # (B, 53, 6) — tbill 포함 (modulator 도 tbill 시나리오 봄)
 
         # === Market Backbone (Causal Transformer) ===
         h = self.market_proj(x_market)                              # (B, 53, d_model)
