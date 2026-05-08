@@ -62,6 +62,7 @@ VARIANTS = {
     10: dict(name="base_bondsum",          cond_extra=["tbill_13w_cum"]),
     11: dict(name="base_stocksum",         cond_extra=["sp_13w_cum"]),
     12: dict(name="base_bondsum_stocksum", cond_extra=["tbill_13w_cum", "sp_13w_cum"]),
+    13: dict(name="base_el_only",          cond_extra=["excess_liq_yoy_lag"]),  # excess_liq 단독
 }
 
 
