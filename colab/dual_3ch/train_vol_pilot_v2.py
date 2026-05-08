@@ -1,0 +1,494 @@
+"""Volatility-only pilot v2 — explicit RV regression (paper_plan.txt 정합).
+
+paper_plan.txt 의 "1 week realized volatility 예측" 명시에 정합.
+v1 (vol_pilot.py) 의 GARCH-style implicit estimation 을 explicit regression 으로 교체.
+
+Target (origin 당 단일 scalar):
+  y = log( std(r_{t+1}, r_{t+2}, ..., r_{t+52}) )
+    = future 52주 sp_return 의 표준편차 (log 변환)
+
+Input (v1 동일):
+  cond:        past 52w (4ch: tbill, m2, gdp, cpi) + future 52w (tbill 만 활성)
+  target_past: past 52w sp_return
+
+Architecture:
+  - Causal Transformer encoder (1-step / mtxf 매트릭스와 동일 backbone)
+  - Future portion (52 step) mean pool → Linear → 1 scalar (predicted log_std)
+
+Loss:
+  L = MSE( log_std_pred, log_std_actual )
+
+Baseline (origin-level, 정직):
+  - train origin 들의 log_std 평균 → 모든 origin 같은 prediction
+  - baseline MSE = var(train log_std)
+  - R² = 1 - MSE_model / MSE_baseline
+
+평가:
+  - test MSE / R² (predicted log_std vs actual log_std)
+  - Pearson + Spearman corr (predicted std vs actual std)
+  - Test predictions npz 저장 (y_pred, y_actual, tbill_future)
+
+ckpt prefix: vol_pilot_v2_*
+"""
+import torch  # MUST be first
+
+import argparse
+import json
+import math
+import os
+import sys
+import warnings
+
+import numpy as np
+import pandas as pd
+import torch.nn as nn
+
+warnings.filterwarnings("ignore")
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except Exception:
+    pass
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+
+L = 104
+PAST_LEN = 52
+FUTURE_LEN = 52
+D_MODEL = 128
+N_HEADS = 4
+N_LAYERS = 3
+LR = 1e-4
+BATCH = 32
+MAX_EPOCHS = 60
+PATIENCE = 30
+GRAD_CLIP = 1.0
+
+COLS_COND_BASE = ["tbill_wr", "m2_yoy_lag", "gdp_yoy_lag", "cpi_yoy_lag"]
+
+VARIANTS = {
+    1: dict(name="base",       cond_extra=[]),
+    2: dict(name="base_bp",    cond_extra=["bondpp_13w_lag"]),
+    3: dict(name="base_sp",    cond_extra=["stockpp_13w_lag"]),
+    4: dict(name="base_bp_sp", cond_extra=["bondpp_13w_lag", "stockpp_13w_lag"]),
+}
+
+
+def build_spec(variant_id):
+    if variant_id not in VARIANTS:
+        raise ValueError(f"variant must be in {list(VARIANTS)}, got {variant_id}")
+    v = VARIANTS[variant_id]
+    cols_cond = COLS_COND_BASE + v["cond_extra"]
+    cols_target = ["sp_return"]
+    mask_future_ch = list(range(1, len(cols_cond)))  # tbill (idx 0) 만 future 활성
+    return dict(
+        variant_id=variant_id,
+        name=v["name"],
+        cols_cond=cols_cond,
+        cols_target=cols_target,
+        mask_future_ch=mask_future_ch,
+    )
+
+
+# =====================================================================
+# Model — explicit log_std scalar regression
+# =====================================================================
+
+class CausalTransformerVolScalar(nn.Module):
+    """Causal Transformer + future portion mean pool → 1 scalar (log_std).
+
+    Input:
+      cond:        (B, L=104, d_cond)
+      target_past: (B, past_len=52, 1)  sp_return past
+
+    Output:
+      log_std_pred: (B,)  predicted log( std(future 52w sp_return) )
+    """
+    def __init__(self, d_cond, d_model, n_heads, n_layers,
+                 past_len, future_len, dropout=0.1):
+        super().__init__()
+        self.past_len = past_len
+        self.future_len = future_len
+        self.total_len = past_len + future_len  # 104
+
+        self.input_dim = d_cond + 1
+        self.input_proj = nn.Linear(self.input_dim, d_model)
+        self.pos_emb = nn.Embedding(self.total_len, d_model)
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model, nhead=n_heads, dim_feedforward=d_model * 4,
+            dropout=dropout, batch_first=True, activation="gelu",
+            norm_first=True,
+        )
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
+
+        causal_mask = torch.triu(
+            torch.ones(self.total_len, self.total_len), diagonal=1
+        ).bool()
+        self.register_buffer("causal_mask", causal_mask, persistent=False)
+
+        # Pool 후 scalar head
+        self.scalar_head = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.GELU(),
+            nn.Linear(d_model, 1),
+        )
+
+    def forward(self, cond, target_past):
+        B = cond.shape[0]
+        device = cond.device
+
+        target_full = torch.zeros(B, self.total_len, 1, dtype=cond.dtype, device=device)
+        target_full[:, :self.past_len, :] = target_past
+
+        x = torch.cat([cond, target_full], dim=-1)
+        x = self.input_proj(x)
+
+        pos = torch.arange(self.total_len, device=device)
+        x = x + self.pos_emb(pos).unsqueeze(0)
+
+        h = self.encoder(x, mask=self.causal_mask, is_causal=True)  # (B, L, d_model)
+
+        # Future portion (52 step) mean pool
+        h_future = h[:, self.past_len:, :].mean(dim=1)               # (B, d_model)
+
+        log_std_pred = self.scalar_head(h_future).squeeze(-1)        # (B,)
+        return log_std_pred
+
+
+# =====================================================================
+# Data
+# =====================================================================
+
+def load_windows(csv_path, cols_cond, cols_target, L=104, cond_stats=None):
+    """Returns:
+       X_past:        (n_w, past_len, d_target)  past sp_return (window past)
+       C:             (n_w, L, d_cond)           cond past+future
+       y_log_std:     (n_w,)                     log( std(future 52 sp_return) )
+       cond_stats_out: dict
+    """
+    df = pd.read_csv(csv_path)
+    n = len(df)
+    n_w = n - L + 1
+    if n_w <= 0:
+        return None, None, None, None
+    X = np.zeros((n_w, L, len(cols_target)), dtype=np.float32)
+    C = np.zeros((n_w, L, len(cols_cond)),   dtype=np.float32)
+    for i in range(n_w):
+        X[i] = df[cols_target].iloc[i : i + L].values
+        C[i] = df[cols_cond].iloc[i : i + L].values
+
+    if cond_stats is None:
+        cmu = C.reshape(-1, len(cols_cond)).mean(axis=0)
+        csd = C.reshape(-1, len(cols_cond)).std(axis=0) + 1e-8
+        cond_stats_out = {"mean": cmu.tolist(), "std": csd.tolist()}
+    else:
+        cmu = np.asarray(cond_stats["mean"], dtype=np.float32)
+        csd = np.asarray(cond_stats["std"],  dtype=np.float32)
+        cond_stats_out = cond_stats
+    C = (C - cmu) / csd
+
+    # target = log( std(future 52w sp_return) )
+    sp_idx = cols_target.index("sp_return")
+    future_sp = X[:, PAST_LEN:, sp_idx]                           # (n_w, 52)
+    actual_std = future_sp.std(axis=1, ddof=1)                    # (n_w,)  unbiased std
+    actual_std = np.maximum(actual_std, 1e-8)                     # avoid log(0)
+    y_log_std = np.log(actual_std).astype(np.float32)             # (n_w,)
+
+    X_past = X[:, :PAST_LEN, :]                                   # (n_w, 52, 1)
+
+    return (torch.from_numpy(X_past),
+            torch.from_numpy(C),
+            torch.from_numpy(y_log_std),
+            cond_stats_out)
+
+
+def mask_future_channels(C, past_len, mask_channels):
+    C = C.clone()
+    for ch in mask_channels:
+        C[:, past_len:, ch] = 0.0
+    return C
+
+
+# =====================================================================
+# Eval helpers
+# =====================================================================
+
+def spearman_corr(a, b):
+    a = np.asarray(a, dtype=np.float64).ravel()
+    b = np.asarray(b, dtype=np.float64).ravel()
+    if len(a) < 2 or len(a) != len(b):
+        return float("nan")
+    ra = pd.Series(a).rank().values - pd.Series(a).rank().mean()
+    rb = pd.Series(b).rank().values - pd.Series(b).rank().mean()
+    denom = float(np.sqrt((ra ** 2).sum() * (rb ** 2).sum()))
+    if denom < 1e-12:
+        return float("nan")
+    return float((ra * rb).sum() / denom)
+
+
+def pearson_corr(a, b):
+    a = np.asarray(a, dtype=np.float64).ravel()
+    b = np.asarray(b, dtype=np.float64).ravel()
+    if len(a) < 2 or len(a) != len(b):
+        return float("nan")
+    a = a - a.mean(); b = b - b.mean()
+    denom = float(np.sqrt((a ** 2).sum() * (b ** 2).sum()))
+    if denom < 1e-12:
+        return float("nan")
+    return float((a * b).sum() / denom)
+
+
+# =====================================================================
+# Train
+# =====================================================================
+
+def run(spec, train_csv, val_csv, test_csv, save_dir, seed,
+        max_epochs, patience, batch, lr, fold_tag):
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    cols_cond   = spec["cols_cond"]
+    cols_target = spec["cols_target"]
+    mask_future = spec["mask_future_ch"]
+
+    fold_str = f"_{fold_tag}" if fold_tag else ""
+    tag_full = f"vol_pilot_v2_v{spec['variant_id']}_{spec['name']}{fold_str}_seed{seed}"
+    ckpt_path    = os.path.join(save_dir, f"{tag_full}_best.pt")
+    summary_path = os.path.join(save_dir, f"{tag_full}_summary.json")
+    log_path     = os.path.join(save_dir, f"{tag_full}_trainlog.csv")
+    pred_path    = os.path.join(save_dir, f"{tag_full}_test_preds.npz")
+
+    if os.path.exists(ckpt_path) and os.path.exists(summary_path):
+        print(f"[SKIP] {tag_full} — ckpt + summary 이미 존재")
+        with open(summary_path) as f:
+            return json.load(f)
+
+    print(f"\n{'='*72}")
+    print(f"[Variant {spec['variant_id']} = {spec['name']}{fold_str}] seed={seed}  "
+          f"(Vol scalar regression — log std target)")
+    print(f"  cond   = {cols_cond}  (D_COND={len(cols_cond)})")
+    print(f"  target = log( std(future 52 sp_return) )  — 단일 scalar per origin")
+    print(f"  mask_future_ch = {mask_future}  (tbill 만 future 활성)")
+    print(f"  L={L} (past={PAST_LEN} + future={FUTURE_LEN})")
+    print(f"{'='*72}")
+
+    Xtr_past, Ctr, ytr, stats_c = load_windows(train_csv, cols_cond, cols_target, L=L)
+    if Xtr_past is None:
+        print(f"[FAIL] not enough train windows: {train_csv}")
+        return None
+    Xte_past, Cte, yte, _ = load_windows(test_csv, cols_cond, cols_target, L=L, cond_stats=stats_c)
+    if Xte_past is None:
+        print(f"[FAIL] not enough test windows: {test_csv}")
+        return None
+
+    Ctr = mask_future_channels(Ctr, PAST_LEN, mask_future)
+    Cte = mask_future_channels(Cte, PAST_LEN, mask_future)
+
+    if val_csv is not None and os.path.exists(val_csv):
+        Xv_past, Cv, yv, _ = load_windows(val_csv, cols_cond, cols_target, L=L, cond_stats=stats_c)
+        Cv = mask_future_channels(Cv, PAST_LEN, mask_future)
+        Xtr_past_, Ctr_, ytr_ = Xtr_past, Ctr, ytr
+        print(f"  train_w={Xtr_past_.shape[0]} (full), val_w={Xv_past.shape[0]} (val_csv), "
+              f"test_w={Xte_past.shape[0]}")
+    else:
+        n_w_tr = Xtr_past.shape[0]
+        n_val = max(int(n_w_tr * 0.15), 1)
+        Xtr_past_, Ctr_, ytr_ = Xtr_past[:-n_val], Ctr[:-n_val], ytr[:-n_val]
+        Xv_past,   Cv,   yv   = Xtr_past[-n_val:], Ctr[-n_val:], ytr[-n_val:]
+        print(f"  train_w={Xtr_past_.shape[0]}, val_w={Xv_past.shape[0]} (auto 15%), "
+              f"test_w={Xte_past.shape[0]}")
+
+    # Origin-level baseline: train log_std mean → 모든 origin 같은 prediction
+    y_train_mean = float(ytr_.mean())
+    baseline_test_mse = float(((yte.numpy() - y_train_mean) ** 2).mean())
+    print(f"  log_std baseline (train mean) = {y_train_mean:+.4f}")
+    print(f"  baseline test MSE (constant pred) = {baseline_test_mse:.6f}")
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = CausalTransformerVolScalar(
+        d_cond=len(cols_cond),
+        d_model=D_MODEL, n_heads=N_HEADS, n_layers=N_LAYERS,
+        past_len=PAST_LEN, future_len=FUTURE_LEN,
+    ).to(device)
+    n_params = sum(p.numel() for p in model.parameters())
+    print(f"  params={n_params:,}, device={device}")
+
+    opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+    best_val = float("inf")
+    best_state = None
+    best_epoch = -1
+    best_test_mse = None
+    best_test_r2 = None
+    best_test_pearson = None
+    best_test_spearman = None
+    best_test_pred = None
+    best_test_actual = None
+    pat = 0
+    log = []
+
+    def eval_split(X_past, C, y):
+        model.eval()
+        with torch.no_grad():
+            pred = model(C.to(device), X_past.to(device)).cpu().numpy()
+            actual = y.numpy()
+            mse = float(((pred - actual) ** 2).mean())
+            pred_std = np.exp(pred)
+            actual_std = np.exp(actual)
+            pearson = pearson_corr(pred_std, actual_std)
+            spearman = spearman_corr(pred_std, actual_std)
+        return mse, pearson, spearman, pred, actual
+
+    for epoch in range(1, max_epochs + 1):
+        model.train()
+        perm = torch.randperm(Xtr_past_.shape[0])
+        losses = []
+        for i in range(0, len(perm), batch):
+            idx = perm[i : i + batch]
+            xp = Xtr_past_[idx].to(device)
+            cb = Ctr_[idx].to(device)
+            yb = ytr_[idx].to(device)
+            pred = model(cb, xp)
+            loss = ((pred - yb) ** 2).mean()
+            opt.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=GRAD_CLIP)
+            opt.step()
+            losses.append(loss.item())
+
+        train_loss = float(np.mean(losses))
+        val_mse,  val_p,  val_s,  _, _ = eval_split(Xv_past,  Cv,  yv)
+        test_mse, test_p, test_s, test_pred, test_actual = eval_split(Xte_past, Cte, yte)
+
+        val_r2  = 1.0 - val_mse  / float(((yv.numpy()  - y_train_mean) ** 2).mean() + 1e-12)
+        test_r2 = 1.0 - test_mse / baseline_test_mse if baseline_test_mse > 0 else float("nan")
+
+        print(f"  ep{epoch:>3d}  train_mse={train_loss:.5f}  "
+              f"val_mse={val_mse:.5f} (R²={val_r2:+.3f})  "
+              f"test_mse={test_mse:.5f} (R²={test_r2:+.3f})  "
+              f"test_pearson={test_p:+.3f}  test_spearman={test_s:+.3f}")
+
+        log.append(dict(epoch=epoch, train_mse=train_loss,
+                        val_mse=val_mse, val_r2=val_r2,
+                        test_mse=test_mse, test_r2=test_r2,
+                        test_pearson=test_p, test_spearman=test_s))
+
+        if not np.isfinite(val_mse):
+            print(f"  ⚠ val_mse non-finite — best ckpt 갱신 차단")
+            pat += 1
+        elif val_mse < best_val - 1e-6:
+            best_val = val_mse
+            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            best_test_mse = test_mse
+            best_test_r2 = test_r2
+            best_test_pearson = test_p
+            best_test_spearman = test_s
+            best_test_pred = test_pred
+            best_test_actual = test_actual
+            best_epoch = epoch
+            pat = 0
+        else:
+            pat += 1
+
+        if (not np.isfinite(test_mse)) or test_mse > 100.0:
+            print(f"  ⚠ divergence (test_mse={test_mse:.2f}) — early termination")
+            break
+        if pat >= patience:
+            print(f"  early stop at epoch {epoch}")
+            break
+
+    print(f"\n  best epoch {best_epoch}: val_mse={best_val:.5f}")
+    print(f"    test MSE   = {best_test_mse:.5f}")
+    print(f"    test R²    = {best_test_r2:+.4f}  (vs constant baseline)")
+    print(f"    test Pearson  (std)  = {best_test_pearson:+.4f}")
+    print(f"    test Spearman (std)  = {best_test_spearman:+.4f}")
+    print(f"    baseline test MSE   = {baseline_test_mse:.5f}")
+
+    os.makedirs(save_dir, exist_ok=True)
+    if best_state is not None:
+        torch.save({
+            "model_state":     best_state,
+            "model_type":      "causal_transformer_vol_scalar",
+            "cond_cols":       cols_cond,
+            "target_cols":     cols_target,
+            "stats_cond":      stats_c,
+            "mask_future_ch":  mask_future,
+            "config": dict(d_model=D_MODEL, n_heads=N_HEADS, n_layers=N_LAYERS,
+                           d_cond=len(cols_cond), past_len=PAST_LEN,
+                           future_len=FUTURE_LEN, total_len=L),
+            "variant": dict(id=spec["variant_id"], name=spec["name"]),
+        }, ckpt_path)
+        np.savez(pred_path,
+                 y_pred_log_std=best_test_pred,
+                 y_actual_log_std=best_test_actual,
+                 y_pred_std=np.exp(best_test_pred),
+                 y_actual_std=np.exp(best_test_actual),
+                 y_train_log_std_mean=y_train_mean,
+                 baseline_test_mse=baseline_test_mse)
+        print(f"  saved test preds: {pred_path}")
+
+    pd.DataFrame(log).to_csv(log_path, index=False)
+    summary = dict(
+        model_type="causal_transformer_vol_scalar",
+        variant_id=spec["variant_id"],
+        variant_name=spec["name"],
+        fold=fold_tag,
+        seed=seed,
+        cond_cols=cols_cond,
+        target_cols=cols_target,
+        mask_future_ch=mask_future,
+        best_epoch=best_epoch,
+        val_mse=best_val,
+        test_mse=best_test_mse,
+        test_r2=best_test_r2,
+        test_pearson_std=best_test_pearson,
+        test_spearman_std=best_test_spearman,
+        y_train_log_std_mean=y_train_mean,
+        baseline_test_mse=baseline_test_mse,
+        n_params=n_params,
+        device=str(device),
+    )
+    with open(summary_path, "w") as f:
+        json.dump(summary, f, indent=2)
+    print(f"  saved: {ckpt_path}")
+    return summary
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Vol scalar regression pilot v2")
+    ap.add_argument("--variant", type=int, default=1, choices=list(VARIANTS.keys()))
+    ap.add_argument("--seeds", nargs="+", type=int, default=[42])
+    ap.add_argument("--fold", default="F1", choices=["F1", "F2", "F3"])
+    ap.add_argument("--train-csv", default=None)
+    ap.add_argument("--val-csv",   default=None)
+    ap.add_argument("--test-csv",  default=None)
+    ap.add_argument("--out-dir",   default=os.path.join(HERE, "result"))
+    ap.add_argument("--max-epochs", type=int, default=MAX_EPOCHS)
+    ap.add_argument("--patience",   type=int, default=PATIENCE)
+    ap.add_argument("--batch",      type=int, default=BATCH)
+    ap.add_argument("--lr",         type=float, default=LR)
+    args = ap.parse_args()
+
+    spec = build_spec(args.variant)
+
+    if args.fold is not None:
+        repo_root = os.path.normpath(os.path.join(HERE, "..", ".."))
+        folds_dir = os.path.join(repo_root, "data", "folds_v33")
+        train_csv = os.path.join(folds_dir, f"{args.fold}_train.csv")
+        val_csv   = os.path.join(folds_dir, f"{args.fold}_val.csv")
+        test_csv  = os.path.join(folds_dir, f"{args.fold}_test.csv")
+        print(f"[--fold {args.fold}]")
+
+    if args.train_csv: train_csv = args.train_csv
+    if args.val_csv:   val_csv   = args.val_csv
+    if args.test_csv:  test_csv  = args.test_csv
+
+    os.makedirs(args.out_dir, exist_ok=True)
+
+    for seed in args.seeds:
+        run(spec, train_csv, val_csv, test_csv, args.out_dir, seed,
+            max_epochs=args.max_epochs, patience=args.patience,
+            batch=args.batch, lr=args.lr, fold_tag=args.fold)
+
+
+if __name__ == "__main__":
+    main()
