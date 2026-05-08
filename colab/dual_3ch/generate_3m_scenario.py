@@ -241,16 +241,20 @@ def generate_scenarios(sigmas, flow, n_sim=100, future_len=FUTURE_LEN, device="c
 
     Args:
         sigmas: (n_origins, n_seeds)
-        flow:   trained 1D NSF
+        flow:   trained 1D NSF (or None for Gaussian baseline)
         n_sim:  per (origin, seed) sim count
     Returns:
         scenarios: (n_origins, n_seeds, n_sim, future_len)
     """
     n_origins, n_seeds = sigmas.shape
-    flow.eval()
     n_total = n_origins * n_seeds * n_sim * future_len
-    with torch.no_grad():
-        eps_flat = flow.sample(n_total).cpu().numpy().squeeze()  # (n_total,)
+    if flow is None:
+        # Gaussian baseline — ε ~ N(0, 1)
+        eps_flat = np.random.randn(n_total).astype(np.float32)
+    else:
+        flow.eval()
+        with torch.no_grad():
+            eps_flat = flow.sample(n_total).cpu().numpy().squeeze()  # (n_total,)
     # reshape
     eps_arr = eps_flat.reshape(n_origins, n_seeds, n_sim, future_len)
     sig_b = sigmas[:, :, np.newaxis, np.newaxis]  # broadcast
@@ -325,6 +329,8 @@ def main():
     ap.add_argument("--flow-layers", type=int, default=4)
     ap.add_argument("--flow-bins",   type=int, default=8)
     ap.add_argument("--seed",        type=int, default=2026)
+    ap.add_argument("--use-gaussian", action="store_true",
+                    help="Flow 대신 Gaussian sampler — Flow contribution 검증용")
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
@@ -354,12 +360,18 @@ def main():
     print("\n[1] ε training data 추출")
     eps_train, eps_meta = extract_eps_train(train_csv)
 
-    # === Step 2: Flow learning ===
-    print("\n[2] Flow 1D NSF 학습")
-    flow_path = os.path.join(args.result_dir, "scenario_3m_flow_1d.pt")
-    flow = train_flow(eps_train, flow_path,
-                      num_layers=args.flow_layers, num_bins=args.flow_bins,
-                      epochs=args.flow_epochs, device=device)
+    # === Step 2: Flow learning (또는 Gaussian baseline) ===
+    if args.use_gaussian:
+        print("\n[2] Gaussian baseline mode — Flow 학습 skip, ε ~ N(0,1) 사용")
+        flow = None
+        out_suffix = "_gaussian"
+    else:
+        print("\n[2] Flow 1D NSF 학습")
+        flow_path = os.path.join(args.result_dir, "scenario_3m_flow_1d.pt")
+        flow = train_flow(eps_train, flow_path,
+                          num_layers=args.flow_layers, num_bins=args.flow_bins,
+                          epochs=args.flow_epochs, device=device)
+        out_suffix = ""
 
     # === Step 3: Model A (variant 13) inference ===
     print("\n[3] Model A (variant 13) σ_pred")
@@ -380,7 +392,7 @@ def main():
         print(f"  {k:<20s} = {v}")
 
     # === Save ===
-    npz_path = os.path.join(args.result_dir, "scenario_3m.npz")
+    npz_path = os.path.join(args.result_dir, f"scenario_3m{out_suffix}.npz")
     np.savez(npz_path,
              scenarios=scenarios.astype(np.float32),
              actual_cum=actual_cum.astype(np.float32),
@@ -389,7 +401,7 @@ def main():
              **{k: v for k, v in metrics.items() if not isinstance(v, str)})
     print(f"\n  saved: {npz_path}")
 
-    csv_path = os.path.join(args.result_dir, "scenario_3m_metrics.csv")
+    csv_path = os.path.join(args.result_dir, f"scenario_3m_metrics{out_suffix}.csv")
     pd.DataFrame([metrics]).to_csv(csv_path, index=False)
     print(f"  saved: {csv_path}")
 
