@@ -79,9 +79,15 @@ from train_vol_pilot_3m import (
     PAST_LEN, FUTURE_LEN, L, D_MODEL, N_HEADS, N_LAYERS,
 )
 
-# Flow 1D NSF — Model B
+# Flow 1D NSF — Model B (unconditional)
 from generate_3m_scenario import (
     extract_eps_train, build_flow_1d, train_flow,
+)
+
+# Flow 1D NSF — Model B (conditional, macro-context)
+from train_flow_b_conditional import (
+    build_conditional_flow_1d, extract_eps_with_context,
+    train_conditional_flow,
 )
 
 
@@ -349,10 +355,15 @@ def bootstrap_ci(x, stat_fn, B=BOOTSTRAP_B, alpha=0.05, seed=0):
 # =====================================================================
 
 def generate_paths(sigma_scalar, flow, n_sim, future_len, device,
-                   rng_seed=0, use_gaussian=False):
+                   rng_seed=0, use_gaussian=False, context_vec=None):
     """Generate n_sim paths of length future_len for a single σ̂.
 
     r_t = sigma_scalar × ε_t,  ε ~ Flow (or N(0,1)).
+
+    If use_gaussian: ε ~ N(0, 1) (independent of flow / context).
+    Elif context_vec is not None: conditional Flow — ε ~ flow | context_vec.
+    Else: unconditional Flow — ε ~ flow.
+
     Returns:
       paths: (n_sim, future_len) np.float32
     """
@@ -364,16 +375,23 @@ def generate_paths(sigma_scalar, flow, n_sim, future_len, device,
         flow.eval()
         with torch.no_grad():
             torch.manual_seed(rng_seed)
-            eps = flow.sample(n_total).cpu().numpy().squeeze().astype(np.float32)
+            if context_vec is not None:
+                # Conditional sample — nflows returns (B=1, n_total, 1) for context (1, d)
+                ctx = torch.from_numpy(np.asarray(context_vec, dtype=np.float32)).unsqueeze(0).to(device)
+                eps = flow.sample(n_total, context=ctx).cpu().numpy().reshape(-1).astype(np.float32)
+            else:
+                # Unconditional sample — returns (n_total, 1)
+                eps = flow.sample(n_total).cpu().numpy().squeeze().astype(np.float32)
     eps = eps.reshape(n_sim, future_len)
     return sigma_scalar * eps
 
 
 def generate_paths_5seed(sigmas_5seed, flow, n_sim_per_seed, future_len, device,
-                          use_gaussian=False, rng_base=0):
+                          use_gaussian=False, rng_base=0, context_vec=None):
     """Generate paths across 5 seeds → 5×n_sim_per_seed = total paths.
 
     sigmas_5seed: (n_seeds,) array of σ̂ per seed.
+    context_vec : (d_cond,) np array, or None.  Passed through for conditional flow.
 
     Returns:
       paths_all: (n_seeds * n_sim_per_seed, future_len)
@@ -381,9 +399,36 @@ def generate_paths_5seed(sigmas_5seed, flow, n_sim_per_seed, future_len, device,
     parts = []
     for si, sig in enumerate(sigmas_5seed):
         p = generate_paths(float(sig), flow, n_sim_per_seed, future_len, device,
-                            rng_seed=rng_base + si, use_gaussian=use_gaussian)
+                            rng_seed=rng_base + si, use_gaussian=use_gaussian,
+                            context_vec=context_vec)
         parts.append(p)
     return np.concatenate(parts, axis=0)
+
+
+# =====================================================================
+# Context vector helper (for conditional flow)
+# =====================================================================
+
+def extract_context_vec(df_test, origin_idx, cols_cond, stats_cond,
+                         perturb_col=None, perturb_delta=0.0):
+    """Build normalized context vector at origin (last past row index = origin_idx + PAST_LEN - 1).
+
+    Conditional Flow B 의 context 정의와 정확히 일치해야 함 (train_flow_b_conditional.py 와
+    같은 row + 같은 stats_cond 정규화).
+
+    perturb_col 가 cond_cols 에 있으면 perturb_delta 만큼 raw 값에 더한 후 정규화.
+
+    Returns:
+      ctx_norm: (d_cond,) np.float32
+    """
+    row = df_test.iloc[origin_idx + PAST_LEN - 1].copy()
+    if perturb_col is not None and float(perturb_delta) != 0.0:
+        if perturb_col in row.index:
+            row[perturb_col] = float(row[perturb_col]) + float(perturb_delta)
+    ctx_raw = row[cols_cond].values.astype(np.float32)
+    cmu = np.asarray(stats_cond["mean"], dtype=np.float32)
+    csd = np.asarray(stats_cond["std"],  dtype=np.float32)
+    return ((ctx_raw - cmu) / csd).astype(np.float32)
 
 
 # =====================================================================
@@ -645,6 +690,11 @@ def main():
     ap.add_argument("--n-sim-per-seed", type=int, default=N_SIM_DEFAULT,
                     help="Paths per (origin, seed) for fan/histogram — 5 seeds × this = total")
     ap.add_argument("--flow-epochs", type=int, default=FLOW_EPOCHS)
+    ap.add_argument("--flow-mode",   type=str, default="cond", choices=["uncond", "cond"],
+                    help="Flow B mode: 'uncond' = original 1D NSF on ε pool, "
+                         "'cond' = macro-conditional 1D NSF (context = 5D macro). Default 'cond'.")
+    ap.add_argument("--cond-flow-ckpt", type=str, default="scenario_3m_flow_1d_cond.pt",
+                    help="filename for conditional flow ckpt (under result-dir)")
     ap.add_argument("--seed",        type=int, default=2026)
     args = ap.parse_args()
 
@@ -660,12 +710,16 @@ def main():
 
     os.makedirs(args.result_dir, exist_ok=True)
 
+    flow_mode = args.flow_mode
+    fig_suffix = "" if flow_mode == "uncond" else f"_{flow_mode}"
+
     print("=" * 78)
     print(" Sensitivity Analysis — Variant 13 (paper #2: base + excess_liq cond)")
     print("=" * 78)
     print(f"  device      : {device}")
     print(f"  test_csv    : {test_csv}")
     print(f"  result_dir  : {args.result_dir}")
+    print(f"  flow_mode   : {flow_mode}    (figures saved with suffix '{fig_suffix}')")
     print(f"  n_sim/seed  : {args.n_sim_per_seed}  → 5 seeds × {args.n_sim_per_seed}"
           f" = {5 * args.n_sim_per_seed} paths/panel")
 
@@ -740,16 +794,48 @@ def main():
                   f"slope={slope:+.3f} / unit-Δ")
 
     print("\n[4] Figure 1 — Sensitivity curves")
-    fig1_path = os.path.join(args.result_dir, "sensitivity_v13_curves.png")
+    fig1_path = os.path.join(args.result_dir, f"sensitivity_v13_curves{fig_suffix}.png")
     make_sensitivity_figure(origins, scan_results, baseline_sigmas, fig1_path)
 
     # --- 5. Model B (Flow 1D NSF) load / train ---
-    print("\n[5] Model B — 1D Neural Spline Flow on train ε")
-    eps_train, _ = extract_eps_train(train_csv)
-    flow_path = os.path.join(args.result_dir, "scenario_3m_flow_1d.pt")
-    flow = train_flow(eps_train, flow_path,
-                      num_layers=FLOW_LAYERS, num_bins=FLOW_BINS,
-                      tail_bound=FLOW_TAIL, epochs=args.flow_epochs, device=device)
+    if flow_mode == "uncond":
+        print("\n[5] Model B — UNCONDITIONAL 1D Neural Spline Flow on train ε")
+        eps_train, _ = extract_eps_train(train_csv)
+        flow_path = os.path.join(args.result_dir, "scenario_3m_flow_1d.pt")
+        flow = train_flow(eps_train, flow_path,
+                          num_layers=FLOW_LAYERS, num_bins=FLOW_BINS,
+                          tail_bound=FLOW_TAIL, epochs=args.flow_epochs, device=device)
+    else:  # cond
+        print("\n[5] Model B — CONDITIONAL 1D Neural Spline Flow on (ε, macro context) pairs")
+        flow_path = os.path.join(args.result_dir, args.cond_flow_ckpt)
+        if os.path.exists(flow_path):
+            print(f"    [load] {flow_path}")
+            state = torch.load(flow_path, map_location=device, weights_only=False)
+            d_ctx = state.get("context_features", len(cols_cond)) if isinstance(state, dict) else len(cols_cond)
+            num_layers     = state.get("num_layers", FLOW_LAYERS)     if isinstance(state, dict) else FLOW_LAYERS
+            num_bins       = state.get("num_bins",   FLOW_BINS)       if isinstance(state, dict) else FLOW_BINS
+            tail_bound     = state.get("tail_bound", FLOW_TAIL)       if isinstance(state, dict) else FLOW_TAIL
+            hidden_features = state.get("hidden_features", 32)         if isinstance(state, dict) else 32
+            flow = build_conditional_flow_1d(
+                context_features=d_ctx, num_layers=num_layers, num_bins=num_bins,
+                tail_bound=tail_bound, hidden_features=hidden_features,
+            ).to(device)
+            sd = state["model_state"] if (isinstance(state, dict) and "model_state" in state) else state
+            flow.load_state_dict(sd)
+            flow.eval()
+            print(f"    loaded: layers={num_layers}, bins={num_bins}, tail={tail_bound}, "
+                  f"hidden={hidden_features}, ctx_features={d_ctx}")
+        else:
+            print(f"    [train] no ckpt at {flow_path} — training now (epochs={args.flow_epochs})")
+            eps_t, ctx_t, _ = extract_eps_with_context(
+                train_csv, cols_cond=cols_cond, stats_cond=stats_cond,
+            )
+            flow = train_conditional_flow(
+                eps_t, ctx_t, flow_path,
+                num_layers=FLOW_LAYERS, num_bins=FLOW_BINS, tail_bound=FLOW_TAIL,
+                hidden_features=32, epochs=args.flow_epochs, batch=256, lr=5e-4,
+                device=device,
+            )
 
     # --- 6. Fan chart + histogram preparation ---
     print(f"\n[6] Fan-chart scenario generation — n_sim_per_seed={args.n_sim_per_seed} × 5 "
@@ -772,14 +858,25 @@ def main():
             sig_5seed = predict_sigma_5seed(models, c, t, device)[0]   # (5,)
             sig_mean = float(sig_5seed.mean())
 
+            # Context vector for conditional flow — perturbed tbill at origin's last past row.
+            # For uncond mode this is unused (context_vec=None passed below).
+            if flow_mode == "cond":
+                ctx_vec = extract_context_vec(df_test, idx, cols_cond, stats_cond,
+                                              perturb_col="tbill_wr",
+                                              perturb_delta=delta_weekly)
+            else:
+                ctx_vec = None
+
             flow_paths  = generate_paths_5seed(sig_5seed, flow,
                                                n_sim_per_seed=args.n_sim_per_seed,
                                                future_len=FUTURE_LEN, device=device,
-                                               use_gaussian=False, rng_base=1000)
+                                               use_gaussian=False, rng_base=1000,
+                                               context_vec=ctx_vec)
             gauss_paths = generate_paths_5seed(sig_5seed, flow,
                                                n_sim_per_seed=args.n_sim_per_seed,
                                                future_len=FUTURE_LEN, device=device,
-                                               use_gaussian=True, rng_base=2000)
+                                               use_gaussian=True, rng_base=2000,
+                                               context_vec=None)
             panels[(ok, pp_label)] = dict(
                 flow_paths=flow_paths,
                 gauss_paths=gauss_paths,
@@ -787,18 +884,20 @@ def main():
                 sigma_used=sig_mean,
                 sigmas_5seed=sig_5seed,
                 origin_date=o["origin_date"],
+                context_vec=ctx_vec,
             )
             print(f"    [{ok}] tbill {pp_label}  σ̂(mean)={sig_mean:.4f}  "
-                  f"flow_path_shape={flow_paths.shape}")
+                  f"flow_path_shape={flow_paths.shape}  "
+                  f"ctx={'(none, uncond)' if ctx_vec is None else f'{ctx_vec.tolist()}'}")
 
     # --- 7. Figure 2 — Fan chart ---
-    print("\n[7] Figure 2 — Fan chart (Flow + Gaussian overlay + actual)")
-    fig2_path = os.path.join(args.result_dir, "sensitivity_v13_fanchart.png")
+    print(f"\n[7] Figure 2 — Fan chart (Flow [{flow_mode}] + Gaussian overlay + actual)")
+    fig2_path = os.path.join(args.result_dir, f"sensitivity_v13_fanchart{fig_suffix}.png")
     make_fanchart_figure(panels, fig2_path)
 
     # --- 8. Figure 3 — Histogram of week-13 cumulative ---
-    print("\n[8] Figure 3 — Week-13 cumulative return histogram (Flow vs Gaussian vs actual)")
-    fig3_path = os.path.join(args.result_dir, "sensitivity_v13_histogram.png")
+    print(f"\n[8] Figure 3 — Week-13 cumulative return histogram (Flow [{flow_mode}] vs Gaussian vs actual)")
+    fig3_path = os.path.join(args.result_dir, f"sensitivity_v13_histogram{fig_suffix}.png")
     hist_summary_df = make_histogram_figure(panels, fig3_path)
 
     # --- 9. Summary CSV (sensitivity + histogram stats unified) ---
@@ -831,11 +930,11 @@ def main():
                 positive_sensitivity=bool(s_hi > s_lo),
             ))
     sens_df = pd.DataFrame(summary_rows)
-    sens_csv_path = os.path.join(args.result_dir, "sensitivity_v13_summary.csv")
+    sens_csv_path = os.path.join(args.result_dir, f"sensitivity_v13_summary{fig_suffix}.csv")
     sens_df.to_csv(sens_csv_path, index=False)
     print(f"\n  saved sensitivity summary: {sens_csv_path}")
 
-    hist_csv_path = os.path.join(args.result_dir, "sensitivity_v13_histogram_stats.csv")
+    hist_csv_path = os.path.join(args.result_dir, f"sensitivity_v13_histogram_stats{fig_suffix}.csv")
     hist_summary_df.to_csv(hist_csv_path, index=False)
     print(f"  saved histogram stats: {hist_csv_path}")
 
