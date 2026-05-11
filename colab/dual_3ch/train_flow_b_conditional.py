@@ -288,7 +288,7 @@ def sanity_check_conditional_shape(flow, ctx_train, eps_train, device, n_sample=
         return m, s, sk, kt
 
     print("  Sanity check — conditional sampling moments (n={}):".format(n_sample))
-    print(f"    {'context':16s} {'mean':>+10s} {'std':>8s} {'skew':>+8s} {'ex_kurt':>+8s}")
+    print(f"    {'context':16s} {'mean':>10s} {'std':>8s} {'skew':>8s} {'ex_kurt':>8s}")
     for label, eps in [("first_col MIN", eps_low),
                        ("ctx mean   ", eps_mean),
                        ("first_col MAX", eps_high)]:
