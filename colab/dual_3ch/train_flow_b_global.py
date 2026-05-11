@@ -72,6 +72,54 @@ except ImportError:
 
 import torch.nn as nn
 
+# scipy fallback for Student-t log CDF — torch.special.betainc is only available
+# in PyTorch 2.6+. We use scipy.stats.t.logcdf via custom autograd Function so
+# the gradient w.r.t. the scalar argument (where learnable α flows) is preserved.
+try:
+    from scipy import stats as _scipy_stats
+except ImportError:
+    print("FATAL: scipy required for Student-t / Skew-t CDF computation.")
+    sys.exit(1)
+
+
+class _StudentTLogCDF(torch.autograd.Function):
+    """Custom autograd: log CDF of Student-t with fixed df (Python scalar).
+
+    Forward : scipy.stats.t.logcdf  (numerically stable in tails)
+    Backward: d log_cdf / dx = pdf / cdf  = exp(log_pdf − log_cdf), via scipy.
+
+    `df` is a Python float (fixed buffer in our Skew-t base, not learnable).
+    """
+    @staticmethod
+    def forward(ctx, x, df_value):
+        x_cpu = x.detach().cpu().double().numpy()
+        log_cdf_np = _scipy_stats.t.logcdf(x_cpu, df=df_value)
+        log_cdf = torch.from_numpy(log_cdf_np).to(dtype=x.dtype, device=x.device)
+        ctx.save_for_backward(x)
+        ctx.df_value = float(df_value)
+        return log_cdf
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        x, = ctx.saved_tensors
+        df = ctx.df_value
+        x_cpu = x.detach().cpu().double().numpy()
+        log_pdf_np = _scipy_stats.t.logpdf(x_cpu, df=df)
+        log_cdf_np = _scipy_stats.t.logcdf(x_cpu, df=df)
+        d_np = np.exp(log_pdf_np - log_cdf_np)
+        d_t = torch.from_numpy(d_np).to(dtype=x.dtype, device=x.device)
+        return grad_output * d_t, None
+
+
+def student_t_log_cdf(x, df_value):
+    """Differentiable log CDF of Student-t at x with scalar df.
+
+    df_value must be a Python float (or 0-d tensor convertible to float).
+    """
+    if isinstance(df_value, torch.Tensor):
+        df_value = float(df_value.item())
+    return _StudentTLogCDF.apply(x, df_value)
+
 
 # =====================================================================
 # Student-t base distribution (nflows.Distribution interface wrap of torch.distributions.StudentT)
@@ -187,21 +235,6 @@ class SkewTBase(Distribution):
         sigma_raw = torch.sqrt(var_raw)
         return mu_raw, sigma_raw, delta
 
-    def _student_t_log_cdf(self, x, df_tensor):
-        """log CDF of standard Student-t at x with df df_tensor (using regularized incomplete beta).
-
-        For x ≥ 0: CDF = 1 − I_{df/(df+x²)}(df/2, 1/2) / 2
-        For x < 0: CDF =     I_{df/(df+x²)}(df/2, 1/2) / 2
-        """
-        abs_x = torch.abs(x)
-        ratio = df_tensor / (df_tensor + abs_x ** 2)
-        half = torch.tensor(0.5, device=x.device, dtype=x.dtype)
-        I_val = torch.special.betainc(df_tensor / 2.0, half, ratio)
-        I_val = I_val.clamp(min=1e-30, max=1.0 - 1e-7)
-        cdf = torch.where(x >= 0, 1.0 - I_val / 2.0, I_val / 2.0)
-        cdf = cdf.clamp(min=1e-30, max=1.0 - 1e-7)
-        return torch.log(cdf)
-
     def _log_prob(self, inputs, context=None):
         mu_raw, sigma_raw, _ = self._raw_st_moments()
         alpha = self.alpha
@@ -217,7 +250,9 @@ class SkewTBase(Distribution):
 
         # log T_{ν+1}(α z_raw √((ν+1)/(ν+z_raw²)))
         cdf_arg = alpha * z_raw * torch.sqrt((nu + 1) / (nu + z_raw ** 2))
-        log_cdf = self._student_t_log_cdf(cdf_arg, nu + 1)
+        # ν is a fixed buffer → ν+1 is fixed Python scalar (gradient flows through cdf_arg only)
+        df_p1_value = float((nu + 1).item())
+        log_cdf = student_t_log_cdf(cdf_arg, df_p1_value)
 
         log_p_raw = math.log(2.0) + log_t_nu + log_cdf                        # (batch, *shape)
         # Standardization Jacobian: f_std(y_std) = σ_raw × f_raw(σ_raw y_std + μ_raw)
