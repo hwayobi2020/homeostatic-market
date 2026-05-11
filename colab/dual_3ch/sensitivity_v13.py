@@ -189,7 +189,7 @@ def load_v13_models(result_dir, fold_tag="pilot", device="cuda"):
     Matches both with and without _vix tag prefix (pilot trainer used no vix,
     fold trainer with --vix has _vix in tag).
     """
-    pattern = os.path.join(result_dir, f"vol_pilot_3m_psel*_v13_*_{fold_tag}_seed*_best.pt")
+    pattern = os.path.join(result_dir, f"vol_pilot_3m_*sel*_v13_*_{fold_tag}_seed*_best.pt")
     paths = sorted(glob.glob(pattern))
     print(f"  v13 ckpts found: {len(paths)}")
     if not paths:

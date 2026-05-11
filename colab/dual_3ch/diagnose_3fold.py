@@ -34,9 +34,9 @@ def diagnose_fold(fold):
 
     # ----- v13 Model A -----
     ckpts = sorted(glob.glob(os.path.join(
-        RESULT, f"vol_pilot_3m_psel_vix_v13_*_{fold}_seed*_best.pt")))
+        RESULT, f"vol_pilot_3m_*sel*_v13_*_{fold}_seed*_best.pt")))
     summaries = sorted(glob.glob(os.path.join(
-        RESULT, f"vol_pilot_3m_psel_vix_v13_*_{fold}_seed*_summary.json")))
+        RESULT, f"vol_pilot_3m_*sel*_v13_*_{fold}_seed*_summary.json")))
     seeds_found = sorted([int(p.split("seed")[-1].split("_")[0]) for p in ckpts])
     print(f"  v13 ckpts        : {len(ckpts)}/5  seeds={seeds_found}")
 
