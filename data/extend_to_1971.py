@@ -299,7 +299,8 @@ def add_derived(df, fred_dict):
     df["gdp_13w_proxy_lag"] = df["gdp_yoy_lag"] * (WINDOW / 52)
 
     # Past realized volatility — rolling 13w std of weekly sp_return (cond 용 macro 지표 추가)
-    df["sp_std_13w"]     = df["sp_return"].rolling(WINDOW).std(ddof=1)
+    # .shift(1) 적용: window 의 마지막 past row 가 sp_return[t+52] 를 안 보도록 함 (no-leak 보장)
+    df["sp_std_13w"]     = df["sp_return"].rolling(WINDOW).std(ddof=1).shift(1)
     df["sp_log_std_13w"] = np.log(df["sp_std_13w"].clip(lower=1e-8))
 
     # BIS metab + bondpp/stockpp + excess_liq
