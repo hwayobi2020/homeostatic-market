@@ -54,6 +54,10 @@ SEEDS = ["42", "43", "44", "45", "46"]
 
 
 def run_cmd(cmd, label):
+    """Run subprocess; on failure, print warning and CONTINUE (don't sys.exit).
+
+    Fault-tolerant: 한 fold/step 실패해도 나머지 진행해서 진단 가능.
+    """
     print(f"\n{'-'*78}")
     print(f"# {label}")
     print(f"# CMD: {' '.join(cmd)}")
@@ -63,8 +67,8 @@ def run_cmd(cmd, label):
     elapsed = (time.time() - t0) / 60.0
     print(f"\n# {label} done in {elapsed:.1f} min  (rc={rc})")
     if rc != 0:
-        sys.exit(f"\n[FATAL] {label} failed (returncode {rc})")
-    return elapsed
+        print(f"\n[WARN] {label} failed (returncode {rc}) — continuing to next step.\n")
+    return elapsed, rc
 
 
 def main():
@@ -121,6 +125,13 @@ def main():
                    "--flow-mode", "global", "--fold", fold,
                    "--global-flow-ckpt", f"scenario_3m_flow_1d_{fold}_skewt_df5.pt"]
             timing[fold]["step3_sensitivity"] = run_cmd(cmd, f"[{fold}] Step 3/3 — Sensitivity analysis")
+
+    # Save status to JSON for short diagnostic (user can grep)
+    status_path = os.path.join(args.result_dir, "run_3fold_holdout_status.json")
+    with open(status_path, "w") as f:
+        json.dump({"folds": folds_to_run, "timing": timing,
+                   "total_min": (time.time() - t_start) / 60.0}, f, indent=2)
+    print(f"\n  status saved: {status_path}")
 
     total_min = (time.time() - t_start) / 60.0
     print(f"\n\n{'='*78}")
