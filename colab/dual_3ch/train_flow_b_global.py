@@ -163,10 +163,14 @@ def main():
     ap.add_argument("--train-csv",  default=None,
                     help="override train CSV path (default: data/pilot_split/train.csv)")
     ap.add_argument("--result-dir", default=os.path.join(HERE, "result"))
-    ap.add_argument("--save-name",  default="scenario_3m_flow_1d_global.pt")
-    ap.add_argument("--num-layers", type=int,   default=4)
-    ap.add_argument("--num-bins",   type=int,   default=8)
-    ap.add_argument("--tail-bound", type=float, default=5.0)
+    ap.add_argument("--save-name",  default="scenario_3m_flow_1d_global_v2.pt",
+                    help="capacity-expanded ckpt (v2): num_layers=6, num_bins=16, tail_bound=10.0")
+    ap.add_argument("--num-layers", type=int,   default=6,
+                    help="default 6 (이전 4 는 fat-tail 학습 실패)")
+    ap.add_argument("--num-bins",   type=int,   default=16,
+                    help="default 16 (이전 8 은 분포 자유도 부족)")
+    ap.add_argument("--tail-bound", type=float, default=10.0,
+                    help="default 10.0 (이전 5.0 은 empirical min −7.29 가 linear region 빠짐)")
     ap.add_argument("--epochs",     type=int,   default=200)
     ap.add_argument("--batch",      type=int,   default=256)
     ap.add_argument("--lr",         type=float, default=5e-4)

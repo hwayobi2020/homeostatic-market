@@ -110,10 +110,14 @@ FAN_TBILL_ANNUAL_PP = [0.0, 1.0, 2.0]
 
 # Scenario generation
 N_SIM_DEFAULT  = 100   # per (origin, seed) → total 100 × 5 seeds = 500 paths per scenario
-FLOW_LAYERS    = 4
+FLOW_LAYERS    = 4     # for original uncond mode (within-window ε, scenario_3m_flow_1d.pt)
 FLOW_BINS      = 8
 FLOW_TAIL      = 5.0
 FLOW_EPOCHS    = 200
+# Global-ε mode (v2 ckpt) — capacity expanded to learn train return fat-tail.
+GLOBAL_FLOW_LAYERS = 6
+GLOBAL_FLOW_BINS   = 16
+GLOBAL_FLOW_TAIL   = 10.0
 
 # Bootstrap
 BOOTSTRAP_B    = 2000
@@ -699,8 +703,9 @@ def main():
                          "           (preserves train return fat-tail, default).")
     ap.add_argument("--cond-flow-ckpt", type=str, default="scenario_3m_flow_1d_cond.pt",
                     help="filename for conditional flow ckpt (under result-dir)")
-    ap.add_argument("--global-flow-ckpt", type=str, default="scenario_3m_flow_1d_global.pt",
-                    help="filename for global-ε unconditional flow ckpt (under result-dir)")
+    ap.add_argument("--global-flow-ckpt", type=str, default="scenario_3m_flow_1d_global_v2.pt",
+                    help="filename for global-ε unconditional flow ckpt "
+                         "(v2 = capacity expanded: layers=6, bins=16, tail=10.0)")
     ap.add_argument("--seed",        type=int, default=2026)
     args = ap.parse_args()
 
@@ -819,13 +824,13 @@ def main():
                      f"  → 먼저 python colab/dual_3ch/train_flow_b_global.py 실행")
         print(f"    [load] {flow_path}")
         state = torch.load(flow_path, map_location=device, weights_only=False)
-        flow = build_flow_1d(num_layers=FLOW_LAYERS, num_bins=FLOW_BINS,
-                              tail_bound=FLOW_TAIL).to(device)
+        flow = build_flow_1d(num_layers=GLOBAL_FLOW_LAYERS, num_bins=GLOBAL_FLOW_BINS,
+                              tail_bound=GLOBAL_FLOW_TAIL).to(device)
         sd = state["model_state"] if (isinstance(state, dict) and "model_state" in state) else state
         flow.load_state_dict(sd)
         flow.eval()
-        print(f"    loaded: unconditional 1D NSF, layers={FLOW_LAYERS}, bins={FLOW_BINS}, "
-              f"tail={FLOW_TAIL}")
+        print(f"    loaded: unconditional 1D NSF v2, layers={GLOBAL_FLOW_LAYERS}, "
+              f"bins={GLOBAL_FLOW_BINS}, tail={GLOBAL_FLOW_TAIL}")
     else:  # cond
         print("\n[5] Model B — CONDITIONAL 1D Neural Spline Flow on (ε, macro context) pairs")
         flow_path = os.path.join(args.result_dir, args.cond_flow_ckpt)
