@@ -223,7 +223,7 @@ def run(spec, train_csv, val_csv, test_csv, save_dir, seed,
 
     fold_str = f"_{fold_tag}" if fold_tag else ""
     vix_tag  = "_vix" if spec.get("with_vix") else ""
-    sel_tag  = "_psel"  # pearson-based selection (vs default mse-based)
+    sel_tag  = "_msel"  # mse-based selection (standard for regression)
     tag_full = f"vol_pilot_3m{sel_tag}{vix_tag}_v{spec['variant_id']}_{spec['name']}{fold_str}_seed{seed}"
     ckpt_path    = os.path.join(save_dir, f"{tag_full}_best.pt")
     summary_path = os.path.join(save_dir, f"{tag_full}_summary.json")
@@ -287,9 +287,9 @@ def run(spec, train_csv, val_csv, test_csv, save_dir, seed,
     print(f"  params={n_params:,}, device={device}")
 
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
-    # Pearson-based selection (higher is better) — replaces val_mse selection
-    best_val_pearson = -float("inf")
-    best_val_mse_at_best = float("inf")
+    # MSE-based selection (standard for regression; lower is better)
+    best_val_mse = float("inf")
+    best_val_pearson_at_best = float("nan")
     best_state = None
     best_epoch = -1
     best_test_mse = None
@@ -346,12 +346,12 @@ def run(spec, train_csv, val_csv, test_csv, save_dir, seed,
                         test_mse=test_mse, test_r2=test_r2,
                         test_pearson=test_p, test_spearman=test_s))
 
-        # Pearson-based selection — higher is better
-        if not np.isfinite(val_p):
+        # MSE-based selection — lower is better (standard for regression)
+        if not np.isfinite(val_mse):
             pat += 1
-        elif val_p > best_val_pearson + 1e-4:
-            best_val_pearson = val_p
-            best_val_mse_at_best = val_mse
+        elif val_mse < best_val_mse - 1e-6:
+            best_val_mse = val_mse
+            best_val_pearson_at_best = val_p
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
             best_test_mse = test_mse
             best_test_r2 = test_r2
@@ -371,7 +371,7 @@ def run(spec, train_csv, val_csv, test_csv, save_dir, seed,
             print(f"  early stop at epoch {epoch}")
             break
 
-    print(f"\n  best epoch {best_epoch}: val_pearson={best_val_pearson:+.4f}, val_mse={best_val_mse_at_best:.5f}")
+    print(f"\n  best epoch {best_epoch}: val_mse={best_val_mse:.5f}, val_pearson={best_val_pearson_at_best:+.4f}")
     print(f"    test MSE   = {best_test_mse:.5f}")
     print(f"    test R²    = {best_test_r2:+.4f}")
     print(f"    test Pearson  (std)  = {best_test_pearson:+.4f}")
@@ -412,10 +412,10 @@ def run(spec, train_csv, val_csv, test_csv, save_dir, seed,
         target_cols=cols_target,
         mask_future_ch=mask_future,
         future_len=FUTURE_LEN,
-        selection_criterion="val_pearson_max",
+        selection_criterion="val_mse_min",
         best_epoch=best_epoch,
-        val_pearson=best_val_pearson,
-        val_mse_at_best=best_val_mse_at_best,
+        val_mse=best_val_mse,
+        val_pearson_at_best=best_val_pearson_at_best,
         test_mse=best_test_mse,
         test_r2=best_test_r2,
         test_pearson_std=best_test_pearson,

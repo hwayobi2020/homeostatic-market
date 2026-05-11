@@ -40,7 +40,8 @@ def diagnose_fold(fold):
     seeds_found = sorted([int(p.split("seed")[-1].split("_")[0]) for p in ckpts])
     print(f"  v13 ckpts        : {len(ckpts)}/5  seeds={seeds_found}")
 
-    pearsons, r2s, best_eps, val_p = [], [], [], []
+    pearsons, r2s, best_eps, val_p, val_m = [], [], [], [], []
+    sel_crits = set()
     for p in summaries:
         try:
             with open(p) as f:
@@ -48,13 +49,20 @@ def diagnose_fold(fold):
             pearsons.append(s.get("test_pearson_std"))
             r2s.append(s.get("test_r2"))
             best_eps.append(s.get("best_epoch"))
-            val_p.append(s.get("val_pearson"))
+            # val_pearson 은 old summary 의 selection 기준. new summary 에선 val_pearson_at_best 로 변경.
+            val_p.append(s.get("val_pearson_at_best", s.get("val_pearson")))
+            val_m.append(s.get("val_mse", s.get("val_mse_at_best")))
+            sc = s.get("selection_criterion")
+            if sc: sel_crits.add(sc)
         except Exception:
             pass
+    crit_str = "/".join(sorted(sel_crits)) if sel_crits else "?"
     print(f"  v13 test_pearson : {summarize(pearsons)}")
     print(f"  v13 test_r2      : {summarize(r2s)}")
     print(f"  v13 best_epoch   : {summarize(best_eps, '.0f')}")
     print(f"  v13 val_pearson  : {summarize(val_p)}")
+    print(f"  v13 val_mse      : {summarize(val_m, '.5f')}")
+    print(f"  v13 selection    : {crit_str}")
 
     # ----- Flow B -----
     flow_ckpt = os.path.join(RESULT, f"scenario_3m_flow_1d_{fold}_skewt_df5.pt")
