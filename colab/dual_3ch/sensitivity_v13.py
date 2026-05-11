@@ -780,7 +780,9 @@ def main():
               f"future_cum_return={o['future_cum_return']:+.4f}")
 
     # --- 2. Load v13 models ---
-    sel_filter = {"any": "*sel*", "mse": "_msel", "ic": "_isel"}[args.loss_mode]
+    # sel_filter: ckpt tag 의 sel 부분 매칭. trainer 가 sel_tag='_msel' (leading _ 포함)
+    # 으로 저장하므로 우리 pattern 의 '3m_{sel_filter}_v13' 에선 leading _ 빼야 함.
+    sel_filter = {"any": "*sel*", "mse": "msel", "ic": "isel"}[args.loss_mode]
     print(f"\n[2] Load Variant 13 (paper #2) — 5 seed ckpts...  (loss-mode filter: {args.loss_mode}, glob: {sel_filter})")
     models = load_v13_models(args.result_dir, fold_tag=v13_fold_tag, device=device,
                               sel_filter=sel_filter)
