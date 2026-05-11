@@ -110,6 +110,7 @@ def fetch_fred():
         ("GDPC1",    "quarterly 1947~"),
         ("M2V",      "quarterly 1959~"),
         ("MICH",     "monthly 1978-04~"),
+        ("WTISPLC",  "WTI spot crude $/bbl, monthly 1946-01~"),  # 1970s oil shock 핵심
     ]
     series_dict = {}
     for name, desc in fred_specs:
@@ -259,10 +260,19 @@ def add_derived(df, fred_dict):
     gdp_w = gdp.reindex(df["date"].union(gdp.index)).sort_index().ffill().reindex(df["date"])
     df["gdp_real"] = gdp_w.values
 
+    # WTI spot crude (monthly → weekly forward-fill); 1970s oil shock 핵심
+    wti = fred_dict["WTISPLC"].copy()
+    wti.index = pd.to_datetime(wti.index)
+    wti_w = wti.reindex(df["date"].union(wti.index)).sort_index().ffill().reindex(df["date"])
+    df["wti"] = wti_w.values
+    df["log_wti"] = np.log(df["wti"].clip(lower=1e-8))
+    df["wti_wr"] = df["log_wti"].diff()                           # weekly log change
+
     # yoy (52w)
     df["m2_yoy"]  = df["m2_level"]  / df["m2_level"].shift(52)  - 1.0
     df["cpi_yoy"] = df["cpi"]       / df["cpi"].shift(52)       - 1.0
     df["gdp_yoy"] = df["gdp_real"]  / df["gdp_real"].shift(52)  - 1.0
+    df["wti_yoy"] = df["wti"]       / df["wti"].shift(52)       - 1.0
 
     # publication lag
     df["m2_growth_lag"] = m2_split_lag(df["m2_growth"], df["date"])
@@ -270,10 +280,13 @@ def add_derived(df, fred_dict):
     df["cpi_wr_lag"]    = df["cpi_wr"].shift(CPI_LAG)
     df["cpi_yoy_lag"]   = df["cpi_yoy"].shift(CPI_LAG)
     df["gdp_yoy_lag"]   = df["gdp_yoy"].shift(GDP_LAG)
+    df["wti_wr_lag"]    = df["wti_wr"].shift(CPI_LAG)              # 같은 lag policy (월 발표)
+    df["wti_yoy_lag"]   = df["wti_yoy"].shift(CPI_LAG)
 
     # 13w cumulative
     df["m2_13w_cum_lag"]    = df["m2_growth_lag"].rolling(WINDOW).sum()
     df["cpi_13w_cum_lag"]   = df["cpi_wr_lag"].rolling(WINDOW).sum()
+    df["wti_13w_cum_lag"]   = df["wti_wr_lag"].rolling(WINDOW).sum()
     df["tbill_13w_cum"]     = df["tbill_wr"].rolling(WINDOW).sum()
     log_sp = np.log(df["sp_close"].clip(lower=1e-8).values)
     sp_13w = np.full(len(df), np.nan)
