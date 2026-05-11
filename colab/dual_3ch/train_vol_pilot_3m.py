@@ -48,7 +48,7 @@ BATCH = 32
 MAX_EPOCHS = 60
 PATIENCE = 30
 GRAD_CLIP = 1.0
-MIN_EPOCH = 10   # selection 시 best_epoch 가 이 값 이상이어야 함 — ep=1~2 (학습 안 한 상태) 함정 차단
+MIN_EPOCH = 20   # selection 시 best_epoch 가 이 값 이상이어야 함 — ep < 20 의 partial-learning 함정 차단 (F1 의 ep 12 케이스 등)
 
 # 3M (13w) horizon 일치 macro 변수 — yoy_lag (52w) → 13w_cum_lag 로 교체
 COLS_COND_BASE        = ["tbill_wr",        "m2_13w_cum_lag", "gdp_13w_proxy_lag", "cpi_13w_cum_lag"]
