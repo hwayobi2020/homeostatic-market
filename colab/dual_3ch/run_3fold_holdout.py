@@ -104,10 +104,10 @@ def main():
         print(f"{'#'*78}")
         timing[fold] = {}
 
-        # Step 1: v13 Model A
+        # Step 1: v13 Model A (no --vix; VIX 가 성능 떨어뜨림 + 1971-1990 imputed 정규화 왜곡)
         if not args.skip_train:
             cmd = [PY, os.path.join(HERE, "train_vol_pilot_3m.py"),
-                   "--variant", "13", "--fold", fold, "--vix",
+                   "--variant", "13", "--fold", fold,
                    "--seeds"] + list(args.seeds)
             timing[fold]["step1_model_a"] = run_cmd(cmd, f"[{fold}] Step 1/3 — Train v13 Model A")
 

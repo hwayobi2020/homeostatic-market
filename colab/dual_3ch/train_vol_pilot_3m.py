@@ -62,8 +62,8 @@ VARIANTS = {
     10: dict(name="base_bondsum",          cond_extra=["tbill_13w_cum"]),
     11: dict(name="base_stocksum",         cond_extra=["sp_13w_cum"]),
     12: dict(name="base_bondsum_stocksum", cond_extra=["tbill_13w_cum", "sp_13w_cum"]),
-    13: dict(name="base_el_wti",           cond_extra=["excess_liq_yoy_lag", "wti_13w_cum_lag"]),  # el + wti (1970s oil shock 인과)
-    113: dict(name="base_el_only",         cond_extra=["excess_liq_yoy_lag"]),  # 기존 v13 (pilot result 참조용, no WTI)
+    13: dict(name="base_el_wti_raw",       cond_extra=["excess_liq_yoy_lag", "wti_wr"]),         # el + wti (weekly log change, no lag, no cum)
+    113: dict(name="base_el_only",         cond_extra=["excess_liq_yoy_lag"]),                   # 기존 v13 (pilot result 참조용, no WTI)
 }
 
 
@@ -460,8 +460,8 @@ def main():
         print(f"[--pilot-split]")
     elif args.fold is not None:
         repo_root = os.path.normpath(os.path.join(HERE, "..", ".."))
-        folds_dir = os.path.join(repo_root, "data",
-                                 "folds_v33_vix" if args.vix else "folds_v33")
+        # 항상 folds_v33_vix 디렉토리 사용 (vix 컬럼 포함하지만 --vix 안 쓰면 cond 에 안 들어감)
+        folds_dir = os.path.join(repo_root, "data", "folds_v33_vix")
         train_csv = os.path.join(folds_dir, f"{args.fold}_train.csv")
         val_csv   = os.path.join(folds_dir, f"{args.fold}_val.csv")
         test_csv  = os.path.join(folds_dir, f"{args.fold}_test.csv")
