@@ -90,6 +90,12 @@ from train_flow_b_conditional import (
     train_conditional_flow,
 )
 
+# Flow 1D NSF — Model B (global ε, with selectable base distribution: normal or student_t)
+from train_flow_b_global import (
+    build_flow as build_flow_global,
+    StudentTBase,
+)
+
 
 # =====================================================================
 # Constants / defaults
@@ -703,9 +709,11 @@ def main():
                          "           (preserves train return fat-tail, default).")
     ap.add_argument("--cond-flow-ckpt", type=str, default="scenario_3m_flow_1d_cond.pt",
                     help="filename for conditional flow ckpt (under result-dir)")
-    ap.add_argument("--global-flow-ckpt", type=str, default="scenario_3m_flow_1d_global_v2.pt",
-                    help="filename for global-ε unconditional flow ckpt "
-                         "(v2 = capacity expanded: layers=6, bins=16, tail=10.0)")
+    ap.add_argument("--global-flow-ckpt", type=str,
+                    default="scenario_3m_flow_1d_global_student_df5.pt",
+                    help="filename for global-ε unconditional flow ckpt. "
+                         "Default = Student-t(df=5) base. Use 'scenario_3m_flow_1d_global_v2.pt' "
+                         "for prior Normal-base v2 ckpt.")
     ap.add_argument("--seed",        type=int, default=2026)
     args = ap.parse_args()
 
@@ -817,20 +825,37 @@ def main():
                           num_layers=FLOW_LAYERS, num_bins=FLOW_BINS,
                           tail_bound=FLOW_TAIL, epochs=args.flow_epochs, device=device)
     elif flow_mode == "global":
-        print("\n[5] Model B — UNCONDITIONAL 1D NSF on globally-standardized ε (fat-tail preserved)")
+        print("\n[5] Model B — UNCONDITIONAL 1D NSF on globally-standardized ε")
         flow_path = os.path.join(args.result_dir, args.global_flow_ckpt)
         if not os.path.exists(flow_path):
             sys.exit(f"[FATAL] global flow ckpt not found: {flow_path}\n"
                      f"  → 먼저 python colab/dual_3ch/train_flow_b_global.py 실행")
         print(f"    [load] {flow_path}")
         state = torch.load(flow_path, map_location=device, weights_only=False)
-        flow = build_flow_1d(num_layers=GLOBAL_FLOW_LAYERS, num_bins=GLOBAL_FLOW_BINS,
-                              tail_bound=GLOBAL_FLOW_TAIL).to(device)
-        sd = state["model_state"] if (isinstance(state, dict) and "model_state" in state) else state
-        flow.load_state_dict(sd)
-        flow.eval()
-        print(f"    loaded: unconditional 1D NSF v2, layers={GLOBAL_FLOW_LAYERS}, "
-              f"bins={GLOBAL_FLOW_BINS}, tail={GLOBAL_FLOW_TAIL}")
+
+        if isinstance(state, dict) and "model_state" in state and "meta" in state:
+            # New format with metadata — build flow exactly per saved architecture
+            meta = state["meta"]
+            base_kind  = meta.get("base_kind",  "normal")
+            df         = meta.get("df",         5.0)
+            num_layers = meta.get("num_layers", GLOBAL_FLOW_LAYERS)
+            num_bins   = meta.get("num_bins",   GLOBAL_FLOW_BINS)
+            tail_bound = meta.get("tail_bound", GLOBAL_FLOW_TAIL)
+            flow = build_flow_global(base_kind, df, num_layers, num_bins, tail_bound).to(device)
+            flow.load_state_dict(state["model_state"])
+            flow.eval()
+            base_desc = (f"Student-t(df={df})" if base_kind == "student_t" else "Normal")
+            print(f"    loaded: base={base_desc}, layers={num_layers}, bins={num_bins}, "
+                  f"tail={tail_bound}")
+        else:
+            # Legacy plain state_dict — assume Normal-base v2 architecture (layers=6/bins=16/tail=10)
+            flow = build_flow_1d(num_layers=GLOBAL_FLOW_LAYERS, num_bins=GLOBAL_FLOW_BINS,
+                                  tail_bound=GLOBAL_FLOW_TAIL).to(device)
+            sd = state["model_state"] if (isinstance(state, dict) and "model_state" in state) else state
+            flow.load_state_dict(sd)
+            flow.eval()
+            print(f"    loaded (legacy plain state_dict): Normal-base v2 — "
+                  f"layers={GLOBAL_FLOW_LAYERS}, bins={GLOBAL_FLOW_BINS}, tail={GLOBAL_FLOW_TAIL}")
     else:  # cond
         print("\n[5] Model B — CONDITIONAL 1D Neural Spline Flow on (ε, macro context) pairs")
         flow_path = os.path.join(args.result_dir, args.cond_flow_ckpt)
