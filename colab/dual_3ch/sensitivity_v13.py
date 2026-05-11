@@ -690,11 +690,17 @@ def main():
     ap.add_argument("--n-sim-per-seed", type=int, default=N_SIM_DEFAULT,
                     help="Paths per (origin, seed) for fan/histogram — 5 seeds × this = total")
     ap.add_argument("--flow-epochs", type=int, default=FLOW_EPOCHS)
-    ap.add_argument("--flow-mode",   type=str, default="cond", choices=["uncond", "cond"],
-                    help="Flow B mode: 'uncond' = original 1D NSF on ε pool, "
-                         "'cond' = macro-conditional 1D NSF (context = 5D macro). Default 'cond'.")
+    ap.add_argument("--flow-mode",   type=str, default="global",
+                    choices=["uncond", "cond", "global"],
+                    help="Flow B mode: "
+                         "'uncond' = original 1D NSF on within-window-standardized ε pool, "
+                         "'cond'   = macro-conditional 1D NSF (context = 5D macro), "
+                         "'global' = UNCONDITIONAL 1D NSF on globally-standardized ε "
+                         "           (preserves train return fat-tail, default).")
     ap.add_argument("--cond-flow-ckpt", type=str, default="scenario_3m_flow_1d_cond.pt",
                     help="filename for conditional flow ckpt (under result-dir)")
+    ap.add_argument("--global-flow-ckpt", type=str, default="scenario_3m_flow_1d_global.pt",
+                    help="filename for global-ε unconditional flow ckpt (under result-dir)")
     ap.add_argument("--seed",        type=int, default=2026)
     args = ap.parse_args()
 
@@ -799,12 +805,27 @@ def main():
 
     # --- 5. Model B (Flow 1D NSF) load / train ---
     if flow_mode == "uncond":
-        print("\n[5] Model B — UNCONDITIONAL 1D Neural Spline Flow on train ε")
+        print("\n[5] Model B — UNCONDITIONAL 1D Neural Spline Flow on within-window ε")
         eps_train, _ = extract_eps_train(train_csv)
         flow_path = os.path.join(args.result_dir, "scenario_3m_flow_1d.pt")
         flow = train_flow(eps_train, flow_path,
                           num_layers=FLOW_LAYERS, num_bins=FLOW_BINS,
                           tail_bound=FLOW_TAIL, epochs=args.flow_epochs, device=device)
+    elif flow_mode == "global":
+        print("\n[5] Model B — UNCONDITIONAL 1D NSF on globally-standardized ε (fat-tail preserved)")
+        flow_path = os.path.join(args.result_dir, args.global_flow_ckpt)
+        if not os.path.exists(flow_path):
+            sys.exit(f"[FATAL] global flow ckpt not found: {flow_path}\n"
+                     f"  → 먼저 python colab/dual_3ch/train_flow_b_global.py 실행")
+        print(f"    [load] {flow_path}")
+        state = torch.load(flow_path, map_location=device, weights_only=False)
+        flow = build_flow_1d(num_layers=FLOW_LAYERS, num_bins=FLOW_BINS,
+                              tail_bound=FLOW_TAIL).to(device)
+        sd = state["model_state"] if (isinstance(state, dict) and "model_state" in state) else state
+        flow.load_state_dict(sd)
+        flow.eval()
+        print(f"    loaded: unconditional 1D NSF, layers={FLOW_LAYERS}, bins={FLOW_BINS}, "
+              f"tail={FLOW_TAIL}")
     else:  # cond
         print("\n[5] Model B — CONDITIONAL 1D Neural Spline Flow on (ε, macro context) pairs")
         flow_path = os.path.join(args.result_dir, args.cond_flow_ckpt)
@@ -859,7 +880,7 @@ def main():
             sig_mean = float(sig_5seed.mean())
 
             # Context vector for conditional flow — perturbed tbill at origin's last past row.
-            # For uncond mode this is unused (context_vec=None passed below).
+            # For uncond / global modes this is unused (context_vec=None passed below).
             if flow_mode == "cond":
                 ctx_vec = extract_context_vec(df_test, idx, cols_cond, stats_cond,
                                               perturb_col="tbill_wr",
