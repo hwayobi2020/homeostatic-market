@@ -48,6 +48,7 @@ BATCH = 32
 MAX_EPOCHS = 60
 PATIENCE = 30
 GRAD_CLIP = 1.0
+MIN_EPOCH = 10   # selection 시 best_epoch 가 이 값 이상이어야 함 — ep=1~2 (학습 안 한 상태) 함정 차단
 
 # 3M (13w) horizon 일치 macro 변수 — yoy_lag (52w) → 13w_cum_lag 로 교체
 COLS_COND_BASE        = ["tbill_wr",        "m2_13w_cum_lag", "gdp_13w_proxy_lag", "cpi_13w_cum_lag"]
@@ -347,7 +348,10 @@ def run(spec, train_csv, val_csv, test_csv, save_dir, seed,
                         test_pearson=test_p, test_spearman=test_s))
 
         # MSE-based selection — lower is better (standard for regression)
-        if not np.isfinite(val_mse):
+        # min_epoch 제약: epoch < MIN_EPOCH 인 동안은 selection 안 함 (학습 안 한 ep=1~2 함정 차단)
+        if epoch < MIN_EPOCH:
+            pat = 0  # patience 도 reset (early stop 막기 위해)
+        elif not np.isfinite(val_mse):
             pat += 1
         elif val_mse < best_val_mse - 1e-6:
             best_val_mse = val_mse
