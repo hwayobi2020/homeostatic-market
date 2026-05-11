@@ -184,8 +184,12 @@ def select_origins(test_csv, n_calm=1, n_stress=1):
 # =====================================================================
 
 def load_v13_models(result_dir, fold_tag="pilot", device="cuda"):
-    """Load all vol_pilot_3m_psel_v13_*_{fold}_seed{seed}_best.pt ckpts."""
-    pattern = os.path.join(result_dir, f"vol_pilot_3m_psel_v13_*_{fold_tag}_seed*_best.pt")
+    """Load all vol_pilot_3m_psel_v13_*_{fold}_seed{seed}_best.pt ckpts.
+
+    Matches both with and without _vix tag prefix (pilot trainer used no vix,
+    fold trainer with --vix has _vix in tag).
+    """
+    pattern = os.path.join(result_dir, f"vol_pilot_3m_psel*_v13_*_{fold_tag}_seed*_best.pt")
     paths = sorted(glob.glob(pattern))
     print(f"  v13 ckpts found: {len(paths)}")
     if not paths:
@@ -715,6 +719,11 @@ def main():
                          "Default = Skew-t(α learnable, df=5) base. "
                          "Other options: '..._global_student_df5.pt' (Student-t), "
                          "'..._global_v2.pt' (Normal).")
+    ap.add_argument("--fold", type=str, default="pilot",
+                    choices=["pilot", "F1", "F2", "F3"],
+                    help="Evaluation fold: 'pilot' (default, single split 2000-2010/2011-2020/2021-2025) "
+                         "or 'F1'/'F2'/'F3' (folds_v33_vix walk-forward, "
+                         "F2 test=2019-2022 includes COVID stress).")
     ap.add_argument("--seed",        type=int, default=2026)
     args = ap.parse_args()
 
@@ -723,20 +732,34 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     repo_root = os.path.normpath(os.path.join(HERE, "..", ".."))
-    test_csv  = os.path.join(repo_root, "data", "pilot_split", "test.csv")
-    train_csv = os.path.join(repo_root, "data", "pilot_split", "train.csv")
-    if not os.path.exists(test_csv) or not os.path.exists(train_csv):
-        sys.exit(f"[FATAL] pilot_split missing — 먼저 build_pilot_split.py 실행")
+    fold = args.fold
+    if fold == "pilot":
+        test_csv  = os.path.join(repo_root, "data", "pilot_split", "test.csv")
+        train_csv = os.path.join(repo_root, "data", "pilot_split", "train.csv")
+        v13_fold_tag = "pilot"
+        if not os.path.exists(test_csv) or not os.path.exists(train_csv):
+            sys.exit(f"[FATAL] pilot_split missing — 먼저 build_pilot_split.py 실행")
+    else:
+        fold_dir = os.path.join(repo_root, "data", "folds_v33_vix")
+        test_csv  = os.path.join(fold_dir, f"{fold}_test.csv")
+        train_csv = os.path.join(fold_dir, f"{fold}_train.csv")
+        v13_fold_tag = fold
+        if not os.path.exists(test_csv) or not os.path.exists(train_csv):
+            sys.exit(f"[FATAL] folds_v33_vix/{fold}_* missing")
 
     os.makedirs(args.result_dir, exist_ok=True)
 
     flow_mode = args.flow_mode
-    fig_suffix = "" if flow_mode == "uncond" else f"_{flow_mode}"
+    # Figure suffix: include fold name when not pilot, plus flow_mode suffix.
+    mode_suffix = "" if flow_mode == "uncond" else f"_{flow_mode}"
+    fold_suffix = "" if fold == "pilot" else f"_{fold}"
+    fig_suffix = f"{fold_suffix}{mode_suffix}"
 
     print("=" * 78)
     print(" Sensitivity Analysis — Variant 13 (paper #2: base + excess_liq cond)")
     print("=" * 78)
     print(f"  device      : {device}")
+    print(f"  fold        : {fold}   (v13 fold_tag = '{v13_fold_tag}')")
     print(f"  test_csv    : {test_csv}")
     print(f"  result_dir  : {args.result_dir}")
     print(f"  flow_mode   : {flow_mode}    (figures saved with suffix '{fig_suffix}')")
@@ -753,7 +776,7 @@ def main():
 
     # --- 2. Load v13 models ---
     print("\n[2] Load Variant 13 (paper #2) — 5 seed ckpts...")
-    models = load_v13_models(args.result_dir, fold_tag="pilot", device=device)
+    models = load_v13_models(args.result_dir, fold_tag=v13_fold_tag, device=device)
     cols_cond       = models[0]["cond_cols"]
     cols_target     = models[0]["target_cols"]
     stats_cond      = models[0]["stats_cond"]
