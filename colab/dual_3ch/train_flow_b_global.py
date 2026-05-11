@@ -70,6 +70,8 @@ except ImportError:
     print("FATAL: nflows required.  pip install nflows")
     sys.exit(1)
 
+import torch.nn as nn
+
 
 # =====================================================================
 # Student-t base distribution (nflows.Distribution interface wrap of torch.distributions.StudentT)
@@ -131,18 +133,145 @@ class StudentTBase(Distribution):
 
 
 # =====================================================================
+# Skew-t base distribution (Azzalini-Capitanio 2003) — standardized to mean=0, var=1
+# Combines SN skewness (learnable α) with Student-t fat tail (fixed df > 4).
+# =====================================================================
+
+class SkewTBase(Distribution):
+    """Standardized Skew-t base.
+
+    Raw Skew-t: Y = Z × √(ν/V),  Z ~ SN(α),  V ~ Chi²(ν).
+    Standardize: Y_std = (Y - μ_Y) / σ_Y  with μ_Y, σ_Y analytical (Azzalini-Capitanio 4.4-4.5).
+
+    Parameters:
+      shape       : event shape (e.g., [1])
+      alpha_init  : initial α (learnable, no constraint).
+                    α=−5 → skew ≈ −0.85 ≈ empirical train ε.
+      df          : ν degrees of freedom (fixed, > 4 required for var defined).
+                    ν=5 → excess_kurt ≈ +6 ≈ empirical train ε.
+
+    Closed-form moments used:
+      δ = α / √(1+α²)
+      E[Y_raw] = δ √(ν/π) Γ((ν−1)/2) / Γ(ν/2)
+      Var[Y_raw] = ν/(ν−2) − E[Y_raw]²
+    """
+    def __init__(self, shape, alpha_init=-5.0, df=5.0):
+        super().__init__()
+        if df <= 4.0:
+            raise ValueError(f"df={df} must be > 4 for Skew-t variance to be defined")
+        self._shape = torch.Size(shape)
+        self.alpha = nn.Parameter(torch.tensor(float(alpha_init)))
+        self.register_buffer("_nu", torch.tensor(float(df)))
+        self.register_buffer("_device_anchor", torch.zeros(1))
+
+    @property
+    def df_value(self):
+        return float(self._nu.item())
+
+    @property
+    def alpha_value(self):
+        return float(self.alpha.detach().item())
+
+    def _raw_st_moments(self):
+        """Analytical (μ_raw, σ_raw, δ) of raw (unstandardized) Skew-t."""
+        alpha = self.alpha
+        nu = self._nu
+        delta = alpha / torch.sqrt(1.0 + alpha ** 2)
+        # E[√(ν/V)] for V~Chi²(ν) = √(ν/2) Γ((ν−1)/2) / Γ(ν/2)
+        log_E = 0.5 * torch.log(nu / 2.0) + torch.lgamma((nu - 1) / 2) - torch.lgamma(nu / 2)
+        E_sqrt_nu_over_V = torch.exp(log_E)
+        # μ_raw = δ √(2/π) × E[√(ν/V)]   = δ √(ν/π) Γ((ν−1)/2)/Γ(ν/2)
+        mu_raw = delta * math.sqrt(2.0 / math.pi) * E_sqrt_nu_over_V
+        # Var_raw = E[Z²]·E[ν/V] − μ_raw²  = 1·ν/(ν−2) − μ_raw²
+        var_raw = nu / (nu - 2.0) - mu_raw ** 2
+        sigma_raw = torch.sqrt(var_raw)
+        return mu_raw, sigma_raw, delta
+
+    def _student_t_log_cdf(self, x, df_tensor):
+        """log CDF of standard Student-t at x with df df_tensor (using regularized incomplete beta).
+
+        For x ≥ 0: CDF = 1 − I_{df/(df+x²)}(df/2, 1/2) / 2
+        For x < 0: CDF =     I_{df/(df+x²)}(df/2, 1/2) / 2
+        """
+        abs_x = torch.abs(x)
+        ratio = df_tensor / (df_tensor + abs_x ** 2)
+        half = torch.tensor(0.5, device=x.device, dtype=x.dtype)
+        I_val = torch.special.betainc(df_tensor / 2.0, half, ratio)
+        I_val = I_val.clamp(min=1e-30, max=1.0 - 1e-7)
+        cdf = torch.where(x >= 0, 1.0 - I_val / 2.0, I_val / 2.0)
+        cdf = cdf.clamp(min=1e-30, max=1.0 - 1e-7)
+        return torch.log(cdf)
+
+    def _log_prob(self, inputs, context=None):
+        mu_raw, sigma_raw, _ = self._raw_st_moments()
+        alpha = self.alpha
+        nu = self._nu
+
+        # Map standardized input → raw Skew-t scale
+        z_raw = mu_raw + sigma_raw * inputs                                   # (batch, *shape)
+
+        # log t_ν(z_raw)
+        log_t_nu = (torch.lgamma((nu + 1) / 2) - torch.lgamma(nu / 2)
+                    - 0.5 * torch.log(math.pi * nu)
+                    - 0.5 * (nu + 1) * torch.log1p(z_raw ** 2 / nu))
+
+        # log T_{ν+1}(α z_raw √((ν+1)/(ν+z_raw²)))
+        cdf_arg = alpha * z_raw * torch.sqrt((nu + 1) / (nu + z_raw ** 2))
+        log_cdf = self._student_t_log_cdf(cdf_arg, nu + 1)
+
+        log_p_raw = math.log(2.0) + log_t_nu + log_cdf                        # (batch, *shape)
+        # Standardization Jacobian: f_std(y_std) = σ_raw × f_raw(σ_raw y_std + μ_raw)
+        log_p_std = log_p_raw + torch.log(sigma_raw)
+        return log_p_std.view(inputs.shape[0], -1).sum(dim=-1)
+
+    def _sample(self, num_samples, context):
+        device = self._device_anchor.device
+        mu_raw, sigma_raw, delta = self._raw_st_moments()
+        nu = self._nu
+
+        if context is None:
+            sample_shape = torch.Size([num_samples, *self._shape])
+        else:
+            n_ctx = context.shape[0]
+            sample_shape = torch.Size([n_ctx, num_samples, *self._shape])
+
+        # Raw SN sample: Z = δ |U0| + √(1−δ²) U1
+        u0 = torch.randn(sample_shape, device=device).abs()
+        u1 = torch.randn(sample_shape, device=device)
+        z_sn = delta * u0 + torch.sqrt(1.0 - delta ** 2) * u1
+
+        # V ~ Chi²(ν)
+        chi2_dist = torch.distributions.Chi2(df=nu)
+        v = chi2_dist.sample(sample_shape).to(device)
+        y_raw = z_sn * torch.sqrt(nu / v)
+        return (y_raw - mu_raw) / sigma_raw
+
+    def _mean(self, context):
+        device = self._device_anchor.device
+        # By construction, mean = 0
+        if context is None:
+            return torch.zeros(*self._shape, device=device)
+        return torch.zeros(context.shape[0], *self._shape, device=device)
+
+
+# =====================================================================
 # Build flow with configurable base
 # =====================================================================
 
-def build_flow(base_kind, df, num_layers, num_bins, tail_bound):
+def build_flow(base_kind, df, num_layers, num_bins, tail_bound, alpha_init=-5.0):
     """Build 1D Flow with selectable base distribution.
 
-    base_kind ∈ {"normal", "student_t"}.  df is only used if base_kind=="student_t".
+    base_kind ∈ {"normal", "student_t", "skew_t"}.
+      normal     : df, alpha_init unused.
+      student_t  : df used (fixed degrees of freedom).
+      skew_t     : df fixed + α learnable (initialized from alpha_init).
     """
     if base_kind == "normal":
         base = StandardNormal(shape=[1])
     elif base_kind == "student_t":
         base = StudentTBase(shape=[1], df=df)
+    elif base_kind == "skew_t":
+        base = SkewTBase(shape=[1], alpha_init=alpha_init, df=df)
     else:
         raise ValueError(f"unknown base_kind={base_kind}")
     transforms = []
@@ -158,14 +287,14 @@ def build_flow(base_kind, df, num_layers, num_bins, tail_bound):
 # =====================================================================
 
 def auto_save_name(base_kind, df):
+    def df_str(d):
+        return str(int(d)) if d == int(d) else f"{d:.1f}".replace(".", "p")
     if base_kind == "normal":
         return "scenario_3m_flow_1d_global_v2.pt"
     if base_kind == "student_t":
-        if df == int(df):
-            df_str = str(int(df))
-        else:
-            df_str = f"{df:.1f}".replace(".", "p")
-        return f"scenario_3m_flow_1d_global_student_df{df_str}.pt"
+        return f"scenario_3m_flow_1d_global_student_df{df_str(df)}.pt"
+    if base_kind == "skew_t":
+        return f"scenario_3m_flow_1d_global_skewt_df{df_str(df)}.pt"
     raise ValueError(base_kind)
 
 
@@ -217,7 +346,7 @@ def extract_eps_global(train_csv):
 # =====================================================================
 
 def train_flow_local(eps, save_path, base_kind, df, num_layers, num_bins, tail_bound,
-                     epochs, batch, lr, device, log_every=20):
+                     epochs, batch, lr, device, log_every=20, alpha_init=-5.0):
     """Train flow with given base. Save with metadata. Auto-load if exists."""
     if os.path.exists(save_path):
         print(f"  [SKIP] flow ckpt 이미 존재: {save_path}")
@@ -231,22 +360,34 @@ def train_flow_local(eps, save_path, base_kind, df, num_layers, num_bins, tail_b
                 meta.get("num_layers", num_layers),
                 meta.get("num_bins", num_bins),
                 meta.get("tail_bound", tail_bound),
+                alpha_init=meta.get("alpha_init", alpha_init),
             ).to(device)
             flow.load_state_dict(state["model_state"])
+            extra = ""
+            if meta.get("base_kind") == "skew_t":
+                final_a = meta.get("alpha_final", "?")
+                extra = f", α_init={meta.get('alpha_init','?')}, α_final={final_a}"
             print(f"    [load] base={meta.get('base_kind','?')}, df={meta.get('df','?')}, "
                   f"layers={meta.get('num_layers','?')}, bins={meta.get('num_bins','?')}, "
-                  f"tail={meta.get('tail_bound','?')}")
+                  f"tail={meta.get('tail_bound','?')}{extra}")
         else:
             # Legacy plain state_dict — assume current CLI args' architecture
-            flow = build_flow(base_kind, df, num_layers, num_bins, tail_bound).to(device)
+            flow = build_flow(base_kind, df, num_layers, num_bins, tail_bound,
+                              alpha_init=alpha_init).to(device)
             sd = state["model_state"] if (isinstance(state, dict) and "model_state" in state) else state
             flow.load_state_dict(sd)
             print(f"    [load legacy plain state_dict — assuming current CLI architecture]")
         return flow
 
-    flow = build_flow(base_kind, df, num_layers, num_bins, tail_bound).to(device)
+    flow = build_flow(base_kind, df, num_layers, num_bins, tail_bound,
+                      alpha_init=alpha_init).to(device)
     n_params = sum(p.numel() for p in flow.parameters())
-    base_desc = f"student_t(df={df})" if base_kind == "student_t" else "normal"
+    if base_kind == "student_t":
+        base_desc = f"student_t(df={df})"
+    elif base_kind == "skew_t":
+        base_desc = f"skew_t(α_init={alpha_init}, df={df})"
+    else:
+        base_desc = "normal"
     print(f"  Flow 1D NSF: base={base_desc}, layers={num_layers}, bins={num_bins}, "
           f"tail={tail_bound}, params={n_params:,}")
 
@@ -256,6 +397,7 @@ def train_flow_local(eps, save_path, base_kind, df, num_layers, num_bins, tail_b
     print(f"  N (ε) = {N:,},  batch={batch},  epochs={epochs},  lr={lr}")
 
     best_nll = float("inf")
+    alpha_history = [] if base_kind == "skew_t" else None
     for ep in range(1, epochs + 1):
         flow.train()
         perm = torch.randperm(N)
@@ -271,20 +413,37 @@ def train_flow_local(eps, save_path, base_kind, df, num_layers, num_bins, tail_b
         ep_loss = float(np.mean(losses))
         if ep_loss < best_nll:
             best_nll = ep_loss
+        # Track learned α for skew_t
+        if alpha_history is not None:
+            alpha_history.append(float(flow._distribution.alpha.detach().item()))
         if ep == 1 or ep % log_every == 0 or ep == epochs:
-            print(f"    flow ep{ep:>3d}: nll = {ep_loss:+.4f}   (best so far {best_nll:+.4f})")
+            a_str = (f"  α={flow._distribution.alpha.detach().item():+.3f}"
+                     if base_kind == "skew_t" else "")
+            print(f"    flow ep{ep:>3d}: nll = {ep_loss:+.4f}   "
+                  f"(best so far {best_nll:+.4f}){a_str}")
+
+    # Final α for skew_t
+    alpha_final = None
+    if base_kind == "skew_t":
+        alpha_final = float(flow._distribution.alpha.detach().item())
 
     torch.save({
         "model_state": flow.state_dict(),
         "meta": dict(
             base_kind=base_kind, df=float(df),
             num_layers=num_layers, num_bins=num_bins, tail_bound=tail_bound,
+            alpha_init=alpha_init,
+            alpha_final=alpha_final,
             n_params=n_params,
             final_train_nll=ep_loss,
             best_train_nll=best_nll,
+            alpha_history=alpha_history,
         ),
     }, save_path)
-    print(f"  saved: {save_path}   (final train NLL = {ep_loss:+.4f})")
+    extra_msg = ""
+    if alpha_final is not None:
+        extra_msg = f", α: {alpha_init:+.3f} → {alpha_final:+.3f}"
+    print(f"  saved: {save_path}   (final train NLL = {ep_loss:+.4f}{extra_msg})")
     return flow
 
 
@@ -343,10 +502,13 @@ def main():
     ap.add_argument("--result-dir", default=os.path.join(HERE, "result"))
     ap.add_argument("--save-name",  default=None,
                     help="auto-generated from base+df if not specified")
-    ap.add_argument("--base", choices=["normal", "student_t"], default="student_t",
-                    help="base distribution (default: student_t — natural fat-tail inductive bias)")
+    ap.add_argument("--base", choices=["normal", "student_t", "skew_t"], default="skew_t",
+                    help="base distribution. Default: skew_t — combines SN skewness (learnable α) "
+                         "with Student-t fat tail (fixed df). Captures empirical skew −0.85 + kurt +6.75 simultaneously.")
     ap.add_argument("--df", type=float, default=5.0,
-                    help="Student-t degrees of freedom (default 5 → excess_kurt=6 ≈ empirical +6.75)")
+                    help="degrees of freedom (Student-t or Skew-t, fixed). Default 5 → excess_kurt=6.")
+    ap.add_argument("--alpha-init", type=float, default=-5.0,
+                    help="initial learnable α for Skew-t (default -5 → skew ≈ -0.85 ≈ empirical).")
     ap.add_argument("--num-layers", type=int,   default=6)
     ap.add_argument("--num-bins",   type=int,   default=16)
     ap.add_argument("--tail-bound", type=float, default=10.0)
@@ -376,10 +538,18 @@ def main():
     print(f"  train_csv  : {train_csv}")
     print(f"  save_path  : {save_path}")
     print(f"  ε def      : ε = (r - r̄_train) / σ_train    (global scalar)")
-    base_desc = (f"Student-t(df={args.df})  — excess_kurt={6.0/(args.df-4):+.2f}"
-                 if args.base == "student_t" and args.df > 4 else
-                 ("Student-t (df ≤ 4: kurt undefined/∞)" if args.base == "student_t" else
-                  "StandardNormal"))
+    if args.base == "student_t":
+        base_desc = (f"Student-t(df={args.df}) — excess_kurt={6.0/(args.df-4):+.2f}"
+                     if args.df > 4 else f"Student-t(df={args.df}, kurt undefined/∞)")
+    elif args.base == "skew_t":
+        # SN skewness ≈ (4-π)/2 × (δ²·2/π)^1.5 / (1 - 2δ²/π)^1.5 (for ν→∞);
+        # Skew-t skew is similar but slightly attenuated by t multiplication.
+        delta_init = args.alpha_init / math.sqrt(1 + args.alpha_init ** 2)
+        base_desc = (f"Skew-t(α_init={args.alpha_init}, df={args.df}) "
+                     f"— init δ={delta_init:+.3f}, target skew ≈ −0.85, "
+                     f"target excess_kurt ≈ {6.0/(args.df-4):+.1f}")
+    else:
+        base_desc = "StandardNormal"
     print(f"  base       : {base_desc}")
     print(f"  flow       : layers={args.num_layers}, bins={args.num_bins}, "
           f"tail_bound={args.tail_bound}")
@@ -392,7 +562,7 @@ def main():
     print("\n[2] Train unconditional 1D NSF")
     flow = train_flow_local(
         eps, save_path,
-        base_kind=args.base, df=args.df,
+        base_kind=args.base, df=args.df, alpha_init=args.alpha_init,
         num_layers=args.num_layers, num_bins=args.num_bins, tail_bound=args.tail_bound,
         epochs=args.epochs, batch=args.batch, lr=args.lr, device=device,
     )
@@ -403,12 +573,17 @@ def main():
 
     # 4. Meta json
     meta_json_path = save_path.replace(".pt", "_meta.json")
+    final_alpha = None
+    if args.base == "skew_t":
+        final_alpha = float(flow._distribution.alpha.detach().item())
     meta_json = dict(
         model_type="unconditional_1d_nsf_global_eps",
         eps_definition="global: (r - r_mean_train) / r_std_train",
         train_csv=os.path.abspath(train_csv),
         base_kind=args.base,
         df=args.df,
+        alpha_init=args.alpha_init if args.base == "skew_t" else None,
+        alpha_final=final_alpha,
         r_mean_train=train_meta["r_mean"],
         r_std_train=train_meta["r_std"],
         n_train=train_meta["n"],
@@ -432,6 +607,8 @@ def main():
     print(" SUMMARY")
     print("=" * 78)
     print(f"  Base distribution:  {base_desc}")
+    if final_alpha is not None:
+        print(f"  Learned α (skew_t): {args.alpha_init:+.3f} → {final_alpha:+.3f}")
     print(f"  Train return:    skew={train_meta['raw_skew']:+.3f}, ex_kurt={train_meta['raw_ex_kurt']:+.3f}")
     print(f"  Train ε (=raw):  skew={train_meta['eps_skew']:+.3f}, ex_kurt={train_meta['eps_ex_kurt']:+.3f}")
     print(f"  Flow generated:  skew={sanity['gen_skew']:+.3f}, ex_kurt={sanity['gen_ex_kurt']:+.3f}")

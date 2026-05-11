@@ -90,10 +90,10 @@ from train_flow_b_conditional import (
     train_conditional_flow,
 )
 
-# Flow 1D NSF — Model B (global ε, with selectable base distribution: normal or student_t)
+# Flow 1D NSF — Model B (global ε, with selectable base: normal / student_t / skew_t)
 from train_flow_b_global import (
     build_flow as build_flow_global,
-    StudentTBase,
+    StudentTBase, SkewTBase,
 )
 
 
@@ -710,10 +710,11 @@ def main():
     ap.add_argument("--cond-flow-ckpt", type=str, default="scenario_3m_flow_1d_cond.pt",
                     help="filename for conditional flow ckpt (under result-dir)")
     ap.add_argument("--global-flow-ckpt", type=str,
-                    default="scenario_3m_flow_1d_global_student_df5.pt",
+                    default="scenario_3m_flow_1d_global_skewt_df5.pt",
                     help="filename for global-ε unconditional flow ckpt. "
-                         "Default = Student-t(df=5) base. Use 'scenario_3m_flow_1d_global_v2.pt' "
-                         "for prior Normal-base v2 ckpt.")
+                         "Default = Skew-t(α learnable, df=5) base. "
+                         "Other options: '..._global_student_df5.pt' (Student-t), "
+                         "'..._global_v2.pt' (Normal).")
     ap.add_argument("--seed",        type=int, default=2026)
     args = ap.parse_args()
 
@@ -841,10 +842,18 @@ def main():
             num_layers = meta.get("num_layers", GLOBAL_FLOW_LAYERS)
             num_bins   = meta.get("num_bins",   GLOBAL_FLOW_BINS)
             tail_bound = meta.get("tail_bound", GLOBAL_FLOW_TAIL)
-            flow = build_flow_global(base_kind, df, num_layers, num_bins, tail_bound).to(device)
+            alpha_init = meta.get("alpha_init", -5.0) if base_kind == "skew_t" else -5.0
+            flow = build_flow_global(base_kind, df, num_layers, num_bins, tail_bound,
+                                      alpha_init=alpha_init).to(device)
             flow.load_state_dict(state["model_state"])
             flow.eval()
-            base_desc = (f"Student-t(df={df})" if base_kind == "student_t" else "Normal")
+            if base_kind == "skew_t":
+                a_final = meta.get("alpha_final", "?")
+                base_desc = f"Skew-t(α_final={a_final}, df={df})"
+            elif base_kind == "student_t":
+                base_desc = f"Student-t(df={df})"
+            else:
+                base_desc = "Normal"
             print(f"    loaded: base={base_desc}, layers={num_layers}, bins={num_bins}, "
                   f"tail={tail_bound}")
         else:
