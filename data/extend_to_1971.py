@@ -298,10 +298,11 @@ def add_derived(df, fred_dict):
     df["sp_13w_cum"] = sp_13w
     df["gdp_13w_proxy_lag"] = df["gdp_yoy_lag"] * (WINDOW / 52)
 
-    # Past realized volatility — rolling 13w std of weekly sp_return (cond 용 macro 지표 추가)
-    # .shift(1) 적용: window 의 마지막 past row 가 sp_return[t+52] 를 안 보도록 함 (no-leak 보장)
-    df["sp_std_13w"]     = df["sp_return"].rolling(WINDOW).std(ddof=1).shift(1)
-    df["sp_log_std_13w"] = np.log(df["sp_std_13w"].clip(lower=1e-8))
+    # Past realized volatility — HAR-RV (Corsi 2009) 다중 horizon rolling std
+    # .shift(1) 적용: window 마지막 past row 가 future target 과 겹치지 않게 (no-leak)
+    for w in [4, 13, 26, 52]:
+        df[f"sp_std_{w}w"]     = df["sp_return"].rolling(w).std(ddof=1).shift(1)
+        df[f"sp_log_std_{w}w"] = np.log(df[f"sp_std_{w}w"].clip(lower=1e-8))
 
     # BIS metab + bondpp/stockpp + excess_liq
     df["metab_13w"] = (
@@ -328,6 +329,7 @@ def cut_and_diagnose(df):
         "m2_13w_cum_lag", "cpi_13w_cum_lag", "tbill_13w_cum", "sp_13w_cum",
         "gdp_13w_proxy_lag", "metab_13w", "bondpp_13w_lag", "stockpp_13w_lag",
         "excess_liq_yoy_lag",
+        "sp_log_std_4w", "sp_log_std_13w", "sp_log_std_26w", "sp_log_std_52w",
     ]
     n_before = len(df)
     df = df.dropna(subset=NEED).reset_index(drop=True)
