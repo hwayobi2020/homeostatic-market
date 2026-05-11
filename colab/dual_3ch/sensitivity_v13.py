@@ -183,13 +183,15 @@ def select_origins(test_csv, n_calm=1, n_stress=1):
 # Load V13 models (5 seeds)
 # =====================================================================
 
-def load_v13_models(result_dir, fold_tag="pilot", device="cuda"):
-    """Load all vol_pilot_3m_psel_v13_*_{fold}_seed{seed}_best.pt ckpts.
+def load_v13_models(result_dir, fold_tag="pilot", device="cuda", sel_filter="*sel*"):
+    """Load all vol_pilot_3m_{sel_filter}_v13_*_{fold}_seed{seed}_best.pt ckpts.
 
-    Matches both with and without _vix tag prefix (pilot trainer used no vix,
-    fold trainer with --vix has _vix in tag).
+    sel_filter: glob fragment to filter selection mode.
+      "*sel*" — both msel + isel + psel
+      "_msel" — only MSE-selected ckpts
+      "_isel" — only IC-selected ckpts
     """
-    pattern = os.path.join(result_dir, f"vol_pilot_3m_*sel*_v13_*_{fold_tag}_seed*_best.pt")
+    pattern = os.path.join(result_dir, f"vol_pilot_3m_{sel_filter}_v13_*_{fold_tag}_seed*_best.pt")
     paths = sorted(glob.glob(pattern))
     print(f"  v13 ckpts found: {len(paths)}")
     if not paths:
@@ -724,6 +726,9 @@ def main():
                     help="Evaluation fold: 'pilot' (default, single split 2000-2010/2011-2020/2021-2025) "
                          "or 'F1'/'F2'/'F3' (folds_v33_vix walk-forward, "
                          "F2 test=2019-2022 includes COVID stress).")
+    ap.add_argument("--loss-mode", choices=["any", "mse", "ic"], default="any",
+                    help="Which loss-mode ckpts to load. 'any' matches *sel* (mse+ic+psel). "
+                         "'mse' → _msel only; 'ic' → _isel only.")
     ap.add_argument("--seed",        type=int, default=2026)
     args = ap.parse_args()
 
@@ -775,8 +780,10 @@ def main():
               f"future_cum_return={o['future_cum_return']:+.4f}")
 
     # --- 2. Load v13 models ---
-    print("\n[2] Load Variant 13 (paper #2) — 5 seed ckpts...")
-    models = load_v13_models(args.result_dir, fold_tag=v13_fold_tag, device=device)
+    sel_filter = {"any": "*sel*", "mse": "_msel", "ic": "_isel"}[args.loss_mode]
+    print(f"\n[2] Load Variant 13 (paper #2) — 5 seed ckpts...  (loss-mode filter: {args.loss_mode}, glob: {sel_filter})")
+    models = load_v13_models(args.result_dir, fold_tag=v13_fold_tag, device=device,
+                              sel_filter=sel_filter)
     cols_cond       = models[0]["cond_cols"]
     cols_target     = models[0]["target_cols"]
     stats_cond      = models[0]["stats_cond"]

@@ -63,9 +63,8 @@ VARIANTS = {
     10: dict(name="base_bondsum",          cond_extra=["tbill_13w_cum"]),
     11: dict(name="base_stocksum",         cond_extra=["sp_13w_cum"]),
     12: dict(name="base_bondsum_stocksum", cond_extra=["tbill_13w_cum", "sp_13w_cum"]),
-    13: dict(name="base_el_wti_har",       cond_extra=["excess_liq_yoy_lag", "wti_wr",
-                                                       "sp_log_std_4w", "sp_log_std_13w",
-                                                       "sp_log_std_26w", "sp_log_std_52w"]),  # HAR-RV multi-horizon past vol cond
+    13: dict(name="base_el_wti_har_s",     cond_extra=["excess_liq_yoy_lag", "wti_wr",
+                                                       "sp_log_std_4w", "sp_log_std_13w"]),  # short HAR-RV (4w+13w only; 26w/52w 제거 — small-sample overfit 방지)
     113: dict(name="base_el_only",         cond_extra=["excess_liq_yoy_lag"]),                   # 기존 v13 (pilot result 참조용, no WTI)
 }
 
@@ -212,12 +211,30 @@ def pearson_corr(a, b):
     return float((a * b).sum() / denom)
 
 
+def ic_loss(pred, target, eps=1e-8):
+    """IC loss = 1 − Pearson(pred, target) — torch differentiable.
+
+    Batch-level Pearson correlation. 최소화하면 Pearson 최대화.
+    Scale-invariant: magnitude 학습 안 함, rank 만 최적화.
+    Quant finance literature 의 IC (Information Coefficient) loss 표준 형태.
+
+    참고: Gu, Kelly, Xiu 2020 *RFS* "Empirical Asset Pricing via ML"
+    """
+    pred_c   = pred - pred.mean()
+    target_c = target - target.mean()
+    cov      = (pred_c * target_c).mean()
+    p_std    = pred_c.pow(2).mean().clamp_min(eps).sqrt()
+    t_std    = target_c.pow(2).mean().clamp_min(eps).sqrt()
+    corr     = cov / (p_std * t_std)
+    return 1.0 - corr
+
+
 # =====================================================================
 # Train
 # =====================================================================
 
 def run(spec, train_csv, val_csv, test_csv, save_dir, seed,
-        max_epochs, patience, batch, lr, fold_tag):
+        max_epochs, patience, batch, lr, fold_tag, loss_mode="mse"):
     torch.manual_seed(seed)
     np.random.seed(seed)
     cols_cond   = spec["cols_cond"]
@@ -226,7 +243,8 @@ def run(spec, train_csv, val_csv, test_csv, save_dir, seed,
 
     fold_str = f"_{fold_tag}" if fold_tag else ""
     vix_tag  = "_vix" if spec.get("with_vix") else ""
-    sel_tag  = "_msel"  # mse-based selection (standard for regression)
+    # sel_tag determined by loss_mode (mse or ic)
+    sel_tag = "_isel" if loss_mode == "ic" else "_msel"
     tag_full = f"vol_pilot_3m{sel_tag}{vix_tag}_v{spec['variant_id']}_{spec['name']}{fold_str}_seed{seed}"
     ckpt_path    = os.path.join(save_dir, f"{tag_full}_best.pt")
     summary_path = os.path.join(save_dir, f"{tag_full}_summary.json")
@@ -290,9 +308,14 @@ def run(spec, train_csv, val_csv, test_csv, save_dir, seed,
     print(f"  params={n_params:,}, device={device}")
 
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
-    # MSE-based selection (standard for regression; lower is better)
+    # loss_mode 에 따라 selection 기준 다름:
+    #   "mse": val_mse_min (lower better). loss = MSE.
+    #   "ic" : val_pearson_max (higher better). loss = 1 - Pearson.
     best_val_mse = float("inf")
+    best_val_pearson = -float("inf")
+    best_val_mse_at_best = float("nan")
     best_val_pearson_at_best = float("nan")
+    print(f"  loss_mode: {loss_mode}  (selection: {'val_pearson_max' if loss_mode=='ic' else 'val_mse_min'})")
     best_state = None
     best_epoch = -1
     best_test_mse = None
@@ -326,7 +349,10 @@ def run(spec, train_csv, val_csv, test_csv, save_dir, seed,
             cb = Ctr_[idx].to(device)
             yb = ytr_[idx].to(device)
             pred = model(cb, xp)
-            loss = ((pred - yb) ** 2).mean()
+            if loss_mode == "ic":
+                loss = ic_loss(pred, yb)
+            else:
+                loss = ((pred - yb) ** 2).mean()   # MSE
             opt.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=GRAD_CLIP)
@@ -349,15 +375,30 @@ def run(spec, train_csv, val_csv, test_csv, save_dir, seed,
                         test_mse=test_mse, test_r2=test_r2,
                         test_pearson=test_p, test_spearman=test_s))
 
-        # MSE-based selection — lower is better (standard for regression)
-        # min_epoch 제약: epoch < MIN_EPOCH 인 동안은 selection 안 함 (학습 안 한 ep=1~2 함정 차단)
+        # Selection: loss_mode 에 따라
+        # min_epoch 제약: epoch < MIN_EPOCH 동안은 selection 안 함
+        improved = False
         if epoch < MIN_EPOCH:
-            pat = 0  # patience 도 reset (early stop 막기 위해)
-        elif not np.isfinite(val_mse):
-            pat += 1
-        elif val_mse < best_val_mse - 1e-6:
-            best_val_mse = val_mse
-            best_val_pearson_at_best = val_p
+            pat = 0  # reset patience to prevent early stop
+        elif loss_mode == "ic":
+            if not np.isfinite(val_p):
+                pat += 1
+            elif val_p > best_val_pearson + 1e-4:
+                best_val_pearson = val_p
+                best_val_mse_at_best = val_mse
+                improved = True
+            else:
+                pat += 1
+        else:  # mse
+            if not np.isfinite(val_mse):
+                pat += 1
+            elif val_mse < best_val_mse - 1e-6:
+                best_val_mse = val_mse
+                best_val_pearson_at_best = val_p
+                improved = True
+            else:
+                pat += 1
+        if improved:
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
             best_test_mse = test_mse
             best_test_r2 = test_r2
@@ -367,8 +408,6 @@ def run(spec, train_csv, val_csv, test_csv, save_dir, seed,
             best_test_actual = test_actual
             best_epoch = epoch
             pat = 0
-        else:
-            pat += 1
 
         if (not np.isfinite(test_mse)) or test_mse > 100.0:
             print(f"  ⚠ divergence (test_mse={test_mse:.2f}) — early termination")
@@ -418,10 +457,11 @@ def run(spec, train_csv, val_csv, test_csv, save_dir, seed,
         target_cols=cols_target,
         mask_future_ch=mask_future,
         future_len=FUTURE_LEN,
-        selection_criterion="val_mse_min",
+        loss_mode=loss_mode,
+        selection_criterion=("val_pearson_max" if loss_mode == "ic" else "val_mse_min"),
         best_epoch=best_epoch,
-        val_mse=best_val_mse,
-        val_pearson_at_best=best_val_pearson_at_best,
+        val_mse=best_val_mse if loss_mode != "ic" else best_val_mse_at_best,
+        val_pearson_at_best=best_val_pearson_at_best if loss_mode != "ic" else best_val_pearson,
         test_mse=best_test_mse,
         test_r2=best_test_r2,
         test_pearson_std=best_test_pearson,
@@ -452,6 +492,8 @@ def main():
     ap.add_argument("--lr",         type=float, default=LR)
     ap.add_argument("--vix", action="store_true")
     ap.add_argument("--pilot-split", action="store_true")
+    ap.add_argument("--loss-mode", choices=["mse", "ic"], default="mse",
+                    help="Loss / selection mode. mse: MSE loss + val_mse_min. ic: 1-Pearson loss + val_pearson_max.")
     args = ap.parse_args()
 
     spec = build_spec(args.variant, with_vix=args.vix)
@@ -487,7 +529,8 @@ def main():
     for seed in args.seeds:
         run(spec, train_csv, val_csv, test_csv, args.out_dir, seed,
             max_epochs=args.max_epochs, patience=args.patience,
-            batch=args.batch, lr=args.lr, fold_tag=fold_tag)
+            batch=args.batch, lr=args.lr, fold_tag=fold_tag,
+            loss_mode=args.loss_mode)
 
 
 if __name__ == "__main__":

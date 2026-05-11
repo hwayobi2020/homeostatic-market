@@ -77,6 +77,8 @@ def main():
                     help="Which folds to run (default: all 3).")
     ap.add_argument("--seeds", nargs="+", default=SEEDS,
                     help="Seeds for Model A training (default: 42-46).")
+    ap.add_argument("--loss-mode", choices=["mse", "ic"], default="mse",
+                    help="v13 loss mode (mse default, ic for IC loss).")
     ap.add_argument("--result-dir", default=os.path.join(HERE, "result"))
     ap.add_argument("--skip-train", action="store_true",
                     help="Skip Step 1 (Model A train). Useful if v13 ckpts already exist.")
@@ -104,12 +106,13 @@ def main():
         print(f"{'#'*78}")
         timing[fold] = {}
 
-        # Step 1: v13 Model A (no --vix; VIX 가 성능 떨어뜨림 + 1971-1990 imputed 정규화 왜곡)
+        # Step 1: v13 Model A (no --vix; loss_mode 옵션화)
         if not args.skip_train:
             cmd = [PY, os.path.join(HERE, "train_vol_pilot_3m.py"),
                    "--variant", "13", "--fold", fold,
+                   "--loss-mode", args.loss_mode,
                    "--seeds"] + list(args.seeds)
-            timing[fold]["step1_model_a"] = run_cmd(cmd, f"[{fold}] Step 1/3 — Train v13 Model A")
+            timing[fold]["step1_model_a"] = run_cmd(cmd, f"[{fold}] Step 1/3 — Train v13 Model A ({args.loss_mode})")
 
         # Step 2: Flow B
         if not args.skip_flow:
@@ -119,12 +122,13 @@ def main():
                    "--save-name", f"scenario_3m_flow_1d_{fold}_skewt_df5.pt"]
             timing[fold]["step2_flow_b"] = run_cmd(cmd, f"[{fold}] Step 2/3 — Train Flow B (Skew-t df=5)")
 
-        # Step 3: Sensitivity
+        # Step 3: Sensitivity (loss_mode 일치하는 ckpts 만 load)
         if not args.skip_sensitivity:
             cmd = [PY, os.path.join(HERE, "sensitivity_v13.py"),
                    "--flow-mode", "global", "--fold", fold,
+                   "--loss-mode", args.loss_mode,
                    "--global-flow-ckpt", f"scenario_3m_flow_1d_{fold}_skewt_df5.pt"]
-            timing[fold]["step3_sensitivity"] = run_cmd(cmd, f"[{fold}] Step 3/3 — Sensitivity analysis")
+            timing[fold]["step3_sensitivity"] = run_cmd(cmd, f"[{fold}] Step 3/3 — Sensitivity analysis ({args.loss_mode})")
 
     # Save status to JSON for short diagnostic (user can grep)
     status_path = os.path.join(args.result_dir, "run_3fold_holdout_status.json")
