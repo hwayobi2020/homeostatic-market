@@ -248,23 +248,26 @@ def m2_split_lag(s, dates):
 def add_derived(df, fred_dict):
     print(f"\n[4] Add CPI/GDP forward-fill + compute yoy/lag/13w_cum/BIS/bondpp/excess_liq")
 
+    # Reindex with ffill — match v33_newmetab style. df["date"] 는 sorted weekly dates.
+    target_idx = pd.DatetimeIndex(df["date"])
+
     cpi = fred_dict["CPIAUCSL"].copy()
     cpi.index = pd.to_datetime(cpi.index)
-    cpi_w = cpi.reindex(df["date"].union(cpi.index)).sort_index().ffill().reindex(df["date"])
-    df["cpi"] = cpi_w.values
+    cpi = cpi.sort_index()
+    df["cpi"] = cpi.reindex(target_idx, method="ffill").values
     df["log_cpi"] = np.log(df["cpi"].clip(lower=1e-8))
     df["cpi_wr"] = df["log_cpi"].diff()
 
     gdp = fred_dict["GDPC1"].copy()
     gdp.index = pd.to_datetime(gdp.index)
-    gdp_w = gdp.reindex(df["date"].union(gdp.index)).sort_index().ffill().reindex(df["date"])
-    df["gdp_real"] = gdp_w.values
+    gdp = gdp.sort_index()
+    df["gdp_real"] = gdp.reindex(target_idx, method="ffill").values
 
     # WTI spot crude (monthly → weekly forward-fill); 1970s oil shock 핵심
     wti = fred_dict["WTISPLC"].copy()
     wti.index = pd.to_datetime(wti.index)
-    wti_w = wti.reindex(df["date"].union(wti.index)).sort_index().ffill().reindex(df["date"])
-    df["wti"] = wti_w.values
+    wti = wti.sort_index()
+    df["wti"] = wti.reindex(target_idx, method="ffill").values
     df["log_wti"] = np.log(df["wti"].clip(lower=1e-8))
     df["wti_wr"] = df["log_wti"].diff()                           # weekly log change
 
