@@ -62,7 +62,7 @@ VARIANTS = {
     10: dict(name="base_bondsum",          cond_extra=["tbill_13w_cum"]),
     11: dict(name="base_stocksum",         cond_extra=["sp_13w_cum"]),
     12: dict(name="base_bondsum_stocksum", cond_extra=["tbill_13w_cum", "sp_13w_cum"]),
-    13: dict(name="base_el_wti_raw",       cond_extra=["excess_liq_yoy_lag", "wti_wr"]),         # el + wti (weekly log change, no lag, no cum)
+    13: dict(name="base_el_wti_pvol",      cond_extra=["excess_liq_yoy_lag", "wti_wr", "sp_log_std_13w"]),  # + past realized vol cond
     113: dict(name="base_el_only",         cond_extra=["excess_liq_yoy_lag"]),                   # 기존 v13 (pilot result 참조용, no WTI)
 }
 
