@@ -134,7 +134,7 @@ def fetch_fred():
 
 
 def fetch_ads():
-    """Download ADS Business Conditions Index (Aruoba-Diebold-Scotti, Phil Fed).
+    """Load ADS Business Conditions Index (Aruoba-Diebold-Scotti, Phil Fed).
 
     Daily real-time business conditions proxy. Replaces GDP (분기 + yoy 변환의 52w
     lookback 회피). Phil Fed 가 자체 호스팅 (FRED 에 없음).
@@ -143,29 +143,42 @@ def fetch_ads():
     Conditions." J. of Business and Economic Statistics.
 
     Source: https://www.philadelphiafed.org/surveys-and-data/real-time-data-research/ads
+    Download "Most Current Vintage" XLSX 또는 CSV → data/ 폴더에 저장.
 
     Returns
     -------
     pd.Series indexed by date (daily), values = ADS index (standardized, mean 0).
     """
-    print("\n[1b] Download ADS Business Conditions Index (Phil Fed)")
-    csv_path = os.path.join(DATA, "ads_data.csv")
-    if not os.path.exists(csv_path):
+    print("\n[1b] Load ADS Business Conditions Index (Phil Fed)")
+    candidates = [
+        os.path.join(DATA, "ADS_Index_Most_Current_Vintage.xlsx"),
+        os.path.join(DATA, "ads_data.xlsx"),
+        os.path.join(DATA, "ads_data.csv"),
+    ]
+    found = next((p for p in candidates if os.path.exists(p)), None)
+    if found is None:
         sys.exit(
-            f"\n[FATAL] ADS Index data not found at {csv_path}.\n"
+            f"\n[FATAL] ADS Index data not found in {DATA}.\n"
             f"  Manual download required:\n"
             f"    1) Visit https://www.philadelphiafed.org/surveys-and-data/real-time-data-research/ads\n"
-            f"    2) Download 'Most Current Vintage' CSV (or XLSX).\n"
-            f"    3) Save as {csv_path}  with columns [date, ADS_Index] (or 2-col [date, value]).\n"
+            f"    2) Download 'Most Current Vintage' XLSX or CSV.\n"
+            f"    3) Save to data/ (file name auto-detected):\n"
+            f"         {candidates[0]}\n"
+            f"         {candidates[1]}\n"
+            f"         {candidates[2]}\n"
             f"       date format: YYYY:MM:DD or YYYY-MM-DD acceptable.\n"
         )
-    df = pd.read_csv(csv_path)
+    print(f"    using: {found}")
+    if found.lower().endswith(".xlsx"):
+        df = pd.read_excel(found)
+    else:
+        df = pd.read_csv(found)
     # 컬럼 자동 탐지: 첫 컬럼 = date, 두 번째 컬럼 = ADS value
     date_col = df.columns[0]
     val_col  = df.columns[1] if len(df.columns) > 1 else None
     if val_col is None:
-        sys.exit(f"[FATAL] {csv_path} has <2 columns")
-    # Date parsing — accept YYYY:MM:DD or YYYY-MM-DD
+        sys.exit(f"[FATAL] {found} has <2 columns")
+    # Date parsing — accept YYYY:MM:DD or YYYY-MM-DD or pandas Timestamp
     df[date_col] = df[date_col].astype(str).str.replace(":", "-", regex=False)
     df["date"] = pd.to_datetime(df[date_col], errors="coerce")
     df = df.dropna(subset=["date"]).set_index("date").sort_index()
