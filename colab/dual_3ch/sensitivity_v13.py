@@ -722,10 +722,10 @@ def main():
                          "Other options: '..._global_student_df5.pt' (Student-t), "
                          "'..._global_v2.pt' (Normal).")
     ap.add_argument("--fold", type=str, default="pilot",
-                    choices=["pilot", "F1", "F2", "F3"],
-                    help="Evaluation fold: 'pilot' (default, single split 2000-2010/2011-2020/2021-2025) "
-                         "or 'F1'/'F2'/'F3' (folds_v33_vix walk-forward, "
-                         "F2 test=2019-2022 includes COVID stress).")
+                    choices=["pilot", "F0", "F1", "F2", "F3", "F4"],
+                    help="Evaluation fold: 'pilot' (legacy single split) or "
+                         "'F0'..'F4' (folds_v33_vix 5-fold rolling 25y, regime-specific test: "
+                         "F0=dotcom 01-03, F1=GFC 08-10, F2=QE 14-16, F3=COVID 19-21, F4=hike 22-24).")
     ap.add_argument("--loss-mode", choices=["any", "mse", "ic"], default="any",
                     help="Which loss-mode ckpts to load. 'any' matches *sel* (mse+ic+psel). "
                          "'mse' → _msel only; 'ic' → _isel only.")

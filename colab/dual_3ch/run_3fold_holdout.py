@@ -1,39 +1,31 @@
-"""3-fold walk-forward holdout evaluation for v13 + Flow B + sensitivity.
+"""5-fold walk-forward holdout (25y rolling train) for v13 + Flow B + sensitivity.
 
-Why this script:
-  pilot_split (single fold 2000-2010/2011-2020/2021-2025) was used as the
-  "design phase" — Flow B architecture choices (base distribution, capacity)
-  were iteratively informed by test-set observations. This is mild test-set
-  contamination (model class selection on test).
+Fold design (Gemini 2026-05-11): 25y rolling train + 1y val + 3y regime-specific test.
+Rolling train (vs expanding from 1971) avoids "older data 가 newer regime 학습에 해" 문제.
 
-  folds_v33_vix provides 3 walk-forward folds with held-out test periods:
-
-    Fold   train         val           test           test ex_kurt
-    F1     1991-2011     2012-2015     2015-2018     +2.78 (2018 Q4 selloff)
-    F2     1991-2015     2015-2018     2019-2022     +7.52 (COVID 2020, full stress) ★
-    F3     1991-2018     2019-2022     2022-2025     +2.69 (2022 bear market)
-
-  Running v13 + Flow B + sensitivity across all 3 folds with the Skew-t
-  base design (chosen on pilot) gives a clean held-out evaluation. F2 in
-  particular tests Flow B's fat-tail capture against a real stress period.
+    Fold  regime                    train (25y)   val   test
+    F0    닷컴 붕괴 후유증           1975-1999    2000  2001-2003
+    F1    GFC                       1982-2006    2007  2008-2010
+    F2    Bernanke/Yellen QE        1988-2012    2013  2014-2016
+    F3    Rate hike + COVID         1993-2017    2018  2019-2021
+    F4    인플레 + Rapid hike       1996-2020    2021  2022-2024
 
 Pipeline (per fold):
-  Step 1. Train v13 Model A (5 seeds, --vix --fold {F})         → 5 ckpts
-  Step 2. Train Flow B (Skew-t df=5, fold train ε)              → 1 ckpt
-  Step 3. Run sensitivity_v13 (--fold {F} --flow-mode global)   → 3 figures + 2 csvs
+  Step 1. Train v13 Model A (5 seeds, --fold {F} --loss-mode {mse|ic})  → 5 ckpts
+  Step 2. Train Flow B (Skew-t df=5, fold train ε)                      → 1 ckpt
+  Step 3. Run sensitivity_v13 (--fold {F} --flow-mode global)           → 3 figures + 2 csvs
 
 After all folds: aggregate sensitivity slopes + histogram skew/kurt across folds.
 
 Usage (Colab):
   !python colab/dual_3ch/run_3fold_holdout.py
-  # Optional: --folds F2  to run only specific folds
-  # Optional: --skip-train  to skip Step 1 if v13 ckpts already exist (won't refit)
+  # Optional: --folds F2 F4         only specific folds
+  # Optional: --skip-train          v13 ckpts already exist
+  # Optional: --loss-mode {mse,ic}  default mse
 
 Resumability: each subprocess (train_vol_pilot_3m, train_flow_b_global,
 sensitivity_v13) has internal skip-if-exists logic, so re-running this
 script after partial completion picks up where it left off.
-
-Total runtime estimate (Colab T4): ~3 hours for all 3 folds.
 """
 import argparse
 import json
@@ -49,7 +41,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
 PY = sys.executable
 
-ALL_FOLDS = ["F1", "F2", "F3"]
+ALL_FOLDS = ["F0", "F1", "F2", "F3", "F4"]
 SEEDS = ["42", "43", "44", "45", "46"]
 
 
@@ -72,9 +64,9 @@ def run_cmd(cmd, label):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="3-fold walk-forward holdout for v13 + Flow B + sensitivity")
+    ap = argparse.ArgumentParser(description="5-fold walk-forward holdout for v13 + Flow B + sensitivity")
     ap.add_argument("--folds", nargs="+", default=ALL_FOLDS, choices=ALL_FOLDS,
-                    help="Which folds to run (default: all 3).")
+                    help="Which folds to run (default: all 5: F0-F4).")
     ap.add_argument("--seeds", nargs="+", default=SEEDS,
                     help="Seeds for Model A training (default: 42-46).")
     ap.add_argument("--loss-mode", choices=["mse", "ic"], default="mse",
@@ -92,7 +84,7 @@ def main():
     folds_to_run = args.folds
 
     print("=" * 78)
-    print(" 3-fold walk-forward holdout — v13 + Flow B + sensitivity")
+    print(" 5-fold walk-forward holdout (25y rolling) — v13 + Flow B + sensitivity")
     print("=" * 78)
     print(f"  folds       : {folds_to_run}")
     print(f"  seeds       : {args.seeds}")
@@ -131,7 +123,7 @@ def main():
             timing[fold]["step3_sensitivity"] = run_cmd(cmd, f"[{fold}] Step 3/3 — Sensitivity analysis ({args.loss_mode})")
 
     # Save status to JSON for short diagnostic (user can grep)
-    status_path = os.path.join(args.result_dir, "run_3fold_holdout_status.json")
+    status_path = os.path.join(args.result_dir, "run_5fold_holdout_status.json")
     with open(status_path, "w") as f:
         json.dump({"folds": folds_to_run, "timing": timing,
                    "total_min": (time.time() - t_start) / 60.0}, f, indent=2)
@@ -172,7 +164,7 @@ def main():
 
     if sens_rows:
         sens_df = pd.concat(sens_rows, ignore_index=True)
-        agg_sens_csv = os.path.join(args.result_dir, "sensitivity_v13_summary_3fold_global.csv")
+        agg_sens_csv = os.path.join(args.result_dir, "sensitivity_v13_summary_5fold_global.csv")
         sens_df.to_csv(agg_sens_csv, index=False)
         print(f"\n  saved aggregate sensitivity: {agg_sens_csv}\n")
         print("  Sensitivity slopes across folds (positive sensitivity = ✓):")
@@ -186,7 +178,7 @@ def main():
 
     if hist_rows:
         hist_df = pd.concat(hist_rows, ignore_index=True)
-        agg_hist_csv = os.path.join(args.result_dir, "sensitivity_v13_histogram_stats_3fold_global.csv")
+        agg_hist_csv = os.path.join(args.result_dir, "sensitivity_v13_histogram_stats_5fold_global.csv")
         hist_df.to_csv(agg_hist_csv, index=False)
         print(f"\n  saved aggregate histogram stats: {agg_hist_csv}\n")
         print("  Week-13 cum distribution moments (Flow vs Gauss) across folds:")

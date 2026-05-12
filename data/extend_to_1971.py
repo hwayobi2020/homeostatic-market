@@ -32,7 +32,7 @@ Output (OVERWRITES existing):
   data/weekly_v33_test.csv          (2016-01-01 ~ 2025-12-26)
   data/weekly_v33_vix_train.csv     (+ vix col)
   data/weekly_v33_vix_test.csv
-  data/folds_v33_vix/F{1,2,3}_{train,val,test}.csv
+  data/folds_v33_vix/F{0,1,2,3,4}_{train,val,test}.csv   (5-fold rolling 25y train)
   data/folds_v33_vix_backup/        (backup of previous folds, if not already present)
 """
 import os
@@ -82,16 +82,29 @@ CPI_LAG          = 2
 GDP_LAG          = 4
 WINDOW           = 13
 
+# 5-fold walk-forward with 25y rolling train + 1y val + 3y test, regime-specific test windows.
+# (Gemini design 2026-05-11): rolling train avoids "older data 가 newer regime 학습에 해" 문제.
+#   F0: 닷컴 붕괴 후유증     train 1975-1999  val 2000  test 2001-2003
+#   F1: GFC                  train 1982-2006  val 2007  test 2008-2010
+#   F2: Bernanke/Yellen QE   train 1988-2012  val 2013  test 2014-2016
+#   F3: Rate hike + COVID    train 1993-2017  val 2018  test 2019-2021
+#   F4: 인플레 + Rapid hike  train 1996-2020  val 2021  test 2022-2024
 FOLD_SPLITS = {
-    "F1": {"train_start": "1971-01-08", "train_end": "2011-12-30",
-           "val_start":   "2012-04-06", "val_end":   "2015-06-26",
-           "test_start":  "2015-10-02", "test_end":  "2018-12-28"},
-    "F2": {"train_start": "1971-01-08", "train_end": "2015-06-26",
-           "val_start":   "2015-10-02", "val_end":   "2018-12-28",
-           "test_start":  "2019-04-05", "test_end":  "2022-06-24"},
-    "F3": {"train_start": "1971-01-08", "train_end": "2018-12-28",
-           "val_start":   "2019-04-05", "val_end":   "2022-06-24",
-           "test_start":  "2022-10-07", "test_end":  "2025-12-26"},
+    "F0": {"train_start": "1975-01-01", "train_end": "1999-12-31",
+           "val_start":   "2000-01-01", "val_end":   "2000-12-31",
+           "test_start":  "2001-01-01", "test_end":  "2003-12-31"},
+    "F1": {"train_start": "1982-01-01", "train_end": "2006-12-31",
+           "val_start":   "2007-01-01", "val_end":   "2007-12-31",
+           "test_start":  "2008-01-01", "test_end":  "2010-12-31"},
+    "F2": {"train_start": "1988-01-01", "train_end": "2012-12-31",
+           "val_start":   "2013-01-01", "val_end":   "2013-12-31",
+           "test_start":  "2014-01-01", "test_end":  "2016-12-31"},
+    "F3": {"train_start": "1993-01-01", "train_end": "2017-12-31",
+           "val_start":   "2018-01-01", "val_end":   "2018-12-31",
+           "test_start":  "2019-01-01", "test_end":  "2021-12-31"},
+    "F4": {"train_start": "1996-01-01", "train_end": "2020-12-31",
+           "val_start":   "2021-01-01", "val_end":   "2021-12-31",
+           "test_start":  "2022-01-01", "test_end":  "2024-12-31"},
 }
 
 
@@ -418,11 +431,11 @@ def main():
     print(f"\n{'='*78}")
     print(" DONE — Next steps:")
     print(f"{'='*78}")
-    print("  1) Delete OLD v13 ckpts so trainer re-learns on extended folds:")
-    print("     !rm -f colab/dual_3ch/result/vol_pilot_3m_psel_vix_v13_*_F[123]_seed*_*")
-    print("     !rm -f colab/dual_3ch/result/scenario_3m_flow_1d_F[123]_skewt_df5*")
-    print("     !rm -f colab/dual_3ch/result/sensitivity_v13_*_F[123]_global*")
-    print("  2) Re-run 3-fold holdout:")
+    print("  1) Delete OLD v13/Flow/sensitivity ckpts (fold semantics changed: 5-fold rolling 25y):")
+    print("     !rm -f colab/dual_3ch/result/vol_pilot_3m_*sel*_v13_*_F[0-4]_seed*_*")
+    print("     !rm -f colab/dual_3ch/result/scenario_3m_flow_1d_F[0-4]_skewt_df5*")
+    print("     !rm -f colab/dual_3ch/result/sensitivity_v13_*_F[0-4]_global*")
+    print("  2) Re-run 5-fold holdout (default --loss-mode mse):")
     print("     !python colab/dual_3ch/run_3fold_holdout.py")
     print("  3) Diagnose:")
     print("     !python colab/dual_3ch/diagnose_3fold.py")
