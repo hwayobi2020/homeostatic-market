@@ -83,28 +83,15 @@ INDPRO_LAG       = 2   # Fed G.17 Industrial Production release lag ≈ 2w (GDP-
 ADS_LAG          = 1   # Phil Fed ADS index publication lag ≈ 1w (별도 cond 채널)
 WINDOW           = 13
 
-# 3-fold expanding train + 15-week gap (2026-05-12 redesign, gap 15w 정정):
-# train_start = 1971-01-01 고정 (모든 6개 폭락 포함: 1973-74 oil shock, 1987, 1990, 닷컴, GFC),
-# 각 split 사이 약 3.5개월 (≈ 15w) gap 두어 cond lookback leakage 차단.
-# cond 최대 lookback = m2_13w_cum_lag (13w + M2_LAG 1w = 14w) and cpi_13w_cum_lag (13w + CPI_LAG 2w = 15w)
-# → gap ≥ 15w 필요. 13w gap (FUTURE_LEN 만) 은 cond leakage 미차단.
-# test 비중첩, narrative = 인플레 사이클 3단계 (시작 → 정점 → 해소).
-# 한계 (paper 평가 limitation 으로 명시):
-#   1) test 1.5y ≈ 14 windows/fold (3-fold pooled 42) — EMD 주력, CVaR 5% tail 제한적
-#   2) COVID 폭락 (2020-03) 은 F1 val / F2-F3 train 끝 직전 (2018-09) 이후 → 모든 fold train 미포함
-#   F1: train 1971.01-2015.03 val 2015.07.15-2020.09 test 2021.01.15-2022.06 (인플레 시작)
-#   F2: train 1971.01-2016.12 val 2017.04.15-2022.06 test 2022.10.15-2024.03 (인플레 정점)
-#   F3: train 1971.01-2018.09 val 2019.01.15-2024.03 test 2024.07.15-2025.12 (인플레 해소)
+# Single fold (2026-05-12 final): train 1971~2015.03, val 2015.07.15~2020.09, test 2021.01.15~2025.12.
+# 선택 이유: 2020-03 COVID 폭락을 val 에 둬서 hyperparameter tuning (위기 민감도), test 는
+# 순수 OOD 체제 = 고인플레/QT (2021-2025) 에 집중. test 195 windows → DM (Diebold-Mariano 1995)
+# 통계검정 통한 model 비교가 paper main result.
+# gap 15w (val_start/test_start 15일) — cond lookback max 15w 와 정합.
 FOLD_SPLITS = {
     "F1": {"train_start": "1971-01-01", "train_end": "2015-03-31",
            "val_start":   "2015-07-15", "val_end":   "2020-09-30",
-           "test_start":  "2021-01-15", "test_end":  "2022-06-30"},
-    "F2": {"train_start": "1971-01-01", "train_end": "2016-12-31",
-           "val_start":   "2017-04-15", "val_end":   "2022-06-30",
-           "test_start":  "2022-10-15", "test_end":  "2024-03-31"},
-    "F3": {"train_start": "1971-01-01", "train_end": "2018-09-30",
-           "val_start":   "2019-01-15", "val_end":   "2024-03-31",
-           "test_start":  "2024-07-15", "test_end":  "2025-12-31"},
+           "test_start":  "2021-01-15", "test_end":  "2025-12-31"},
 }
 
 

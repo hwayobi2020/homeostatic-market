@@ -101,21 +101,20 @@ def diagnose_fold(fold):
 
 def main():
     print("=" * 72)
-    print(" 3-fold holdout diagnostic")
+    print(" Single-fold holdout diagnostic")
     print("=" * 72)
     if not os.path.isdir(RESULT):
         print(f"[FATAL] result dir not found: {RESULT}")
         return
     print(f"  result_dir: {RESULT}")
-    for fold in ["F1", "F2", "F3"]:
+    for fold in ["F1"]:
         diagnose_fold(fold)
     print()
-    # Final aggregate (only if 3fold aggregate exists)
-    agg = os.path.join(RESULT, "sensitivity_v13_summary_3fold_global.csv")
+    agg = os.path.join(RESULT, "sensitivity_v13_summary_singlefold_global.csv")
     if os.path.exists(agg):
-        print(f"  3-fold aggregate CSV exists: {agg}")
+        print(f"  single-fold aggregate CSV exists: {agg}")
     else:
-        print(f"  3-fold aggregate CSV NOT yet — orchestrator did not finish all folds.")
+        print(f"  single-fold aggregate CSV NOT yet — orchestrator did not finish.")
 
 
 if __name__ == "__main__":

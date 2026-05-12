@@ -1,18 +1,14 @@
-"""3-fold walk-forward holdout (expanding train from 1971) for v13 + Flow B + sensitivity.
+"""Single fold holdout (2026-05-12 final) for v13 + Flow B + sensitivity.
 
-Fold design (2026-05-12 redesign):
-  train_start = 1971-01-01 고정 (모든 폭락 포함: 1973-74 oil shock, 1987, 1990, 닷컴, GFC)
-  각 split 사이 약 3개월 (≈ FUTURE_LEN 13주) gap 으로 future-horizon leakage 차단
-  test 비중첩, narrative = 인플레 사이클 3단계
+Fold design:
+  train 1971.01.01 ~ 2015.03.31 (44.25y, all crashes: 1973-74 oil / 1987 / 1990 / 닷컴 / GFC)
+  val   2015.07.15 ~ 2020.09.30 (5.2y, **COVID 2020-03 폭락 포함** — hyperparameter tuning)
+  test  2021.01.15 ~ 2025.12.31 (5.0y, OOD = 고인플레 + QT 체제, 195 windows)
+  gap   15w (cond lookback max 15w 와 정합, leakage 0)
 
-    Fold  test 시기              train (expanding)   val           test
-    F1    인플레 시작            1971.01-2015.03    2015.07-20.09 2021.01-22.06
-    F2    인플레 정점            1971.01-2016.12    2017.04-22.06 2022.10-24.03
-    F3    인플레 해소            1971.01-2018.09    2019.01-24.03 2024.07-25.12
-
-평가 한계 (paper 에 명시):
-  1) test 1.5y ≈ 14 windows/fold (3-fold pooled 42) — EMD 주력, CVaR 5% tail 제한적
-  2) COVID 폭락 (2020-03) ⊄ 모든 fold train — val 에만 들어감 (F1 val 2015.07-2020.09 포함)
+Paper main result = Diebold-Mariano (1995) test:
+  (ii) HAR-RV vs v13 (main): "체제 전환기 macro signal 이 HAR (과거 vol 궤적) 보다 우수" 입증
+  (i)  v1 (base) vs v13 (ablation): excess liquidity (metab_13w) + wti 추가 효과
 
 Pipeline (per fold):
   Step 1. Train v13 Model A (5 seeds, --fold {F} --loss-mode {mse|ic})  → 5 ckpts
@@ -45,7 +41,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
 PY = sys.executable
 
-ALL_FOLDS = ["F1", "F2", "F3"]
+ALL_FOLDS = ["F1"]
 SEEDS = ["42", "43", "44", "45", "46"]
 FOLDS_DIR_NAME = "folds_v33_vix_expanding"
 
@@ -69,7 +65,7 @@ def run_cmd(cmd, label):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="3-fold expanding-train walk-forward holdout for v13 + Flow B + sensitivity")
+    ap = argparse.ArgumentParser(description="Single-fold holdout for v13 + Flow B + sensitivity (DM-test ready)")
     ap.add_argument("--folds", nargs="+", default=ALL_FOLDS, choices=ALL_FOLDS,
                     help="Which folds to run (default: all 3: F1-F3).")
     ap.add_argument("--seeds", nargs="+", default=SEEDS,
@@ -89,7 +85,7 @@ def main():
     folds_to_run = args.folds
 
     print("=" * 78)
-    print(" 3-fold walk-forward holdout (expanding train from 1971) — v13 + Flow B + sensitivity")
+    print(" Single-fold holdout (1971-2015 train / 2015.07-2020.09 val / 2021.01-2025.12 test)")
     print("=" * 78)
     print(f"  folds       : {folds_to_run}")
     print(f"  seeds       : {args.seeds}")
@@ -169,7 +165,7 @@ def main():
 
     if sens_rows:
         sens_df = pd.concat(sens_rows, ignore_index=True)
-        agg_sens_csv = os.path.join(args.result_dir, "sensitivity_v13_summary_3fold_global.csv")
+        agg_sens_csv = os.path.join(args.result_dir, "sensitivity_v13_summary_singlefold_global.csv")
         sens_df.to_csv(agg_sens_csv, index=False)
         print(f"\n  saved aggregate sensitivity: {agg_sens_csv}\n")
         print("  Sensitivity slopes across folds (positive sensitivity = ✓):")
@@ -183,7 +179,7 @@ def main():
 
     if hist_rows:
         hist_df = pd.concat(hist_rows, ignore_index=True)
-        agg_hist_csv = os.path.join(args.result_dir, "sensitivity_v13_histogram_stats_3fold_global.csv")
+        agg_hist_csv = os.path.join(args.result_dir, "sensitivity_v13_histogram_stats_singlefold_global.csv")
         hist_df.to_csv(agg_hist_csv, index=False)
         print(f"\n  saved aggregate histogram stats: {agg_hist_csv}\n")
         print("  Week-13 cum distribution moments (Flow vs Gauss) across folds:")

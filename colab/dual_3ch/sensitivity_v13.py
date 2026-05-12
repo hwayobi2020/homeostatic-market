@@ -731,11 +731,10 @@ def main():
                          "Default = Skew-t(α learnable, df=5) base. "
                          "Other options: '..._global_student_df5.pt' (Student-t), "
                          "'..._global_v2.pt' (Normal).")
-    ap.add_argument("--fold", type=str, default="pilot",
-                    choices=["pilot", "F1", "F2", "F3"],
-                    help="Evaluation fold: 'pilot' (legacy single split) or "
-                         "'F1'..'F3' (folds_v33_vix_expanding 3-fold expanding-train, 3mo gap, "
-                         "test = 인플레 사이클 3단계: F1 시작 21.1-22.6, F2 정점 22.10-24.3, F3 해소 24.7-25.12).")
+    ap.add_argument("--fold", type=str, default="F1",
+                    choices=["pilot", "F1"],
+                    help="Evaluation fold: 'F1' (single fold, train 1971-2015.03, val 2015.07-2020.09 "
+                         "incl. COVID, test 2021.01-2025.12 인플레/QT) or 'pilot' (legacy).")
     ap.add_argument("--loss-mode", choices=["any", "mse", "ic"], default="any",
                     help="Which loss-mode ckpts to load. 'any' matches *sel* (mse+ic+psel). "
                          "'mse' → _msel only; 'ic' → _isel only.")
