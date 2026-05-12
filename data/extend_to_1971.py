@@ -83,12 +83,13 @@ INDPRO_LAG       = 2   # Fed G.17 Industrial Production release lag ≈ 2w (GDP-
 ADS_LAG          = 1   # Phil Fed ADS index publication lag ≈ 1w (별도 cond 채널)
 WINDOW           = 13
 
-# Single fold F1 (2026-05-12 v13): train 짧게 (1971-2010.03, 39.25y), val 길게 (9.21y).
-# val 통계력 매우 강 (n=415). test 그대로 COVID 포함.
+# Single fold F1 (2026-05-12 v14): 균등 split — train 39y / val 7.2y / test 8y.
+# test 2018-2025 = 정상기 (2018-19) + COVID (2020-03) + 인플레 사이클 (2021-25).
+# n_val=311, n_test=350 (이전보다 통계 power ↑).
 FOLD_SPLITS = {
     "F1": {"train_start": "1971-01-01", "train_end": "2010-03-31",
-           "val_start":   "2010-07-15", "val_end":   "2019-09-30",
-           "test_start":  "2020-01-15", "test_end":  "2025-12-31"},
+           "val_start":   "2010-07-15", "val_end":   "2017-09-30",
+           "test_start":  "2018-01-15", "test_end":  "2025-12-31"},
 }
 
 
