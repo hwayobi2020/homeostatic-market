@@ -63,9 +63,9 @@ VARIANTS = {
     10: dict(name="base_bondsum",          cond_extra=["tbill_13w_cum"]),
     11: dict(name="base_stocksum",         cond_extra=["sp_13w_cum"]),
     12: dict(name="base_bondsum_stocksum", cond_extra=["tbill_13w_cum", "sp_13w_cum"]),
-    13: dict(name="base_el_wti_har_13",    cond_extra=["excess_liq_yoy_lag", "wti_wr",
-                                                       "sp_log_std_13w"]),  # 13w only (4w 제거 — over-following 단기 추세 방지)
-    113: dict(name="base_el_only",         cond_extra=["excess_liq_yoy_lag"]),                   # 기존 v13 (pilot result 참조용, no WTI)
+    13: dict(name="base_metab_wti_har_13", cond_extra=["metab_13w", "wti_wr",
+                                                       "sp_log_std_13w"]),  # metab_13w = m2_13w_cum_lag - gdp_13w_proxy_lag - cpi_13w_cum_lag (BIS, 13w lookback → fold gap 3mo 정합). yoy_lag (52w) 은 fold gap 3mo 보다 길어 leakage 발생 → 제거.
+    113: dict(name="base_el_only",         cond_extra=["excess_liq_yoy_lag"]),                   # 기존 v13 pilot result 참조용 (no WTI). 주의: 52w lookback 이라 3mo gap fold 와 leakage. pilot_split 에서만 사용 가능.
 }
 
 

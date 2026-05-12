@@ -1,14 +1,15 @@
-"""Sensitivity analysis + Fan Chart for Variant 13 (Model A: base + excess_liq cond).
+"""Sensitivity analysis + Fan Chart for Variant 13 (Model A: base + metab_13w cond).
 
-Variant 2 (paper) = Variant 13 (code, `base_el_only`):
-  cond = [tbill_wr, m2_13w_cum_lag, gdp_13w_proxy_lag, cpi_13w_cum_lag, excess_liq_yoy_lag]
+Variant 13 (code, `base_metab_wti_har_13`):
+  cond = [tbill_wr, m2_13w_cum_lag, gdp_13w_proxy_lag, cpi_13w_cum_lag,
+          metab_13w, wti_wr, sp_log_std_13w]
   target_past = [sp_return]
   output = log( std(future 13w sp_return) )  → σ̂ = exp(log_std_pred)
 
 생성하는 Figure (모두 result/ 에 저장):
 
   Figure 1 — Sensitivity curves (2×2 grid):
-      행: (calm, stress) origin   |   열: (tbill, excess_liq) 변수
+      행: (calm, stress) origin   |   열: (tbill, metab_13w) 변수
       X: Δ (level shift, raw unit) — annual %p 도 보조축으로 표기
       Y: σ̂ (5-seed mean) with ±1 std band
       Δ=0 baseline vertical guide + 실측 future-13w realized std horizontal guide.
@@ -108,8 +109,8 @@ SEEDS_DEFAULT = [42, 43, 44, 45, 46]
 # tbill_wr is weekly decimal:  annual %p / 52 = weekly Δ
 TBILL_ANNUAL_PP_RANGE = 2.0          # ±2.0%p annual
 TBILL_ANNUAL_PP_STEP  = 0.25
-EL_FRACTION_RANGE     = 0.05         # ±5.0%p yoy fraction
-EL_FRACTION_STEP      = 0.01
+METAB_FRACTION_RANGE  = 0.02         # ±2.0%p 13w cum fraction (metab_13w std ≈ 0.015)
+METAB_FRACTION_STEP   = 0.004
 
 # Fan chart tbill scenarios (annual %p shifts on top of baseline)
 FAN_TBILL_ANNUAL_PP = [0.0, 1.0, 2.0]
@@ -452,7 +453,7 @@ def extract_context_vec(df_test, origin_idx, cols_cond, stats_cond,
 # =====================================================================
 
 def make_sensitivity_figure(origins, scan_results, baseline_sigmas, save_path):
-    """2×2 grid: (calm, stress) × (tbill, excess_liq).
+    """2×2 grid: (calm, stress) × (tbill, metab_13w).
 
     scan_results: dict keyed by (origin_kind, perturb_col) → dict
         deltas (n_d,), sigmas (n_d, n_seeds), seeds (list)
@@ -462,8 +463,8 @@ def make_sensitivity_figure(origins, scan_results, baseline_sigmas, save_path):
     var_specs = [
         ("tbill_wr", "tbill (weekly decimal)", "tbill: annual %p shift", 52.0,
                                    TBILL_ANNUAL_PP_RANGE, "C0"),
-        ("excess_liq_yoy_lag", "excess_liq_yoy_lag", "excess_liq: %p shift", 100.0,
-                                   EL_FRACTION_RANGE, "C1"),
+        ("metab_13w", "metab_13w (13w cum)", "metab_13w: %p (13w cum) shift", 100.0,
+                                   METAB_FRACTION_RANGE, "C1"),
     ]
     kinds = [o["kind"] for o in origins]
     n_pairs = min(2, len(kinds))  # only 2 origins expected (calm, stress)
@@ -503,7 +504,7 @@ def make_sensitivity_figure(origins, scan_results, baseline_sigmas, save_path):
                 "top", functions=(lambda x, m=sec_mult: x * m, lambda x, m=sec_mult: x / m))
             secax.set_xlabel(sec_label, fontsize=9)
 
-    fig.suptitle("Sensitivity Curves — Variant 13 (base + excess_liq cond)\n"
+    fig.suptitle("Sensitivity Curves — Variant 13 (base + metab_13w cond)\n"
                  "(OAT level shift; row=origin regime, col=variable)",
                  fontsize=13, y=1.00)
     fig.tight_layout()
@@ -761,7 +762,7 @@ def main():
     fig_suffix = f"{fold_suffix}{mode_suffix}"
 
     print("=" * 78)
-    print(" Sensitivity Analysis — Variant 13 (paper #2: base + excess_liq cond)")
+    print(" Sensitivity Analysis — Variant 13 (paper #2: base + metab_13w cond)")
     print("=" * 78)
     print(f"  device      : {device}")
     print(f"  fold        : {fold}   (v13 fold_tag = '{v13_fold_tag}')")
@@ -797,21 +798,22 @@ def main():
     df_test = pd.read_csv(test_csv, parse_dates=["date"])
 
     # --- 3. Sensitivity scan ---
-    print("\n[3] Sensitivity scan (OAT level shift on tbill_wr and excess_liq_yoy_lag)...")
+    print("\n[3] Sensitivity scan (OAT level shift on tbill_wr and metab_13w)...")
     tbill_weekly_step  = TBILL_ANNUAL_PP_STEP / 100.0 / 52.0     # annual %p → weekly decimal
     tbill_weekly_range = TBILL_ANNUAL_PP_RANGE / 100.0 / 52.0
     tbill_deltas = np.arange(-tbill_weekly_range,
                               tbill_weekly_range + tbill_weekly_step / 2,
                               tbill_weekly_step).astype(np.float64)
-    el_deltas = np.arange(-EL_FRACTION_RANGE,
-                           EL_FRACTION_RANGE + EL_FRACTION_STEP / 2,
-                           EL_FRACTION_STEP).astype(np.float64)
+    metab_deltas = np.arange(-METAB_FRACTION_RANGE,
+                              METAB_FRACTION_RANGE + METAB_FRACTION_STEP / 2,
+                              METAB_FRACTION_STEP).astype(np.float64)
 
-    print(f"    tbill_wr deltas: n={len(tbill_deltas)},  "
+    print(f"    tbill_wr   deltas: n={len(tbill_deltas)},  "
           f"range = [{tbill_deltas.min():.6f}, {tbill_deltas.max():.6f}] weekly  "
           f"(= ±{TBILL_ANNUAL_PP_RANGE:.1f}%p annual, step {TBILL_ANNUAL_PP_STEP:.2f}%p)")
-    print(f"    el      deltas: n={len(el_deltas)},  "
-          f"range = [{el_deltas.min():+.4f}, {el_deltas.max():+.4f}]")
+    print(f"    metab_13w  deltas: n={len(metab_deltas)},  "
+          f"range = [{metab_deltas.min():+.4f}, {metab_deltas.max():+.4f}]  "
+          f"(= ±{METAB_FRACTION_RANGE*100:.1f}%p 13w cum, step {METAB_FRACTION_STEP*100:.2f}%p)")
 
     scan_results     = {}
     baseline_sigmas  = {}
@@ -829,7 +831,7 @@ def main():
               f"actual realized std = {o['future_realized_std']:.4f}")
 
         for col, deltas in [("tbill_wr", tbill_deltas),
-                            ("excess_liq_yoy_lag", el_deltas)]:
+                            ("metab_13w", metab_deltas)]:
             sigmas = sensitivity_scan(models, df_test, o["origin_idx"], col, deltas,
                                        cols_cond, cols_target, stats_cond, mask_future_ch,
                                        device)
@@ -999,7 +1001,7 @@ def main():
         base_s = baseline_sigmas[ok]
         actual_s = actual_realized[ok]
         for col, deltas_key in [("tbill_wr", "tbill_wr"),
-                                ("excess_liq_yoy_lag", "excess_liq_yoy_lag")]:
+                                ("metab_13w", "metab_13w")]:
             entry = scan_results[(ok, col)]
             deltas = entry["deltas"]
             sigmas = entry["sigmas"]
