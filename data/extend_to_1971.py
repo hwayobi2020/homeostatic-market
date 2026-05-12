@@ -386,6 +386,7 @@ def cut_and_diagnose(df):
         "m2_13w_cum_lag", "cpi_13w_cum_lag", "indpro_13w_pct_lag",
         "tbill_13w_cum", "sp_13w_cum",
         "metab_13w", "bondpp_13w_lag", "stockpp_13w_lag",
+        "sp_std_13w",  # raw past 13w std (cond magnitude reference)
         "sp_log_std_4w", "sp_log_std_13w", "sp_log_std_26w", "sp_log_std_52w",
     ]
     n_before = len(df)
