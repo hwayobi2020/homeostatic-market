@@ -57,14 +57,19 @@ COLS_COND_BASE = ["tbill_wr", "m2_13w_cum_lag", "ads_lag", "cpi_13w_cum_lag"]
 
 VARIANTS = {
     14: dict(name="base_mtl_metab",
-             cond_extra=["wti_wr", "sp_log_std_13w"],
+             cond_cols=COLS_COND_BASE + ["wti_wr", "sp_log_std_13w"],
+             aux_col="metab_13w"),
+    # v15: permutation importance 로 HARMFUL 판정된 3개 (ads_lag, wti_wr, sp_log_std_13w) 제거
+    # paper logic: "macro fundamentals only" — past vol 완전 제외, HAR-RV 와 정보 분리
+    15: dict(name="base_clean_mtl",
+             cond_cols=["tbill_wr", "m2_13w_cum_lag", "cpi_13w_cum_lag"],
              aux_col="metab_13w"),
 }
 
 
 def build_spec(variant_id):
     v = VARIANTS[variant_id]
-    cols_cond = COLS_COND_BASE + v["cond_extra"]
+    cols_cond = v["cond_cols"]
     cols_target = ["sp_return"]
     aux_col = v["aux_col"]
     mask_future_ch = list(range(1, len(cols_cond)))

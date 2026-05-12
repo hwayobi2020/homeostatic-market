@@ -175,29 +175,36 @@ def main():
     y_act_v1,  y_pred_v1,  n_seeds_v1  = load_ml_preds(1,  args.fold, model_type="single")
     y_act_v13, y_pred_v13, n_seeds_v13 = load_ml_preds(13, args.fold, model_type="single")
     y_act_har, y_pred_har              = load_har_preds(args.fold)
-    # v14 MTL — optional (없으면 skip)
+    # v14 / v15 MTL — optional (없으면 skip)
     v14_pattern = os.path.join(RESULT, f"vol_pilot_3m_mtl_msel_v14_*_{args.fold}_seed*_test_preds.npz")
+    v15_pattern = os.path.join(RESULT, f"vol_pilot_3m_mtl_msel_v15_*_{args.fold}_seed*_test_preds.npz")
     has_v14 = bool(glob.glob(v14_pattern))
+    has_v15 = bool(glob.glob(v15_pattern))
+    print(f"    v1      : n={len(y_pred_v1):4d}  (mean of {n_seeds_v1} seeds)")
+    print(f"    v13     : n={len(y_pred_v13):4d}  (mean of {n_seeds_v13} seeds)")
     if has_v14:
         y_act_v14, y_pred_v14, n_seeds_v14 = load_ml_preds(14, args.fold, model_type="mtl")
-        print(f"    v1     : n={len(y_pred_v1):4d}  (mean of {n_seeds_v1} seeds)")
-        print(f"    v13    : n={len(y_pred_v13):4d}  (mean of {n_seeds_v13} seeds)")
-        print(f"    v14 MTL: n={len(y_pred_v14):4d}  (mean of {n_seeds_v14} seeds)")
-        print(f"    HAR-RV : n={len(y_pred_har):4d}")
+        print(f"    v14 MTL : n={len(y_pred_v14):4d}  (mean of {n_seeds_v14} seeds)")
     else:
-        print(f"    v1     : n={len(y_pred_v1):4d}  (mean of {n_seeds_v1} seeds)")
-        print(f"    v13    : n={len(y_pred_v13):4d}  (mean of {n_seeds_v13} seeds)")
-        print(f"    v14 MTL: not found — skip MTL comparisons")
-        print(f"    HAR-RV : n={len(y_pred_har):4d}")
+        print(f"    v14 MTL : not found — skip")
+    if has_v15:
+        y_act_v15, y_pred_v15, n_seeds_v15 = load_ml_preds(15, args.fold, model_type="mtl")
+        print(f"    v15 clean: n={len(y_pred_v15):4d}  (mean of {n_seeds_v15} seeds)")
+    else:
+        print(f"    v15 clean: not found — skip")
+    print(f"    HAR-RV  : n={len(y_pred_har):4d}")
 
     lengths = [len(y_act_v1), len(y_act_v13), len(y_act_har)]
     if has_v14:
         lengths.append(len(y_act_v14))
+    if has_v15:
+        lengths.append(len(y_act_v15))
     n_min = int(min(lengths))
-    a_eq1 = np.allclose(y_act_v1[:n_min], y_act_v13[:n_min])
-    a_eq2 = np.allclose(y_act_v1[:n_min], y_act_har[:n_min])
-    a_eq3 = (not has_v14) or np.allclose(y_act_v1[:n_min], y_act_v14[:n_min])
-    if not (a_eq1 and a_eq2 and a_eq3):
+    actuals_eq = (np.allclose(y_act_v1[:n_min], y_act_v13[:n_min]) and
+                  np.allclose(y_act_v1[:n_min], y_act_har[:n_min]) and
+                  (not has_v14 or np.allclose(y_act_v1[:n_min], y_act_v14[:n_min])) and
+                  (not has_v15 or np.allclose(y_act_v1[:n_min], y_act_v15[:n_min])))
+    if not actuals_eq:
         print(f"  [warn] actuals differ across models — truncating to first {n_min} (assume same ordering)")
     y_act = y_act_v1[:n_min]
     y_pred_v1  = y_pred_v1[:n_min]
@@ -205,6 +212,8 @@ def main():
     y_pred_har = y_pred_har[:n_min]
     if has_v14:
         y_pred_v14 = y_pred_v14[:n_min]
+    if has_v15:
+        y_pred_v15 = y_pred_v15[:n_min]
 
     # Per-t losses
     print(f"\n[2] Per-t losses (n = {n_min})")
@@ -217,6 +226,8 @@ def main():
         )
         if has_v14:
             L["v14"] = loss_fn(y_act, y_pred_v14)
+        if has_v15:
+            L["v15"] = loss_fn(y_act, y_pred_v15)
         losses[loss_name] = L
 
     # DM tests
@@ -225,13 +236,19 @@ def main():
     for loss_name in ["MSE", "QLIKE"]:
         L = losses[loss_name]
         print(f"  --- Loss = {loss_name} ---")
-        # Existing comparisons
+        # Existing baselines
         results.append(compare("v1",     L["v1"],     "v13", L["v13"], args.lag, loss_name))
         results.append(compare("HAR-RV", L["har_rv"], "v13", L["v13"], args.lag, loss_name))
-        # v14 MTL comparisons (if available)
+        # v14 MTL
         if has_v14:
             results.append(compare("v13",    L["v13"],    "v14", L["v14"], args.lag, loss_name))
             results.append(compare("HAR-RV", L["har_rv"], "v14", L["v14"], args.lag, loss_name))
+        # v15 clean MTL
+        if has_v15:
+            if has_v14:
+                results.append(compare("v14", L["v14"], "v15", L["v15"], args.lag, loss_name))
+            results.append(compare("v13",    L["v13"],    "v15", L["v15"], args.lag, loss_name))
+            results.append(compare("HAR-RV", L["har_rv"], "v15", L["v15"], args.lag, loss_name))
         print()
 
     out_path = os.path.join(RESULT, f"dm_test_{args.fold}.json")

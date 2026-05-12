@@ -128,6 +128,13 @@ def main():
                    "--seeds"] + list(args.seeds)
             timing[fold]["step1d_model_v14_mtl"] = run_cmd(cmd, f"[{fold}] Step 1d/4 — Train v14 MTL (vol + metab_13w aux)")
 
+        # Step 1e: v15 MTL clean (permutation importance 의 HARMFUL 3개 제거)
+        if not args.skip_train:
+            cmd = [PY, os.path.join(HERE, "train_vol_pilot_3m_mtl.py"),
+                   "--variant", "15", "--fold", fold,
+                   "--seeds"] + list(args.seeds)
+            timing[fold]["step1e_model_v15_clean_mtl"] = run_cmd(cmd, f"[{fold}] Step 1e/4 — Train v15 MTL clean (3 macro + metab aux)")
+
         # Step 2: Flow B
         if not args.skip_flow:
             train_csv = os.path.join(ROOT, "data", FOLDS_DIR_NAME, f"{fold}_train.csv")
