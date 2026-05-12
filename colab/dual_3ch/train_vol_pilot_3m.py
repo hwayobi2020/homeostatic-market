@@ -63,11 +63,12 @@ VARIANTS = {
     10: dict(name="base_bondsum",          cond_extra=["tbill_13w_cum"]),
     11: dict(name="base_stocksum",         cond_extra=["sp_13w_cum"]),
     12: dict(name="base_bondsum_stocksum", cond_extra=["tbill_13w_cum", "sp_13w_cum"]),
-    13: dict(name="base_metab_ads_wti_har_13",
-             cond_extra=["metab_13w", "wti_wr", "sp_log_std_13w"]),
-        # metab_13w = m2_13w_cum_lag - cpi_13w_cum_lag (gdp 제외 BIS-실용 정의, 14-15w lookback).
-        # ADS_lag 는 base 에 이미 포함 → cond_extra 에 중복 추가 안 함.
-        # fold gap 15w 와 모든 cond lookback 정합 ✓ (leakage 0).
+    13: dict(name="base_metab_ads_wti_har4_13",
+             cond_extra=["metab_13w", "wti_wr",
+                         "sp_log_std_4w", "sp_log_std_13w", "sp_log_std_26w", "sp_log_std_52w"]),
+        # HAR-RV (Corsi 2009) 4 horizon full-spec (4w/13w/26w/52w) 추가 — v13 와 HAR-RV 비교 공정.
+        # sp_log_std_52w lookback = 53w → fold gap 53w 확장 후 정합.
+        # 이름의 "har4" = HAR 4 horizon 포함 명시 (이전 "har_13" 단일 → "har4_13" full-spec).
 }
 
 

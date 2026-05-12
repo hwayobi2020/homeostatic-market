@@ -83,15 +83,15 @@ INDPRO_LAG       = 2   # Fed G.17 Industrial Production release lag ≈ 2w (GDP-
 ADS_LAG          = 1   # Phil Fed ADS index publication lag ≈ 1w (별도 cond 채널)
 WINDOW           = 13
 
-# Single fold (2026-05-12 final): train 1971~2015.03, val 2015.07.15~2020.09, test 2021.01.15~2025.12.
-# 선택 이유: 2020-03 COVID 폭락을 val 에 둬서 hyperparameter tuning (위기 민감도), test 는
-# 순수 OOD 체제 = 고인플레/QT (2021-2025) 에 집중. test 195 windows → DM (Diebold-Mariano 1995)
-# 통계검정 통한 model 비교가 paper main result.
-# gap 15w (val_start/test_start 15일) — cond lookback max 15w 와 정합.
+# Single fold (2026-05-12 v2): gap 15w -> 53w (val/test_start 38w 시프트).
+# v13 cond 에 sp_log_std_{4,13,26,52}w (HAR-RV 4 horizon) 추가하면서 sp_log_std_52w 의
+# lookback 53w 가 fold gap 15w 초과 → leakage. gap 53w 확장으로 정합.
+# 모든 cond lookback ≤ 53w (sp_log_std_52w 53w, 그 외 모두 < 17w) → leakage 0.
+# Test 5y → 4.2y (155 win), Val 5.2y → 4.5y (168 win). 통계력 약간 감소하지만 leakage 0 + 공정 비교.
 FOLD_SPLITS = {
     "F1": {"train_start": "1971-01-01", "train_end": "2015-03-31",
-           "val_start":   "2015-07-15", "val_end":   "2020-09-30",
-           "test_start":  "2021-01-15", "test_end":  "2025-12-31"},
+           "val_start":   "2016-04-15", "val_end":   "2020-09-30",
+           "test_start":  "2021-10-15", "test_end":  "2025-12-31"},
 }
 
 

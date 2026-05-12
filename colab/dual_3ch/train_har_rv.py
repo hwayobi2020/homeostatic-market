@@ -1,17 +1,16 @@
 """HAR-RV baseline (Corsi 2009) for vol forecasting — single fold F1.
 
-Reduced HAR-RV — single horizon (13w) only.
-  log(σ_{t+1..t+13}) = β0 + β1·log_σ_13w + ε
+Heterogeneous Autoregressive Realized Volatility — 4 horizon full-spec:
+  log(σ_{t+1..t+13}) = β0 + β1·log_σ_4w + β2·log_σ_13w + β3·log_σ_26w + β4·log_σ_52w + ε
 
-v13 의 cond 가 sp_log_std_13w 만 사용 (lookback ≤ fold gap 15w 정책) 이므로
-HAR baseline 도 같은 horizon (13w) 으로 통일. 비교 공정성.
+v13 cond 도 4 horizon 모두 포함 (sp_log_std_{4,13,26,52}w) — 비교 공정.
+fold gap 53w 확장으로 sp_log_std_52w 의 lookback 53w 와 정합 (leakage 0).
 
-Original Corsi 2009 는 4 horizon (1w/4w/13w/26w 일반적, 또는 4w/13w/26w/52w 확장).
-26w/52w 는 fold gap 15w 초과 lookback 이라 사용자 strict walk-forward 정책 위반 →
-13w 1개로 축소. paper 에 "Reduced HAR-RV (13w only) for fair comparison with v13" 명시.
-
-Features:
-  sp_log_std_13w = log std of past 13w sp_return  (≈ 3 months, v13 와 동일)
+Features (4 horizon, paper-standard, Corsi 2009):
+  sp_log_std_4w  = log std of past 4w  sp_return  (≈ 1 month)
+  sp_log_std_13w = log std of past 13w sp_return  (≈ 3 months)
+  sp_log_std_26w = log std of past 26w sp_return  (≈ 6 months)
+  sp_log_std_52w = log std of past 52w sp_return  (≈ 1 year)
 
 Target (train_vol_pilot_3m.py 와 동일):
   y_log_std = log( std( future 13w sp_return, ddof=1 ) )
@@ -39,7 +38,7 @@ ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
 PAST_LEN   = 52
 FUTURE_LEN = 13
 L          = PAST_LEN + FUTURE_LEN
-HAR_FEATURES = ["sp_log_std_13w"]
+HAR_FEATURES = ["sp_log_std_4w", "sp_log_std_13w", "sp_log_std_26w", "sp_log_std_52w"]
 
 
 def build_xy(csv_path: str) -> pd.DataFrame:
