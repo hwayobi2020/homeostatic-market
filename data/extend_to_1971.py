@@ -80,6 +80,7 @@ M2_LAG_PRE       = 2
 M2_LAG_POST      = 1   # Fed H.6 weekly release lag ≈ 1w
 CPI_LAG          = 2   # BLS CPIAUCSL release lag ≈ 2-3w
 INDPRO_LAG       = 2   # Fed G.17 Industrial Production release lag ≈ 2w (GDP-growth monthly proxy)
+GDP_LAG          = 4   # BEA GDPC1 advance estimate ≈ 4w (sp_gdp_ratio 분모 lag)
 ADS_LAG          = 1   # Phil Fed ADS index publication lag ≈ 1w (별도 cond 채널)
 WINDOW           = 13
 
