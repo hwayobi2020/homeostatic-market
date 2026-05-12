@@ -83,13 +83,21 @@ INDPRO_LAG       = 2   # Fed G.17 Industrial Production release lag ≈ 2w (GDP-
 ADS_LAG          = 1   # Phil Fed ADS index publication lag ≈ 1w (별도 cond 채널)
 WINDOW           = 13
 
-# Single fold F1 (2026-05-12 v14): 균등 split — train 39y / val 7.2y / test 8y.
-# test 2018-2025 = 정상기 (2018-19) + COVID (2020-03) + 인플레 사이클 (2021-25).
-# n_val=311, n_test=350 (이전보다 통계 power ↑).
+# 3-fold 위기 시기 (2026-05-12 v15): OLS (HAR-RV) main model 평가.
+# expanding train, gap 15w, val 3.21y / test 3.21y (n_test ≈ 103 per fold, pooled 309).
+#   F1 test 1999.01-2002.03  닷컴 (peak Mar 2000 → trough Oct 2002, -49%)
+#   F2 test 2007.07-2010.09  GFC (Oct 2007 → Mar 2009, -57%) + 회복
+#   F3 test 2019.01-2022.03  COVID 폭락 (-34%) + 인플레 진입
 FOLD_SPLITS = {
-    "F1": {"train_start": "1971-01-01", "train_end": "2010-03-31",
-           "val_start":   "2010-07-15", "val_end":   "2017-09-30",
-           "test_start":  "2018-01-15", "test_end":  "2025-12-31"},
+    "F1": {"train_start": "1971-01-01", "train_end": "1995-03-31",
+           "val_start":   "1995-07-15", "val_end":   "1998-09-30",
+           "test_start":  "1999-01-15", "test_end":  "2002-03-31"},
+    "F2": {"train_start": "1971-01-01", "train_end": "2003-09-30",
+           "val_start":   "2004-01-15", "val_end":   "2007-03-31",
+           "test_start":  "2007-07-15", "test_end":  "2010-09-30"},
+    "F3": {"train_start": "1971-01-01", "train_end": "2015-03-31",
+           "val_start":   "2015-07-15", "val_end":   "2018-09-30",
+           "test_start":  "2019-01-15", "test_end":  "2022-03-31"},
 }
 
 
