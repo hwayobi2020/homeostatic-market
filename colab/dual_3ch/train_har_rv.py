@@ -125,23 +125,35 @@ def main():
         X = sm.add_constant(df[HAR_FEATURES].values, has_constant="add")
         return model.predict(X)
 
-    val_pred  = predict(val)
-    test_pred = predict(test)
-    val_m  = metrics(val["target_log_std"].values, val_pred)
-    test_m = metrics(test["target_log_std"].values, test_pred)
+    train_pred = predict(train)
+    val_pred   = predict(val)
+    test_pred  = predict(test)
+    train_m = metrics(train["target_log_std"].values, train_pred)
+    val_m   = metrics(val["target_log_std"].values,   val_pred)
+    test_m  = metrics(test["target_log_std"].values,  test_pred)
 
-    print(f"\n  val  : MSE {val_m['mse']:.4f}  R² {val_m['r2']:+.3f}  "
+    print(f"\n  train: MSE {train_m['mse']:.4f}  R² {train_m['r2']:+.3f}  Pearson {train_m['pearson']:+.3f}  n {train_m['n']}")
+    print(f"  val  : MSE {val_m['mse']:.4f}  R² {val_m['r2']:+.3f}  "
           f"Pearson {val_m['pearson']:+.3f}  QLIKE {val_m['qlike']:.4f}  n {val_m['n']}")
     print(f"  test : MSE {test_m['mse']:.4f}  R² {test_m['r2']:+.3f}  "
           f"Pearson {test_m['pearson']:+.3f}  QLIKE {test_m['qlike']:.4f}  n {test_m['n']}")
 
+    # Save train/val/test predictions (residual learning 용)
+    for split_name, df, pred in [("train", train, train_pred), ("val", val, val_pred), ("test", test, test_pred)]:
+        out_path = os.path.join(args.out_dir, f"har_rv_{args.fold}_{split_name}_predictions.csv")
+        pd.DataFrame({
+            "date": df["date"].values,
+            "actual_log_std": df["target_log_std"].values,
+            "pred_log_std":   pred,
+        }).to_csv(out_path, index=False)
+        print(f"  saved {split_name} preds: {out_path}")
+    # Backward compat: 기존 test predictions 파일 (DM test 의존)
     pred_csv = os.path.join(args.out_dir, f"har_rv_{args.fold}_predictions.csv")
     pd.DataFrame({
         "date": test["date"].values,
         "actual_log_std": test["target_log_std"].values,
         "pred_log_std":   test_pred,
     }).to_csv(pred_csv, index=False)
-    print(f"\n  saved predictions (for DM test): {pred_csv}")
 
     summary = dict(
         model="HAR-RV (Corsi 2009)",
