@@ -83,13 +83,13 @@ INDPRO_LAG       = 2   # Fed G.17 Industrial Production release lag ≈ 2w (GDP-
 ADS_LAG          = 1   # Phil Fed ADS index publication lag ≈ 1w (별도 cond 채널)
 WINDOW           = 13
 
-# Single fold (2026-05-12 v4): COVID 2020-03 폭락을 TEST 에 포함 (paper main thesis 검증).
-# 이전 v3 (test 2021-2025) 는 COVID 미포함 → 모델 magnitude over-prediction (train high-vol →
-# test low-vol 인플레/QT) → HAR-RV (mean predictor 가까운 baseline) 가 통계적으로 우수.
-# v4: train 끝 ~2017.03, val 2017.07-2019.09 (selection), test 2020.01-2025.12 (COVID + 인플레 사이클 전체)
-# Test n=247 (이전 195 → +27%). val n=51 (이전 206 → 줄어듦, 단 selection 충분).
+# Single fold (2026-05-12 v5): train 시작 1971 → 1981 (Volcker disinflation 이후 modern era).
+# 1970s 오일쇼크/스태그플레이션의 macro level (tbill 3-15%, CPI 두자리수) 이 현대 (Fed inflation
+# targeting 이후) 와 매우 다름 → multi-modal training 으로 모델 over-prediction 강화 의심.
+# 1981+ modern era only 학습 → test (2020-2025) 와 monetary regime 단일성 가까움.
+# CUT_DATE (1971-01-08) 자체는 그대로 — 데이터는 1971 부터 build, FOLD_SPLITS 가 1981 부터 사용.
 FOLD_SPLITS = {
-    "F1": {"train_start": "1971-01-01", "train_end": "2017-03-31",
+    "F1": {"train_start": "1981-01-09", "train_end": "2017-03-31",
            "val_start":   "2017-07-15", "val_end":   "2019-09-30",
            "test_start":  "2020-01-15", "test_end":  "2025-12-31"},
 }
