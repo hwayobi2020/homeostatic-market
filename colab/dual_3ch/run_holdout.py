@@ -121,6 +121,13 @@ def main():
                    "--fold", fold]
             timing[fold]["step1c_har_rv"] = run_cmd(cmd, f"[{fold}] Step 1c/4 — Train HAR-RV baseline (Corsi 2009)")
 
+        # Step 1d: v14 MTL (main: log_std, aux: metab_13w) — ESWA paper 패턴
+        if not args.skip_train:
+            cmd = [PY, os.path.join(HERE, "train_vol_pilot_3m_mtl.py"),
+                   "--variant", "14", "--fold", fold,
+                   "--seeds"] + list(args.seeds)
+            timing[fold]["step1d_model_v14_mtl"] = run_cmd(cmd, f"[{fold}] Step 1d/4 — Train v14 MTL (vol + metab_13w aux)")
+
         # Step 2: Flow B
         if not args.skip_flow:
             train_csv = os.path.join(ROOT, "data", FOLDS_DIR_NAME, f"{fold}_train.csv")

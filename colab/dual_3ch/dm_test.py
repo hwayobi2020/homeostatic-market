@@ -42,12 +42,21 @@ RESULT = os.path.join(HERE, "result")
 FUTURE_LEN = 13
 
 
-def load_ml_preds(variant_id: int, fold: str):
-    """Load all seeds' (actual, pred) for an ML variant. Returns (actual_n, seed_mean_pred_n)."""
-    pattern = os.path.join(RESULT, f"vol_pilot_3m_*sel*_v{variant_id}_*_{fold}_seed*_test_preds.npz")
+def load_ml_preds(variant_id: int, fold: str, model_type: str = "single"):
+    """Load all seeds' (actual, pred) for an ML variant. Returns (actual_n, seed_mean_pred_n, n_seeds).
+
+    model_type:
+      "single" → vol_pilot_3m_msel_v{id}_* (단일 vol regression, train_vol_pilot_3m.py)
+      "mtl"    → vol_pilot_3m_mtl_msel_v{id}_* (MTL, train_vol_pilot_3m_mtl.py)
+    """
+    if model_type == "mtl":
+        prefix = "vol_pilot_3m_mtl_msel"
+    else:
+        prefix = "vol_pilot_3m_msel"
+    pattern = os.path.join(RESULT, f"{prefix}_v{variant_id}_*_{fold}_seed*_test_preds.npz")
     paths = sorted(glob.glob(pattern))
     if not paths:
-        sys.exit(f"[FATAL] no preds for v{variant_id} fold={fold}: {pattern}")
+        sys.exit(f"[FATAL] no preds for v{variant_id} ({model_type}) fold={fold}: {pattern}")
     actuals, preds = [], []
     for p in paths:
         d = np.load(p, allow_pickle=True)
@@ -55,7 +64,6 @@ def load_ml_preds(variant_id: int, fold: str):
         preds.append(d["y_pred_log_std"])
     actuals = np.stack(actuals)
     preds   = np.stack(preds)
-    # Sanity: actuals should be identical across seeds
     if not np.allclose(actuals[0], actuals.mean(axis=0)):
         print(f"  [warn] actuals differ across seeds for v{variant_id} {fold} — using seed-0 actual")
     return actuals[0], preds.mean(axis=0), len(paths)
@@ -164,32 +172,52 @@ def main():
 
     # Load
     print("\n[1] Load predictions from result/")
-    y_act_v1,  y_pred_v1,  n_seeds_v1  = load_ml_preds(1,  args.fold)
-    y_act_v13, y_pred_v13, n_seeds_v13 = load_ml_preds(13, args.fold)
+    y_act_v1,  y_pred_v1,  n_seeds_v1  = load_ml_preds(1,  args.fold, model_type="single")
+    y_act_v13, y_pred_v13, n_seeds_v13 = load_ml_preds(13, args.fold, model_type="single")
     y_act_har, y_pred_har              = load_har_preds(args.fold)
-    print(f"    v1     : n={len(y_pred_v1):4d}  (mean of {n_seeds_v1} seeds)")
-    print(f"    v13    : n={len(y_pred_v13):4d}  (mean of {n_seeds_v13} seeds)")
-    print(f"    HAR-RV : n={len(y_pred_har):4d}")
+    # v14 MTL — optional (없으면 skip)
+    v14_pattern = os.path.join(RESULT, f"vol_pilot_3m_mtl_msel_v14_*_{args.fold}_seed*_test_preds.npz")
+    has_v14 = bool(glob.glob(v14_pattern))
+    if has_v14:
+        y_act_v14, y_pred_v14, n_seeds_v14 = load_ml_preds(14, args.fold, model_type="mtl")
+        print(f"    v1     : n={len(y_pred_v1):4d}  (mean of {n_seeds_v1} seeds)")
+        print(f"    v13    : n={len(y_pred_v13):4d}  (mean of {n_seeds_v13} seeds)")
+        print(f"    v14 MTL: n={len(y_pred_v14):4d}  (mean of {n_seeds_v14} seeds)")
+        print(f"    HAR-RV : n={len(y_pred_har):4d}")
+    else:
+        print(f"    v1     : n={len(y_pred_v1):4d}  (mean of {n_seeds_v1} seeds)")
+        print(f"    v13    : n={len(y_pred_v13):4d}  (mean of {n_seeds_v13} seeds)")
+        print(f"    v14 MTL: not found — skip MTL comparisons")
+        print(f"    HAR-RV : n={len(y_pred_har):4d}")
 
-    n_min = int(min(len(y_act_v1), len(y_act_v13), len(y_act_har)))
+    lengths = [len(y_act_v1), len(y_act_v13), len(y_act_har)]
+    if has_v14:
+        lengths.append(len(y_act_v14))
+    n_min = int(min(lengths))
     a_eq1 = np.allclose(y_act_v1[:n_min], y_act_v13[:n_min])
     a_eq2 = np.allclose(y_act_v1[:n_min], y_act_har[:n_min])
-    if not (a_eq1 and a_eq2):
+    a_eq3 = (not has_v14) or np.allclose(y_act_v1[:n_min], y_act_v14[:n_min])
+    if not (a_eq1 and a_eq2 and a_eq3):
         print(f"  [warn] actuals differ across models — truncating to first {n_min} (assume same ordering)")
     y_act = y_act_v1[:n_min]
     y_pred_v1  = y_pred_v1[:n_min]
     y_pred_v13 = y_pred_v13[:n_min]
     y_pred_har = y_pred_har[:n_min]
+    if has_v14:
+        y_pred_v14 = y_pred_v14[:n_min]
 
     # Per-t losses
     print(f"\n[2] Per-t losses (n = {n_min})")
     losses = {}
     for loss_name, loss_fn in [("MSE", mse_loss), ("QLIKE", qlike_loss)]:
-        losses[loss_name] = dict(
+        L = dict(
             v1     = loss_fn(y_act, y_pred_v1),
             v13    = loss_fn(y_act, y_pred_v13),
             har_rv = loss_fn(y_act, y_pred_har),
         )
+        if has_v14:
+            L["v14"] = loss_fn(y_act, y_pred_v14)
+        losses[loss_name] = L
 
     # DM tests
     print("\n[3] DM test results  (*** p<0.01, ** p<0.05, * p<0.10, ns ≥ 0.10)\n")
@@ -197,8 +225,13 @@ def main():
     for loss_name in ["MSE", "QLIKE"]:
         L = losses[loss_name]
         print(f"  --- Loss = {loss_name} ---")
+        # Existing comparisons
         results.append(compare("v1",     L["v1"],     "v13", L["v13"], args.lag, loss_name))
         results.append(compare("HAR-RV", L["har_rv"], "v13", L["v13"], args.lag, loss_name))
+        # v14 MTL comparisons (if available)
+        if has_v14:
+            results.append(compare("v13",    L["v13"],    "v14", L["v14"], args.lag, loss_name))
+            results.append(compare("HAR-RV", L["har_rv"], "v14", L["v14"], args.lag, loss_name))
         print()
 
     out_path = os.path.join(RESULT, f"dm_test_{args.fold}.json")
