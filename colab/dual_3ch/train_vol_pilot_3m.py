@@ -63,12 +63,10 @@ VARIANTS = {
     10: dict(name="base_bondsum",          cond_extra=["tbill_13w_cum"]),
     11: dict(name="base_stocksum",         cond_extra=["sp_13w_cum"]),
     12: dict(name="base_bondsum_stocksum", cond_extra=["tbill_13w_cum", "sp_13w_cum"]),
-    13: dict(name="base_metab_ads_wti_har4_13",
-             cond_extra=["metab_13w", "wti_wr",
-                         "sp_log_std_4w", "sp_log_std_13w", "sp_log_std_26w", "sp_log_std_52w"]),
-        # HAR-RV (Corsi 2009) 4 horizon full-spec (4w/13w/26w/52w) 추가 — v13 와 HAR-RV 비교 공정.
-        # sp_log_std_52w lookback = 53w → fold gap 53w 확장 후 정합.
-        # 이름의 "har4" = HAR 4 horizon 포함 명시 (이전 "har_13" 단일 → "har4_13" full-spec).
+    13: dict(name="base_metab_ads_wti_har1_13",
+             cond_extra=["metab_13w", "wti_wr", "sp_log_std_13w"]),
+        # sp_log_std_13w 단일 horizon (HAR-RV 와 동일, 공정 비교).
+        # 4 horizon (har4) 은 fold gap 53w 필요 → MTL 도입 후 별도 실험으로.
 }
 
 

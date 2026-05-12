@@ -83,15 +83,13 @@ INDPRO_LAG       = 2   # Fed G.17 Industrial Production release lag ≈ 2w (GDP-
 ADS_LAG          = 1   # Phil Fed ADS index publication lag ≈ 1w (별도 cond 채널)
 WINDOW           = 13
 
-# Single fold (2026-05-12 v2): gap 15w -> 53w (val/test_start 38w 시프트).
-# v13 cond 에 sp_log_std_{4,13,26,52}w (HAR-RV 4 horizon) 추가하면서 sp_log_std_52w 의
-# lookback 53w 가 fold gap 15w 초과 → leakage. gap 53w 확장으로 정합.
-# 모든 cond lookback ≤ 53w (sp_log_std_52w 53w, 그 외 모두 < 17w) → leakage 0.
-# Test 5y → 4.2y (155 win), Val 5.2y → 4.5y (168 win). 통계력 약간 감소하지만 leakage 0 + 공정 비교.
+# Single fold (2026-05-12 v3): gap 15w 복구. v13 와 HAR-RV 모두 sp_log_std_13w 1개만 사용
+# (4 horizon → 13w 통일, 공정 비교). 모든 cond lookback ≤ 15w 보장.
+# Test 5y (n=195), Val 5.2y (n=206). MTL 도입 후 비교 baseline 으로 사용.
 FOLD_SPLITS = {
     "F1": {"train_start": "1971-01-01", "train_end": "2015-03-31",
-           "val_start":   "2016-04-15", "val_end":   "2020-09-30",
-           "test_start":  "2021-10-15", "test_end":  "2025-12-31"},
+           "val_start":   "2015-07-15", "val_end":   "2020-09-30",
+           "test_start":  "2021-01-15", "test_end":  "2025-12-31"},
 }
 
 
