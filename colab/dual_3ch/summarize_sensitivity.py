@@ -23,24 +23,36 @@ def fmt(x, w=10, p=5, sign=True):
     return f"{s:>{w}}"
 
 
-def load_one(fold):
-    path = os.path.join(RESULT, f"sensitivity_har_rv_cond_{fold}_summary.json")
+def load_one(fold, variant="cond", suffix="skewt_df5"):
+    path = os.path.join(RESULT, f"sensitivity_har_rv_{variant}_{fold}_{suffix}_summary.json")
     if not os.path.exists(path):
-        print(f"  [SKIP] {fold}: {path} 없음")
-        return None
+        # backward-compat: 이전 명명 (변종 표시 없이) 도 시도
+        legacy = os.path.join(RESULT, f"sensitivity_har_rv_{variant}_{fold}_summary.json")
+        if os.path.exists(legacy):
+            path = legacy
+        else:
+            print(f"  [SKIP] {fold} {variant}: {path} 없음")
+            return None
     with open(path) as f:
         return json.load(f)
 
 
 def main():
+    import argparse
+    ap = argparse.ArgumentParser(description="Aggregate sensitivity_har_rv summary JSONs")
+    ap.add_argument("--variant", default="cond", choices=["cond", "cond_oof"],
+                    help="Which sensitivity variant to summarize (default: cond)")
+    ap.add_argument("--suffix",  default="skewt_df5",
+                    help="ckpt-derived suffix in filename (default: skewt_df5)")
+    args = ap.parse_args()
     folds = ["F1", "F2", "F3"]
     print("=" * 100)
-    print(" HAR-RV σ̂ × Cond Flow ε|C  —  3-fold summary (인플레 사이클 시작/정점/해소)")
+    print(f" HAR-RV σ̂ × Cond Flow ε|C  —  3-fold summary  (variant={args.variant})")
     print("=" * 100)
 
     summaries = []
     for fold in folds:
-        s = load_one(fold)
+        s = load_one(fold, variant=args.variant, suffix=args.suffix)
         if s is None:
             continue
         summaries.append((fold, s))
@@ -98,7 +110,9 @@ def main():
     print("\n  파일 :")
     for fold, _ in summaries:
         for tag in ("fanchart.png", "histogram.png", "summary.json"):
-            p = os.path.join(RESULT, f"sensitivity_har_rv_cond_{fold}_{tag}")
+            p = os.path.join(RESULT, f"sensitivity_har_rv_{args.variant}_{fold}_{args.suffix}_{tag}")
+            if not os.path.exists(p):
+                p = os.path.join(RESULT, f"sensitivity_har_rv_{args.variant}_{fold}_{tag}")
             if os.path.exists(p):
                 print(f"    {p}")
 

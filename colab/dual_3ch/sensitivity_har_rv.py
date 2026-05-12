@@ -41,7 +41,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 # Cond Flow build (재현) — 같은 패키지 모듈
-from train_flow_cond import build_cond_flow, COND_FEATURES   # noqa: E402
+from train_flow_cond import build_cond_flow, COND_FEATURES_MACRO   # noqa: E402
 
 ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
 RESULT = os.path.join(HERE, "result")
@@ -91,39 +91,73 @@ def load_cond_flow(fold, device, ckpt_name=None):
 # Build origin-aligned cond + actual future paths from test CSV
 # =====================================================================
 
-def build_origin_table(test_csv, har_dates, cond_features, cond_mean, cond_std):
+def build_origin_table(test_csv, har_df, cond_features, cond_mean, cond_std,
+                       oof_lookups=None):
     """For each HAR test prediction origin date, locate the matching test row
-    and extract (origin_idx_in_test, normalized_cond_vector, future_sp_return_path).
+    and extract (normalized_cond_vector, future_sp_return_path).
 
     Origin in test CSV: HAR date == last past row date == csv row index t+PAST_LEN-1.
     Future path:        test_csv["sp_return"].iloc[t+PAST_LEN : t+L]    (FUTURE_LEN steps)
+
+    cond_features 가 9-dim 일 경우 (paper main + OOF):
+        macro 7  : test.csv 에서 직접 (origin row)
+        OOF cond : oof_lookups[col_name] = {date → value}    에서 매칭
+
+    oof_lookups : dict {col_name: {Timestamp: value}}  (test 원천 OOS prediction)
     """
     df = pd.read_csv(test_csv, parse_dates=["date"])
     test_dates = df["date"].values
     n_csv = len(df)
     L = PAST_LEN + FUTURE_LEN
+    if oof_lookups is None:
+        oof_lookups = {}
 
-    cond_arr = []      # (n_origin, K) — z-scored
-    actual_paths = []  # (n_origin, FUTURE_LEN)
-    valid = []
-
+    # macro vs oof split
+    macro_cols = [c for c in cond_features if c not in oof_lookups]
+    oof_cols   = [c for c in cond_features if c in oof_lookups]
     cond_mean = np.asarray(cond_mean, dtype=np.float64)
     cond_std  = np.asarray(cond_std,  dtype=np.float64)
     cond_std_safe = np.where(cond_std < 1e-12, 1.0, cond_std)
+    # Index map for cond_features → (cond_mean / cond_std) order matches cond_features order
+    feat_idx = {c: i for i, c in enumerate(cond_features)}
 
+    cond_arr = []      # (n_origin, K)  z-scored, in cond_features order
+    actual_paths = []  # (n_origin, FUTURE_LEN)
+    valid = []
+
+    har_dates = har_df["date"].values
     for origin_date in har_dates:
         idx = np.where(test_dates == np.datetime64(origin_date))[0]
-        if len(idx) == 0:
+        bad_row = (len(idx) == 0)
+        if bad_row:
             cond_arr.append(np.full(len(cond_features), np.nan))
             actual_paths.append(np.full(FUTURE_LEN, np.nan))
             valid.append(False)
             continue
         last_past = int(idx[0])
         t = last_past - (PAST_LEN - 1)
-        # Cond from last past row (origin)
-        c_raw = df[cond_features].iloc[last_past].values.astype(np.float64)
+        # Build raw cond in cond_features order
+        c_raw = np.zeros(len(cond_features), dtype=np.float64)
+        ok = True
+        for c in macro_cols:
+            v = df[c].iloc[last_past]
+            if pd.isna(v):
+                ok = False; break
+            c_raw[feat_idx[c]] = float(v)
+        if ok:
+            origin_ts = pd.Timestamp(origin_date)
+            for c in oof_cols:
+                v = oof_lookups[c].get(origin_ts)
+                if v is None or pd.isna(v):
+                    ok = False; break
+                c_raw[feat_idx[c]] = float(v)
         c_norm = (c_raw - cond_mean) / cond_std_safe
         # Future path
+        if not ok:
+            cond_arr.append(c_norm)
+            actual_paths.append(np.full(FUTURE_LEN, np.nan))
+            valid.append(False)
+            continue
         fut_idx_end = t + L
         if fut_idx_end > n_csv:
             cond_arr.append(c_norm)
@@ -131,7 +165,7 @@ def build_origin_table(test_csv, har_dates, cond_features, cond_mean, cond_std):
             valid.append(False)
             continue
         fut = df["sp_return"].iloc[t + PAST_LEN : fut_idx_end].values
-        if np.any(np.isnan(fut)) or np.any(np.isnan(c_raw)):
+        if np.any(np.isnan(fut)):
             cond_arr.append(c_norm)
             actual_paths.append(np.full(FUTURE_LEN, np.nan))
             valid.append(False)
@@ -287,6 +321,9 @@ def main():
     ap.add_argument("--seed", type=int, default=2026)
     ap.add_argument("--ckpt-name", default=None,
                     help="Cond Flow ckpt filename (default: scenario_3m_flow_1d_cond_{fold}_skewt_df5.pt)")
+    ap.add_argument("--v14-test-pred-npz", default=None,
+                    help="v14 MTL test_preds.npz path (required only if Flow ckpt cond_features "
+                         "contains 'v14_oof_log_std'). y_pred_log_std[t] aligns with HAR origin t in order.")
     args = ap.parse_args()
 
     np.random.seed(args.seed)
@@ -318,11 +355,42 @@ def main():
     cond_mean = meta["cond_mean"]
     cond_std  = meta["cond_std"]
     r_mean_train = meta["r_mean_train"]
+    print(f"    cond_features (K={len(cond_features)}): {cond_features}")
 
-    # Sanity: cond_features matches training-time list
-    if cond_features != COND_FEATURES:
-        print(f"  ⚠ WARN: ckpt cond_features {cond_features} != "
-              f"sensitivity COND_FEATURES {COND_FEATURES}")
+    # Sanity: macro 7 prefix must match
+    macro_in_ckpt = [c for c in cond_features if c in COND_FEATURES_MACRO]
+    if macro_in_ckpt != COND_FEATURES_MACRO:
+        print(f"  ⚠ WARN: macro cond order mismatch — ckpt {macro_in_ckpt} vs "
+              f"COND_FEATURES_MACRO {COND_FEATURES_MACRO}")
+
+    # Build OOF lookup dicts for test-side cond columns
+    oof_lookups = {}
+    # har_oof_log_std at test origin = HAR test prediction (already OOS)
+    if "har_oof_log_std" in cond_features:
+        har_csv2 = os.path.join(RESULT, f"har_rv_{args.fold}_test_predictions.csv")
+        h = pd.read_csv(har_csv2, parse_dates=["date"])
+        oof_lookups["har_oof_log_std"] = dict(zip(pd.to_datetime(h["date"]), h["pred_log_std"]))
+        print(f"    OOF cond 'har_oof_log_std' ← {har_csv2}  (n={len(h)})")
+    # v14_oof_log_std at test origin = v14 MTL test prediction (npz), aligned by order
+    if "v14_oof_log_std" in cond_features:
+        if args.v14_test_pred_npz is None:
+            sys.exit(f"[FATAL] ckpt cond_features 에 'v14_oof_log_std' 가 있는데 "
+                     f"--v14-test-pred-npz 가 지정되지 않았습니다.")
+        v14_path = args.v14_test_pred_npz
+        if not os.path.isabs(v14_path):
+            v14_path = os.path.join(RESULT, v14_path)
+        if not os.path.exists(v14_path):
+            sys.exit(f"[FATAL] v14 test_preds.npz 없음: {v14_path}")
+        v14_npz = np.load(v14_path, allow_pickle=False)
+        v14_preds = np.asarray(v14_npz["y_pred_log_std"], dtype=np.float64)
+        # Align by HAR test origin order — both follow csv origin order (PAST_LEN-1 offset)
+        har_dates_test = pd.to_datetime(har_df["date"].values)
+        if len(v14_preds) != len(har_dates_test):
+            print(f"  ⚠ WARN: v14 preds n={len(v14_preds)} != HAR origin n={len(har_dates_test)}; "
+                  f"잘릴 수 있음.")
+        n_match = min(len(v14_preds), len(har_dates_test))
+        oof_lookups["v14_oof_log_std"] = dict(zip(har_dates_test[:n_match], v14_preds[:n_match]))
+        print(f"    OOF cond 'v14_oof_log_std' ← {v14_path}  (n={n_match})")
 
     # 3) Build origin-aligned cond vectors + actual future paths
     test_csv = os.path.join(args.folds_dir, f"{args.fold}_test.csv")
@@ -330,7 +398,7 @@ def main():
         sys.exit(f"[FATAL] test CSV 없음: {test_csv}")
     print(f"\n[3] Align origins → cond + actual future path  ({test_csv})")
     cond_norm, actual_paths, valid_mask = build_origin_table(
-        test_csv, har_df["date"].values, cond_features, cond_mean, cond_std
+        test_csv, har_df, cond_features, cond_mean, cond_std, oof_lookups=oof_lookups,
     )
     n_valid = int(valid_mask.sum())
     print(f"    valid origins: {n_valid}/{len(har_df)}")
@@ -396,12 +464,16 @@ def main():
     print(f"    EMD (pooled hist)    = {emd_pooled:.6f}")
     print(f"    Coverage             50%={cov50:.3f}  80%={cov80:.3f}  95%={cov95:.3f}")
 
-    # 6) Plots
-    print(f"\n[6] Plots")
-    title_base = (f"HAR-RV σ̂ × Cond Flow ε|C — fold {args.fold} "
+    # 6) Plots — output prefix derived from ckpt name (so cond vs cond_oof 분리)
+    ckpt_used = args.ckpt_name or f"scenario_3m_flow_1d_cond_{args.fold}_skewt_df5.pt"
+    out_prefix = "sensitivity_har_rv_" + (
+        ckpt_used.replace("scenario_3m_flow_1d_", "").replace(".pt", "")
+    )   # e.g. "sensitivity_har_rv_cond_F1_skewt_df5" or "..._cond_oof_F1_skewt_df5"
+    print(f"\n[6] Plots  (output prefix: {out_prefix})")
+    title_base = (f"HAR-RV σ̂ × Cond Flow ε|C — fold {args.fold} K={len(cond_features)} "
                   f"(n_origin={n_valid}, n_sim={args.n_sim})")
-    fan_path = os.path.join(RESULT, f"sensitivity_har_rv_cond_{args.fold}_fanchart.png")
-    hist_path = os.path.join(RESULT, f"sensitivity_har_rv_cond_{args.fold}_histogram.png")
+    fan_path = os.path.join(RESULT, f"{out_prefix}_fanchart.png")
+    hist_path = os.path.join(RESULT, f"{out_prefix}_histogram.png")
     plot_fanchart(actual_paths, sim_paths, title_base + "\nfan chart (cumulative)", fan_path)
     plot_histogram(actual_flat, sim_flat, title_base + "\nweekly sp_return histogram", hist_path)
 
@@ -430,7 +502,7 @@ def main():
         ckpt=os.path.basename(meta.get("train_csv", "")),
         flow_alpha_final=meta.get("alpha_final"),
     )
-    summary_path = os.path.join(RESULT, f"sensitivity_har_rv_cond_{args.fold}_summary.json")
+    summary_path = os.path.join(RESULT, f"{out_prefix}_summary.json")
     with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2, default=str)
     print(f"\n  saved summary: {summary_path}")

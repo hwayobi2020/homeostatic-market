@@ -92,7 +92,7 @@ from train_flow_b_global import SkewTBase, StudentTBase   # noqa: E402
 # Cond feature definition (v14 cond 전체 매칭)
 # =====================================================================
 
-COND_FEATURES = [
+COND_FEATURES_MACRO = [
     "tbill_wr",
     "m2_13w_cum_lag",
     "ads_lag",
@@ -101,7 +101,8 @@ COND_FEATURES = [
     "wti_wr",
     "sp_log_std_13w",
 ]
-K_COND = len(COND_FEATURES)
+# Backward compat alias for prior 7-only callers (sensitivity reads ckpt meta for actual list)
+COND_FEATURES = COND_FEATURES_MACRO
 
 
 # =====================================================================
@@ -140,15 +141,46 @@ def build_cond_flow(base_kind, df, num_layers, num_bins, tail_bound,
 # Extract (ε, C) from train CSV — fold-isolated
 # =====================================================================
 
-def extract_eps_and_cond(train_csv, cond_features=COND_FEATURES):
-    df = pd.read_csv(train_csv)
-    missing = [c for c in ["sp_return"] + cond_features if c not in df.columns]
-    if missing:
-        raise KeyError(f"train CSV missing columns: {missing}")
+def _load_oof_csv(path, new_col_name):
+    """Load OOF CSV (date, pred_log_std_oof) and rename pred column.
 
-    # Drop rows with any NaN in r or cond
-    sub = df[["sp_return"] + cond_features].dropna().reset_index(drop=True)
+    Returns dataframe with columns ['date', new_col_name].
+    """
+    df = pd.read_csv(path, parse_dates=["date"])
+    if "pred_log_std_oof" not in df.columns:
+        raise KeyError(f"OOF CSV {path} missing column 'pred_log_std_oof'")
+    out = df[["date", "pred_log_std_oof"]].rename(columns={"pred_log_std_oof": new_col_name})
+    return out
+
+
+def extract_eps_and_cond(train_csv, cond_features=COND_FEATURES_MACRO,
+                         oof_specs=None):
+    """Build (ε, C) training pairs.
+
+    oof_specs : list of (col_name, csv_path) — appended to cond_features after macro.
+                ε / r 는 row 단위, OOF prediction 은 origin date 단위 (= csv row index
+                t+PAST_LEN-1). 대부분 row 가 origin 이므로 left-join 후 dropna 로 손실 최소.
+
+    Returns (eps_t, cond_t, meta) where cond_features includes appended OOF columns.
+    """
+    df = pd.read_csv(train_csv, parse_dates=["date"])
+    # If OOF specs provided, left-join by date and extend cond_features
+    full_cond_features = list(cond_features)
+    if oof_specs:
+        for col, path in oof_specs:
+            oof_df = _load_oof_csv(path, col)
+            df = df.merge(oof_df, on="date", how="left")
+            full_cond_features.append(col)
+            print(f"  joined OOF: {col} ← {path}  "
+                  f"(non-NaN: {df[col].notna().sum()}/{len(df)})")
+
+    missing = [c for c in ["sp_return"] + full_cond_features if c not in df.columns]
+    if missing:
+        raise KeyError(f"train CSV missing columns after OOF join: {missing}")
+
+    sub = df[["sp_return"] + full_cond_features].dropna().reset_index(drop=True)
     n = len(sub)
+    cond_features = full_cond_features  # update for downstream
     if n < 30:
         raise RuntimeError(f"too few non-NaN train rows: {n}")
 
@@ -359,6 +391,12 @@ def main():
     ap.add_argument("--result-dir", default=os.path.join(HERE, "result"))
     ap.add_argument("--save-name", required=True,
                     help="ckpt filename, e.g. scenario_3m_flow_1d_cond_F1_skewt_df5.pt")
+    ap.add_argument("--har-oof-csv", default=None,
+                    help="HAR-RV OOF CSV (e.g. result/har_rv_F1_train_oof.csv). "
+                         "If given, appends har_oof_log_std as 8th cond feature.")
+    ap.add_argument("--v14-oof-csv", default=None,
+                    help="v14 MTL OOF CSV (e.g. result/v14_F1_train_oof.csv). "
+                         "If given, appends v14_oof_log_std as 9th cond feature.")
     ap.add_argument("--base", choices=["skew_t", "student_t"], default="skew_t")
     ap.add_argument("--df",          type=float, default=5.0)
     ap.add_argument("--alpha-init",  type=float, default=-5.0)
@@ -394,15 +432,26 @@ def main():
     print(f"  train_csv    : {train_csv}")
     print(f"  save_path    : {save_path}")
     print(f"  ε def        : ε = (r - r̄_train) / σ_train    (global scalar)")
-    print(f"  C def        : 7-dim macro at origin row, z-scored on train")
-    print(f"  cond features: {COND_FEATURES}")
+    # Compose OOF specs (optional 8th / 9th cond)
+    oof_specs = []
+    if args.har_oof_csv:
+        oof_specs.append(("har_oof_log_std", args.har_oof_csv))
+    if args.v14_oof_csv:
+        oof_specs.append(("v14_oof_log_std", args.v14_oof_csv))
+
+    print(f"  C def        : {7 + len(oof_specs)}-dim cond at origin row, z-scored on train")
+    print(f"  cond macro   : {COND_FEATURES_MACRO}")
+    if oof_specs:
+        print(f"  cond OOF     : {[n for n, _ in oof_specs]}  (joined by date)")
     print(f"  base         : {args.base}(α_init={args.alpha_init}, df={args.df})")
     print(f"  arch         : layers={args.num_layers}, bins={args.num_bins}, "
           f"hidden={args.hidden_features}, blocks={args.num_blocks}, tail={args.tail_bound}")
 
     # [1] Extract (ε, C)
     print("\n[1] Extract (ε, C) — fold-isolated, train-only normalization")
-    eps, cond, train_meta = extract_eps_and_cond(train_csv)
+    eps, cond, train_meta = extract_eps_and_cond(
+        train_csv, cond_features=COND_FEATURES_MACRO, oof_specs=oof_specs,
+    )
 
     # [2] Train
     print("\n[2] Train conditional 1D NSF")
