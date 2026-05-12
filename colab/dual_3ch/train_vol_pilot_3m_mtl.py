@@ -72,6 +72,12 @@ VARIANTS = {
              cond_cols=["tbill_wr", "m2_13w_cum_lag", "cpi_13w_cum_lag", "sp_std_13w",
                         "wti_wr", "sp_log_std_13w"],
              aux_col="metab_13w"),
+    # v17: mtl_base_without_harmful = v14 minus 3 HARMFUL (permutation importance 기준).
+    # 제거: ads_lag (-0.005), sp_std_13w (-0.010), sp_log_std_13w (-0.015).
+    # 유지: tbill_wr (+0.018), m2_13w_cum_lag (+0.136), cpi_13w_cum_lag (+0.053), wti_wr (≈0).
+    17: dict(name="mtl_base_without_harmful",
+             cond_cols=["tbill_wr", "m2_13w_cum_lag", "cpi_13w_cum_lag", "wti_wr"],
+             aux_col="metab_13w"),
 }
 
 
