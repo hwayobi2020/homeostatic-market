@@ -1,14 +1,12 @@
 """HAR-RV baseline (Corsi 2009) for vol forecasting — single fold F1.
 
-Reduced HAR-RV (13w only) — single horizon, v13 cond 와 비교 공정.
-  log(σ_{t+1..t+13}) = β0 + β1·log_σ_13w + β2·σ_13w_raw + ε
+Reduced HAR-RV (13w only) + magnitude reference + Buffett indicator — v13/v14/v15 cond 와 공정 비교.
+  log(σ_{t+1..t+13}) = β0 + β1·log_σ_13w + β2·σ_13w_raw + β3·sp_gdp_ratio + ε
 
-v13/v14/v15 cond 가 sp_log_std_13w + sp_std_13w 둘 다 사용 (magnitude direct read-out 위해
-raw σ 추가) → HAR baseline 도 동일 2 feature 로 공정 비교.
-
-Features (2개, magnitude 추정 보조 위해 log + raw 둘 다):
-  sp_log_std_13w = log std of past 13w sp_return  (≈ 3 months)
+Features (3개):
+  sp_log_std_13w = log std of past 13w sp_return  (≈ 3 months, HAR-RV 원래 feature)
   sp_std_13w     = raw std of past 13w sp_return  (additive magnitude scale)
+  sp_gdp_ratio   = sp_close / gdp_real_lag        (Buffett indicator, valuation macro)
 
 Target (train_vol_pilot_3m.py 와 동일):
   y_log_std = log( std( future 13w sp_return, ddof=1 ) )
@@ -36,7 +34,7 @@ ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
 PAST_LEN   = 52
 FUTURE_LEN = 13
 L          = PAST_LEN + FUTURE_LEN
-HAR_FEATURES = ["sp_log_std_13w", "sp_std_13w"]
+HAR_FEATURES = ["sp_log_std_13w", "sp_std_13w", "sp_gdp_ratio"]
 
 
 def build_xy(csv_path: str) -> pd.DataFrame:

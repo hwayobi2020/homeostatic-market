@@ -83,22 +83,13 @@ INDPRO_LAG       = 2   # Fed G.17 Industrial Production release lag ≈ 2w (GDP-
 ADS_LAG          = 1   # Phil Fed ADS index publication lag ≈ 1w (별도 cond 채널)
 WINDOW           = 13
 
-# Single fold (F1) — train_start ablation (1971/1981/1991), val/test 동일.
-# fold 단일성 명시 위해 F1_t{year} 명명. 동일 evaluation 구조에서 train horizon 변경 효과만 검증.
-#   F1_t1971: train 1971.01-2017.03 (46.25y) — 1970s 오일쇼크 포함
-#   F1_t1981: train 1981.01-2017.03 (36.25y) — Volcker 이후 modern era
-#   F1_t1991: train 1991.01-2017.03 (26.25y) — Fed inflation targeting era only
-# val/test 공통: 2017.07-2019.09 / 2020.01-2025.12 (COVID + 인플레 사이클)
+# Single fold F1 (2026-05-12 v7): train 1971 start 단일 (81/91 ablation 실패 후 71 확정).
+# train 1971.01-2017.03 (46.25y, all crashes 포함), val 2017.07-2019.09 (2.21y, n=51),
+# test 2020.01-2025.12 (5.96y, n=247, COVID + 인플레 사이클).
 FOLD_SPLITS = {
-    "F1_t1971": {"train_start": "1971-01-01", "train_end": "2017-03-31",
-                 "val_start":   "2017-07-15", "val_end":   "2019-09-30",
-                 "test_start":  "2020-01-15", "test_end":  "2025-12-31"},
-    "F1_t1981": {"train_start": "1981-01-01", "train_end": "2017-03-31",
-                 "val_start":   "2017-07-15", "val_end":   "2019-09-30",
-                 "test_start":  "2020-01-15", "test_end":  "2025-12-31"},
-    "F1_t1991": {"train_start": "1991-01-01", "train_end": "2017-03-31",
-                 "val_start":   "2017-07-15", "val_end":   "2019-09-30",
-                 "test_start":  "2020-01-15", "test_end":  "2025-12-31"},
+    "F1": {"train_start": "1971-01-01", "train_end": "2017-03-31",
+           "val_start":   "2017-07-15", "val_end":   "2019-09-30",
+           "test_start":  "2020-01-15", "test_end":  "2025-12-31"},
 }
 
 
@@ -115,12 +106,13 @@ def fetch_fred():
         ("DTB3",     "daily 3M T-bill 1954~"),
         ("CPIAUCSL", "monthly 1947~"),
         ("INDPRO",   "Industrial Production monthly 1919~"),  # GDP-growth monthly proxy (Stock-Watson 1989/2002)
+        ("GDPC1",    "Real GDP quarterly 1947~"),  # raw level only (yoy 변환 안 함) — sp_gdp_ratio 용
         ("M2V",      "quarterly 1959~"),
         ("MICH",     "monthly 1978-04~"),
         ("WTISPLC",  "WTI spot crude $/bbl, monthly 1946-01~"),  # 1970s oil shock 핵심
     ]
-    # GDPC1 (분기) 폐기: yoy 변환의 52w lookback 회피.
-    # INDPRO 가 metab 식의 GDP 자리 대체 (% growth 단위, 13w log diff 가능, lookback 15w 정합).
+    # GDPC1 raw level: Buffett indicator (sp_close / gdp_real_lag) 위한 분모. lookback 4w (GDP_LAG).
+    # 단 metab_13w 에는 INDPRO 사용 (GDP yoy 변환의 52w lookback 회피).
     # ADS Business Conditions Index 는 별도 cond 채널 (Phil Fed, fetch_ads()).
     series_dict = {}
     for name, desc in fred_specs:
@@ -330,6 +322,13 @@ def add_derived(df, fred_dict, ads_daily):
     df["indpro"] = indpro.reindex(target_idx, method="ffill").values
     df["log_indpro"] = np.log(df["indpro"].clip(lower=1e-8))
 
+    # GDPC1 (Real GDP) raw level — Buffett indicator (sp_close / gdp_real_lag) 분모.
+    # 분기 데이터 → weekly forward-fill. publication lag GDP_LAG=4w 만 (yoy 변환 X).
+    gdp = fred_dict["GDPC1"].copy()
+    gdp.index = pd.to_datetime(gdp.index)
+    gdp = gdp.sort_index()
+    df["gdp_real"] = gdp.reindex(target_idx, method="ffill").values
+
     # ADS Business Conditions Index (Aruoba-Diebold-Scotti, Phil Fed) — daily, lag 1w.
     # 별도 cond 채널 (z-score 단위, metab 식엔 안 들어감 — Bodilsen 2025 등 vol forecasting 표준).
     ads_daily = ads_daily.copy()
@@ -350,6 +349,11 @@ def add_derived(df, fred_dict, ads_daily):
     df["cpi_wr_lag"]    = df["cpi_wr"].shift(CPI_LAG)
     df["wti_wr_lag"]    = df["wti_wr"].shift(CPI_LAG)
     df["ads_lag"]       = df["ads"].shift(ADS_LAG)
+    df["gdp_real_lag"]  = df["gdp_real"].shift(GDP_LAG)
+
+    # Buffett indicator — stock market level / GDP. valuation macro signal.
+    # raw ratio (yoy 변환 안 함) lookback = GDP_LAG 4w.
+    df["sp_gdp_ratio"] = df["sp_close"] / df["gdp_real_lag"].clip(lower=1e-8)
 
     # 13w cumulative (모두 13w log return 단위, BIS metab 식 항으로 정합)
     df["m2_13w_cum_lag"]    = df["m2_growth_lag"].rolling(WINDOW).sum()
@@ -395,6 +399,7 @@ def cut_and_diagnose(df):
         "metab_13w", "bondpp_13w_lag", "stockpp_13w_lag",
         "sp_std_13w",  # raw past 13w std (cond magnitude reference)
         "sp_log_std_4w", "sp_log_std_13w", "sp_log_std_26w", "sp_log_std_52w",
+        "sp_gdp_ratio",  # Buffett indicator (sp_close / gdp_real_lag), valuation macro signal
     ]
     n_before = len(df)
     df = df.dropna(subset=NEED).reset_index(drop=True)
