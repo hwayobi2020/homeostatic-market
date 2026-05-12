@@ -83,15 +83,23 @@ INDPRO_LAG       = 2   # Fed G.17 Industrial Production release lag ≈ 2w (GDP-
 ADS_LAG          = 1   # Phil Fed ADS index publication lag ≈ 1w (별도 cond 채널)
 WINDOW           = 13
 
-# Single fold (2026-05-12 v4): COVID 2020-03 폭락을 TEST 에 포함 (paper main thesis 검증).
-# 이전 v3 (test 2021-2025) 는 COVID 미포함 → 모델 magnitude over-prediction (train high-vol →
-# test low-vol 인플레/QT) → HAR-RV (mean predictor 가까운 baseline) 가 통계적으로 우수.
-# v4: train 끝 ~2017.03, val 2017.07-2019.09 (selection), test 2020.01-2025.12 (COVID + 인플레 사이클 전체)
-# Test n=247 (이전 195 → +27%). val n=51 (이전 206 → 줄어듦, 단 selection 충분).
+# 3-fold expanding train (2026-05-12 v7): 인플레 사이클 3단계 비중첩 test.
+# 모든 fold val 에 COVID 2020-03 폭락 포함, test 는 각각 다른 인플레 단계.
+# fold gap 15w (val/test_start 15일).
+#   F1 test 2021.01-22.06: 인플레 시작 (저금리 → Fed 금리인상 시작)
+#   F2 test 2022.10-24.03: 인플레 정점 (CPI 9% → 점차 감소)
+#   F3 test 2024.07-25.12: 인플레 해소
+# 한계: test 1.5y ≈ 14 windows/fold (pooled 42) — paper §평가 limitation 명시 필수.
 FOLD_SPLITS = {
-    "F1": {"train_start": "1971-01-01", "train_end": "2017-03-31",
-           "val_start":   "2017-07-15", "val_end":   "2019-09-30",
-           "test_start":  "2020-01-15", "test_end":  "2025-12-31"},
+    "F1": {"train_start": "1971-01-01", "train_end": "2015-03-31",
+           "val_start":   "2015-07-15", "val_end":   "2020-09-30",
+           "test_start":  "2021-01-15", "test_end":  "2022-06-30"},
+    "F2": {"train_start": "1971-01-01", "train_end": "2016-12-31",
+           "val_start":   "2017-04-15", "val_end":   "2022-06-30",
+           "test_start":  "2022-10-15", "test_end":  "2024-03-31"},
+    "F3": {"train_start": "1971-01-01", "train_end": "2018-09-30",
+           "val_start":   "2019-01-15", "val_end":   "2024-03-31",
+           "test_start":  "2024-07-15", "test_end":  "2025-12-31"},
 }
 
 
