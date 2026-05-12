@@ -77,9 +77,10 @@ TRAIN_TEST_CUT   = pd.Timestamp("2016-01-01")
 M2_SPLICE_DATE   = pd.Timestamp("1981-01-05")     # WM2NS first available date
 SPLIT_DATE       = pd.Timestamp("2021-02-01")     # m2 publication schedule change
 M2_LAG_PRE       = 2
-M2_LAG_POST      = 1   # Fed H.6 weekly release lag ≈ 1w (그 주 목요일 직전주 데이터 공개)
+M2_LAG_POST      = 1   # Fed H.6 weekly release lag ≈ 1w
 CPI_LAG          = 2   # BLS CPIAUCSL release lag ≈ 2-3w
-ADS_LAG          = 1   # Phil Fed ADS index publication lag ≈ 1w
+INDPRO_LAG       = 2   # Fed G.17 Industrial Production release lag ≈ 2w (GDP-growth monthly proxy)
+ADS_LAG          = 1   # Phil Fed ADS index publication lag ≈ 1w (별도 cond 채널)
 WINDOW           = 13
 
 # 3-fold expanding train + 15-week gap (2026-05-12 redesign, gap 15w 정정):
@@ -119,12 +120,14 @@ def fetch_fred():
         ("WM2NS",    "weekly NSA 1981-01~"),
         ("DTB3",     "daily 3M T-bill 1954~"),
         ("CPIAUCSL", "monthly 1947~"),
+        ("INDPRO",   "Industrial Production monthly 1919~"),  # GDP-growth monthly proxy (Stock-Watson 1989/2002)
         ("M2V",      "quarterly 1959~"),
         ("MICH",     "monthly 1978-04~"),
         ("WTISPLC",  "WTI spot crude $/bbl, monthly 1946-01~"),  # 1970s oil shock 핵심
     ]
-    # GDPC1 (quarterly) 제거됨: yoy 변환의 52w lookback 이 fold gap 15w 보다 길어 cond leakage.
-    # 대체 = ADS Business Conditions Index (Phil Fed, daily, lag ~1w) — fetch_ads() 별도.
+    # GDPC1 (분기) 폐기: yoy 변환의 52w lookback 회피.
+    # INDPRO 가 metab 식의 GDP 자리 대체 (% growth 단위, 13w log diff 가능, lookback 15w 정합).
+    # ADS Business Conditions Index 는 별도 cond 채널 (Phil Fed, fetch_ads()).
     series_dict = {}
     for name, desc in fred_specs:
         try:
@@ -312,9 +315,16 @@ def add_derived(df, fred_dict, ads_daily):
     df["log_cpi"] = np.log(df["cpi"].clip(lower=1e-8))
     df["cpi_wr"] = df["log_cpi"].diff()
 
-    # ADS Business Conditions Index (Aruoba-Diebold-Scotti, Phil Fed) — daily real-time
-    # business conditions proxy. Replaces GDP (quarterly + yoy 변환의 56w lookback 회피).
-    # ADS lookback = ADS_LAG 1w (publication) only.
+    # INDPRO (Industrial Production) — monthly, Fed G.17 lag ~2w. GDP-growth proxy 학계 표준.
+    # 13w log diff 사용 → m2/cpi 와 단위 정합 (13w log return %), lookback 15w.
+    indpro = fred_dict["INDPRO"].copy()
+    indpro.index = pd.to_datetime(indpro.index)
+    indpro = indpro.sort_index()
+    df["indpro"] = indpro.reindex(target_idx, method="ffill").values
+    df["log_indpro"] = np.log(df["indpro"].clip(lower=1e-8))
+
+    # ADS Business Conditions Index (Aruoba-Diebold-Scotti, Phil Fed) — daily, lag 1w.
+    # 별도 cond 채널 (z-score 단위, metab 식엔 안 들어감 — Bodilsen 2025 등 vol forecasting 표준).
     ads_daily = ads_daily.copy()
     ads_daily.index = pd.to_datetime(ads_daily.index)
     ads_daily = ads_daily.sort_index()
@@ -328,18 +338,19 @@ def add_derived(df, fred_dict, ads_daily):
     df["log_wti"] = np.log(df["wti"].clip(lower=1e-8))
     df["wti_wr"] = df["log_wti"].diff()                           # weekly log change
 
-    # publication lag (NO yoy — yoy 변환은 52w lookback 만들어 fold gap leakage 유발).
-    # ADS 가 GDP 대체 (Aruoba-Diebold-Scotti 2009): daily real-time business conditions index.
+    # publication lag (모두 fold gap 15w 이내 lookback 보장)
     df["m2_growth_lag"] = m2_split_lag(df["m2_growth"], df["date"])
     df["cpi_wr_lag"]    = df["cpi_wr"].shift(CPI_LAG)
     df["wti_wr_lag"]    = df["wti_wr"].shift(CPI_LAG)
     df["ads_lag"]       = df["ads"].shift(ADS_LAG)
 
-    # 13w cumulative
+    # 13w cumulative (모두 13w log return 단위, BIS metab 식 항으로 정합)
     df["m2_13w_cum_lag"]    = df["m2_growth_lag"].rolling(WINDOW).sum()
     df["cpi_13w_cum_lag"]   = df["cpi_wr_lag"].rolling(WINDOW).sum()
     df["wti_13w_cum_lag"]   = df["wti_wr_lag"].rolling(WINDOW).sum()
     df["tbill_13w_cum"]     = df["tbill_wr"].rolling(WINDOW).sum()
+    # INDPRO 13w log diff (GDP-growth proxy, % unit) — lookback 13 + INDPRO_LAG 2 = 15w
+    df["indpro_13w_pct_lag"] = (df["log_indpro"].diff(WINDOW)).shift(INDPRO_LAG)
     log_sp = np.log(df["sp_close"].clip(lower=1e-8).values)
     sp_13w = np.full(len(df), np.nan)
     for t in range(WINDOW, len(df)):
@@ -352,9 +363,11 @@ def add_derived(df, fred_dict, ads_daily):
         df[f"sp_std_{w}w"]     = df["sp_return"].rolling(w).std(ddof=1).shift(1)
         df[f"sp_log_std_{w}w"] = np.log(df[f"sp_std_{w}w"].clip(lower=1e-8))
 
-    # BIS-실용 metab_13w (gdp 제외, m2 - cpi only — build_weekly_ppbond.py:54 정의)
-    # gdp 는 yoy 변환의 52w lookback 때문에 cond 에서 제외. 경기 동행 신호는 ads_lag 별도 채널로.
-    df["metab_13w"] = df["m2_13w_cum_lag"] - df["cpi_13w_cum_lag"]
+    # BIS metab_13w — m2 - GDP_growth_proxy(INDPRO) - cpi (Stock-Watson 표준 monthly proxy).
+    # 모두 13w log return 단위 (정합), lookback max 15w = fold gap.
+    df["metab_13w"] = (
+        df["m2_13w_cum_lag"] - df["indpro_13w_pct_lag"] - df["cpi_13w_cum_lag"]
+    )
     df["bondpp_13w_lag"]  = np.log((1.0 + df["tbill_13w_cum"]) / (1.0 + df["metab_13w"]))
     df["stockpp_13w_lag"] = np.log((1.0 + df["sp_13w_cum"])    / (1.0 + df["metab_13w"]))
 
@@ -370,7 +383,8 @@ def cut_and_diagnose(df):
     df = df[df["date"] >= CUT_DATE].reset_index(drop=True)
     NEED = [
         "m2_growth_lag", "cpi_wr_lag", "ads_lag",
-        "m2_13w_cum_lag", "cpi_13w_cum_lag", "tbill_13w_cum", "sp_13w_cum",
+        "m2_13w_cum_lag", "cpi_13w_cum_lag", "indpro_13w_pct_lag",
+        "tbill_13w_cum", "sp_13w_cum",
         "metab_13w", "bondpp_13w_lag", "stockpp_13w_lag",
         "sp_log_std_4w", "sp_log_std_13w", "sp_log_std_26w", "sp_log_std_52w",
     ]
