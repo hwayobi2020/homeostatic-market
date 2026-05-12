@@ -35,9 +35,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 # === 3M-specific ===
-PAST_LEN = 104    # 2y
+PAST_LEN = 52     # 1y
 FUTURE_LEN = 13   # 3 months
-L = PAST_LEN + FUTURE_LEN  # 117
+L = PAST_LEN + FUTURE_LEN  # 65
 # ===================
 
 D_MODEL = 128

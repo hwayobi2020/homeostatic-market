@@ -39,9 +39,9 @@ except Exception:
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
 
-PAST_LEN   = 104   # 2y (52w → 104w)
+PAST_LEN   = 52    # 1y
 FUTURE_LEN = 13
-L          = PAST_LEN + FUTURE_LEN  # 117
+L          = PAST_LEN + FUTURE_LEN  # 65
 
 D_MODEL = 128
 N_HEADS = 4
