@@ -32,8 +32,8 @@ Output (OVERWRITES existing):
   data/weekly_v33_test.csv          (2016-01-01 ~ 2025-12-26)
   data/weekly_v33_vix_train.csv     (+ vix col)
   data/weekly_v33_vix_test.csv
-  data/folds_v33_vix/F{0,1,2,3,4}_{train,val,test}.csv   (5-fold rolling 25y train)
-  data/folds_v33_vix_backup/        (backup of previous folds, if not already present)
+  data/folds_v33_vix_expanding/F{1,2,3}_{train,val,test}.csv   (3-fold expanding train, 3mo gap)
+  data/folds_v33_vix_expanding_backup/  (backup of previous folds, if not already present)
 """
 import os
 import shutil
@@ -82,29 +82,27 @@ CPI_LAG          = 2
 GDP_LAG          = 4
 WINDOW           = 13
 
-# 5-fold walk-forward with 25y rolling train + 1y val + 3y test, regime-specific test windows.
-# (Gemini design 2026-05-11): rolling train avoids "older data 가 newer regime 학습에 해" 문제.
-#   F0: 닷컴 붕괴 후유증     train 1975-1999  val 2000  test 2001-2003
-#   F1: GFC                  train 1982-2006  val 2007  test 2008-2010
-#   F2: Bernanke/Yellen QE   train 1988-2012  val 2013  test 2014-2016
-#   F3: Rate hike + COVID    train 1993-2017  val 2018  test 2019-2021
-#   F4: 인플레 + Rapid hike  train 1996-2020  val 2021  test 2022-2024
+# 3-fold expanding train + 3-month gap (2026-05-12 redesign):
+# train_start = 1971-01-01 고정 (모든 6개 폭락 포함: 1973-74 oil shock, 1987, 1990, 닷컴, GFC),
+# 각 split 사이 약 3개월 (= FUTURE_LEN 13주) gap 두어 future-horizon leakage 차단.
+# test 비중첩, narrative = 인플레 사이클 3단계 (시작 → 정점 → 해소).
+# 한계 (paper 평가 limitation 으로 명시):
+#   1) test 1.5y ≈ 14 windows/fold (3-fold pooled 42) — EMD 주력, CVaR 5% tail 제한적
+#   2) COVID 폭락 (2020-03) 은 F1 val / F2-F3 train 끝 직전 (2018-09) 이후 → 모든 fold train 미포함
+#                                                              (F1 val 시작 2015-07 ~ F3 val 종료 2024-03 안에 들어감)
+#   F1: train 1971.01-2015.03 val 2015.07-2020.09 test 2021.01-2022.06 (인플레 시작)
+#   F2: train 1971.01-2016.12 val 2017.04-2022.06 test 2022.10-2024.03 (인플레 정점)
+#   F3: train 1971.01-2018.09 val 2019.01-2024.03 test 2024.07-2025.12 (인플레 해소)
 FOLD_SPLITS = {
-    "F0": {"train_start": "1975-01-01", "train_end": "1999-12-31",
-           "val_start":   "2000-01-01", "val_end":   "2000-12-31",
-           "test_start":  "2001-01-01", "test_end":  "2003-12-31"},
-    "F1": {"train_start": "1982-01-01", "train_end": "2006-12-31",
-           "val_start":   "2007-01-01", "val_end":   "2007-12-31",
-           "test_start":  "2008-01-01", "test_end":  "2010-12-31"},
-    "F2": {"train_start": "1988-01-01", "train_end": "2012-12-31",
-           "val_start":   "2013-01-01", "val_end":   "2013-12-31",
-           "test_start":  "2014-01-01", "test_end":  "2016-12-31"},
-    "F3": {"train_start": "1993-01-01", "train_end": "2017-12-31",
-           "val_start":   "2018-01-01", "val_end":   "2018-12-31",
-           "test_start":  "2019-01-01", "test_end":  "2021-12-31"},
-    "F4": {"train_start": "1996-01-01", "train_end": "2020-12-31",
-           "val_start":   "2021-01-01", "val_end":   "2021-12-31",
-           "test_start":  "2022-01-01", "test_end":  "2024-12-31"},
+    "F1": {"train_start": "1971-01-01", "train_end": "2015-03-31",
+           "val_start":   "2015-07-01", "val_end":   "2020-09-30",
+           "test_start":  "2021-01-01", "test_end":  "2022-06-30"},
+    "F2": {"train_start": "1971-01-01", "train_end": "2016-12-31",
+           "val_start":   "2017-04-01", "val_end":   "2022-06-30",
+           "test_start":  "2022-10-01", "test_end":  "2024-03-31"},
+    "F3": {"train_start": "1971-01-01", "train_end": "2018-09-30",
+           "val_start":   "2019-01-01", "val_end":   "2024-03-31",
+           "test_start":  "2024-07-01", "test_end":  "2025-12-31"},
 }
 
 
@@ -396,14 +394,14 @@ def add_vix_and_save(df):
     print(f"    weekly_v33_test   : n={len(test):5d}  {test.date.min().date()} ~ {test.date.max().date()}")
 
     # === Folds (backup + overwrite) ===
-    folds_dir  = os.path.join(DATA, "folds_v33_vix")
-    backup_dir = os.path.join(DATA, "folds_v33_vix_backup")
+    folds_dir  = os.path.join(DATA, "folds_v33_vix_expanding")
+    backup_dir = os.path.join(DATA, "folds_v33_vix_expanding_backup")
     if os.path.isdir(folds_dir) and not os.path.isdir(backup_dir):
         shutil.copytree(folds_dir, backup_dir)
         print(f"    Backed up old folds → {backup_dir}")
     os.makedirs(folds_dir, exist_ok=True)
 
-    print(f"\n[9] Build folds_v33_vix/ (OVERWRITE; train_start = {CUT_DATE.date()})")
+    print(f"\n[9] Build folds_v33_vix_expanding/ (OVERWRITE; train_start = 1971-01-01 고정)")
     for fold, r in FOLD_SPLITS.items():
         for split, s_key, e_key in [("train", "train_start", "train_end"),
                                      ("val",   "val_start",   "val_end"),
@@ -431,12 +429,12 @@ def main():
     print(f"\n{'='*78}")
     print(" DONE — Next steps:")
     print(f"{'='*78}")
-    print("  1) Delete OLD v13/Flow/sensitivity ckpts (fold semantics changed: 5-fold rolling 25y):")
+    print("  1) Delete OLD v13/Flow/sensitivity ckpts (fold semantics changed: 3-fold expanding):")
     print("     !rm -f colab/dual_3ch/result/vol_pilot_3m_*sel*_v13_*_F[0-4]_seed*_*")
     print("     !rm -f colab/dual_3ch/result/scenario_3m_flow_1d_F[0-4]_skewt_df5*")
     print("     !rm -f colab/dual_3ch/result/sensitivity_v13_*_F[0-4]_global*")
-    print("  2) Re-run 5-fold holdout (default --loss-mode mse):")
-    print("     !python colab/dual_3ch/run_3fold_holdout.py")
+    print("  2) Re-run 3-fold holdout (default --loss-mode mse):")
+    print("     !python colab/dual_3ch/run_holdout.py")
     print("  3) Diagnose:")
     print("     !python colab/dual_3ch/diagnose_3fold.py")
 

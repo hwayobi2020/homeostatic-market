@@ -722,10 +722,10 @@ def main():
                          "Other options: '..._global_student_df5.pt' (Student-t), "
                          "'..._global_v2.pt' (Normal).")
     ap.add_argument("--fold", type=str, default="pilot",
-                    choices=["pilot", "F0", "F1", "F2", "F3", "F4"],
+                    choices=["pilot", "F1", "F2", "F3"],
                     help="Evaluation fold: 'pilot' (legacy single split) or "
-                         "'F0'..'F4' (folds_v33_vix 5-fold rolling 25y, regime-specific test: "
-                         "F0=dotcom 01-03, F1=GFC 08-10, F2=QE 14-16, F3=COVID 19-21, F4=hike 22-24).")
+                         "'F1'..'F3' (folds_v33_vix_expanding 3-fold expanding-train, 3mo gap, "
+                         "test = 인플레 사이클 3단계: F1 시작 21.1-22.6, F2 정점 22.10-24.3, F3 해소 24.7-25.12).")
     ap.add_argument("--loss-mode", choices=["any", "mse", "ic"], default="any",
                     help="Which loss-mode ckpts to load. 'any' matches *sel* (mse+ic+psel). "
                          "'mse' → _msel only; 'ic' → _isel only.")
@@ -745,12 +745,12 @@ def main():
         if not os.path.exists(test_csv) or not os.path.exists(train_csv):
             sys.exit(f"[FATAL] pilot_split missing — 먼저 build_pilot_split.py 실행")
     else:
-        fold_dir = os.path.join(repo_root, "data", "folds_v33_vix")
+        fold_dir = os.path.join(repo_root, "data", "folds_v33_vix_expanding")
         test_csv  = os.path.join(fold_dir, f"{fold}_test.csv")
         train_csv = os.path.join(fold_dir, f"{fold}_train.csv")
         v13_fold_tag = fold
         if not os.path.exists(test_csv) or not os.path.exists(train_csv):
-            sys.exit(f"[FATAL] folds_v33_vix/{fold}_* missing")
+            sys.exit(f"[FATAL] folds_v33_vix_expanding/{fold}_* missing")
 
     os.makedirs(args.result_dir, exist_ok=True)
 

@@ -508,8 +508,8 @@ def main():
         print(f"[--pilot-split]")
     elif args.fold is not None:
         repo_root = os.path.normpath(os.path.join(HERE, "..", ".."))
-        # 항상 folds_v33_vix 디렉토리 사용 (vix 컬럼 포함하지만 --vix 안 쓰면 cond 에 안 들어감)
-        folds_dir = os.path.join(repo_root, "data", "folds_v33_vix")
+        # 항상 folds_v33_vix_expanding 디렉토리 사용 (vix 컬럼 포함하지만 --vix 안 쓰면 cond 에 안 들어감)
+        folds_dir = os.path.join(repo_root, "data", "folds_v33_vix_expanding")
         train_csv = os.path.join(folds_dir, f"{args.fold}_train.csv")
         val_csv   = os.path.join(folds_dir, f"{args.fold}_val.csv")
         test_csv  = os.path.join(folds_dir, f"{args.fold}_test.csv")
