@@ -65,6 +65,12 @@ VARIANTS = {
     15: dict(name="base_clean_mtl",
              cond_cols=["tbill_wr", "m2_13w_cum_lag", "cpi_13w_cum_lag", "sp_std_13w"],
              aux_col="metab_13w"),
+    # v16: v14 minus ads_lag (ads_lag distribution shift 가설 직접 검정).
+    # 다른 모든 spec (wti, sp_log_std_13w, metab aux=m2-indpro-cpi) 은 v14 와 동일.
+    16: dict(name="base_mtl_no_ads",
+             cond_cols=["tbill_wr", "m2_13w_cum_lag", "cpi_13w_cum_lag", "sp_std_13w",
+                        "wti_wr", "sp_log_std_13w"],
+             aux_col="metab_13w"),
 }
 
 
