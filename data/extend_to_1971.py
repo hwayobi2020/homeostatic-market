@@ -83,21 +83,22 @@ INDPRO_LAG       = 2   # Fed G.17 Industrial Production release lag ≈ 2w (GDP-
 ADS_LAG          = 1   # Phil Fed ADS index publication lag ≈ 1w (별도 cond 채널)
 WINDOW           = 13
 
-# 3-fold 위기 시기 (2026-05-12 v15): OLS (HAR-RV) main model 평가.
-# expanding train, gap 15w, val 3.21y / test 3.21y (n_test ≈ 103 per fold, pooled 309).
-#   F1 test 1999.01-2002.03  닷컴 (peak Mar 2000 → trough Oct 2002, -49%)
-#   F2 test 2007.07-2010.09  GFC (Oct 2007 → Mar 2009, -57%) + 회복
-#   F3 test 2019.01-2022.03  COVID 폭락 (-34%) + 인플레 진입
+# 3-fold 인플레 사이클 (2026-05-12 v16): paper main thesis 직접 평가.
+# 모든 fold val 에 COVID 2020-03 포함. test 는 각 인플레 단계.
+# expanding train, gap 15w. test 1.5y ≈ 14 windows/fold (pooled 42, paper limitation).
+#   F1 test 2021.01-22.06: 인플레 시작 (저금리 → Fed 금리인상 시작)
+#   F2 test 2022.10-24.03: 인플레 정점 (CPI 9% → 점차 감소)
+#   F3 test 2024.07-25.12: 인플레 해소
 FOLD_SPLITS = {
-    "F1": {"train_start": "1971-01-01", "train_end": "1995-03-31",
-           "val_start":   "1995-07-15", "val_end":   "1998-09-30",
-           "test_start":  "1999-01-15", "test_end":  "2002-03-31"},
-    "F2": {"train_start": "1971-01-01", "train_end": "2003-09-30",
-           "val_start":   "2004-01-15", "val_end":   "2007-03-31",
-           "test_start":  "2007-07-15", "test_end":  "2010-09-30"},
-    "F3": {"train_start": "1971-01-01", "train_end": "2015-03-31",
-           "val_start":   "2015-07-15", "val_end":   "2018-09-30",
-           "test_start":  "2019-01-15", "test_end":  "2022-03-31"},
+    "F1": {"train_start": "1971-01-01", "train_end": "2015-03-31",
+           "val_start":   "2015-07-15", "val_end":   "2020-09-30",
+           "test_start":  "2021-01-15", "test_end":  "2022-06-30"},
+    "F2": {"train_start": "1971-01-01", "train_end": "2016-12-31",
+           "val_start":   "2017-04-15", "val_end":   "2022-06-30",
+           "test_start":  "2022-10-15", "test_end":  "2024-03-31"},
+    "F3": {"train_start": "1971-01-01", "train_end": "2018-09-30",
+           "val_start":   "2019-01-15", "val_end":   "2024-03-31",
+           "test_start":  "2024-07-15", "test_end":  "2025-12-31"},
 }
 
 
