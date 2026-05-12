@@ -79,9 +79,6 @@ SPLIT_DATE       = pd.Timestamp("2021-02-01")     # m2 publication schedule chan
 M2_LAG_PRE       = 2
 M2_LAG_POST      = 1   # Fed H.6 weekly release lag ≈ 1w
 CPI_LAG          = 2   # BLS CPIAUCSL release lag ≈ 2-3w
-INDPRO_LAG       = 2   # Fed G.17 Industrial Production release lag ≈ 2w (GDP-growth monthly proxy)
-GDP_LAG          = 4   # BEA GDPC1 advance estimate ≈ 4w (sp_gdp_ratio 분모 lag)
-ADS_LAG          = 1   # Phil Fed ADS index publication lag ≈ 1w (별도 cond 채널)
 WINDOW           = 13
 
 # Single fold F1 (2026-05-12 v7): train 1971 start 단일 (81/91 ablation 실패 후 71 확정).
@@ -106,15 +103,12 @@ def fetch_fred():
         ("WM2NS",    "weekly NSA 1981-01~"),
         ("DTB3",     "daily 3M T-bill 1954~"),
         ("CPIAUCSL", "monthly 1947~"),
-        ("INDPRO",   "Industrial Production monthly 1919~"),  # GDP-growth monthly proxy (Stock-Watson 1989/2002)
-        ("GDPC1",    "Real GDP quarterly 1947~"),  # raw level only (yoy 변환 안 함) — sp_gdp_ratio 용
         ("M2V",      "quarterly 1959~"),
         ("MICH",     "monthly 1978-04~"),
         ("WTISPLC",  "WTI spot crude $/bbl, monthly 1946-01~"),  # 1970s oil shock 핵심
     ]
-    # GDPC1 raw level: Buffett indicator (sp_close / gdp_real_lag) 위한 분모. lookback 4w (GDP_LAG).
-    # 단 metab_13w 에는 INDPRO 사용 (GDP yoy 변환의 52w lookback 회피).
-    # ADS Business Conditions Index 는 별도 cond 채널 (Phil Fed, fetch_ads()).
+    # metab_13w = tbill_13w_cum - cpi_13w_cum_lag (real interest rate 누적).
+    # INDPRO/GDPC1/ADS 모두 제거 — distribution shift 또는 미사용.
     series_dict = {}
     for name, desc in fred_specs:
         try:
@@ -131,60 +125,6 @@ def fetch_fred():
             print(f"    {name:10s}: FAILED — {e}")
             sys.exit(1)
     return series_dict
-
-
-def fetch_ads():
-    """Load ADS Business Conditions Index (Aruoba-Diebold-Scotti, Phil Fed).
-
-    Daily real-time business conditions proxy. Replaces GDP (분기 + yoy 변환의 52w
-    lookback 회피). Phil Fed 가 자체 호스팅 (FRED 에 없음).
-
-    Citation: Aruoba, Diebold, Scotti (2009). "Real-Time Measurement of Business
-    Conditions." J. of Business and Economic Statistics.
-
-    Source: https://www.philadelphiafed.org/surveys-and-data/real-time-data-research/ads
-    Download "Most Current Vintage" XLSX 또는 CSV → data/ 폴더에 저장.
-
-    Returns
-    -------
-    pd.Series indexed by date (daily), values = ADS index (standardized, mean 0).
-    """
-    print("\n[1b] Load ADS Business Conditions Index (Phil Fed)")
-    candidates = [
-        os.path.join(DATA, "ADS_Index_Most_Current_Vintage.xlsx"),
-        os.path.join(DATA, "ads_data.xlsx"),
-        os.path.join(DATA, "ads_data.csv"),
-    ]
-    found = next((p for p in candidates if os.path.exists(p)), None)
-    if found is None:
-        sys.exit(
-            f"\n[FATAL] ADS Index data not found in {DATA}.\n"
-            f"  Manual download required:\n"
-            f"    1) Visit https://www.philadelphiafed.org/surveys-and-data/real-time-data-research/ads\n"
-            f"    2) Download 'Most Current Vintage' XLSX or CSV.\n"
-            f"    3) Save to data/ (file name auto-detected):\n"
-            f"         {candidates[0]}\n"
-            f"         {candidates[1]}\n"
-            f"         {candidates[2]}\n"
-            f"       date format: YYYY:MM:DD or YYYY-MM-DD acceptable.\n"
-        )
-    print(f"    using: {found}")
-    if found.lower().endswith(".xlsx"):
-        df = pd.read_excel(found)
-    else:
-        df = pd.read_csv(found)
-    # 컬럼 자동 탐지: 첫 컬럼 = date, 두 번째 컬럼 = ADS value
-    date_col = df.columns[0]
-    val_col  = df.columns[1] if len(df.columns) > 1 else None
-    if val_col is None:
-        sys.exit(f"[FATAL] {found} has <2 columns")
-    # Date parsing — accept YYYY:MM:DD or YYYY-MM-DD or pandas Timestamp
-    df[date_col] = df[date_col].astype(str).str.replace(":", "-", regex=False)
-    df["date"] = pd.to_datetime(df[date_col], errors="coerce")
-    df = df.dropna(subset=["date"]).set_index("date").sort_index()
-    s = df[val_col].astype(float)
-    print(f"    ADS daily: n={len(s):5d}, {s.index.min().date()} ~ {s.index.max().date()}")
-    return s
 
 
 def fetch_sp():
@@ -302,10 +242,10 @@ def m2_split_lag(s, dates):
     return s.shift(M2_LAG_PRE).where(dates < SPLIT_DATE, s.shift(M2_LAG_POST))
 
 
-def add_derived(df, fred_dict, ads_daily):
-    print(f"\n[4] Add CPI/ADS forward-fill + compute lag/13w_cum/BIS/bondpp")
+def add_derived(df, fred_dict):
+    print(f"\n[4] Add CPI/WTI forward-fill + compute lag/13w_cum/metab/bondpp")
 
-    # Reindex with ffill — match v33_newmetab style. df["date"] 는 sorted weekly dates.
+    # Reindex with ffill — df["date"] 는 sorted weekly dates.
     target_idx = pd.DatetimeIndex(df["date"])
 
     cpi = fred_dict["CPIAUCSL"].copy()
@@ -314,28 +254,6 @@ def add_derived(df, fred_dict, ads_daily):
     df["cpi"] = cpi.reindex(target_idx, method="ffill").values
     df["log_cpi"] = np.log(df["cpi"].clip(lower=1e-8))
     df["cpi_wr"] = df["log_cpi"].diff()
-
-    # INDPRO (Industrial Production) — monthly, Fed G.17 lag ~2w. GDP-growth proxy 학계 표준.
-    # 13w log diff 사용 → m2/cpi 와 단위 정합 (13w log return %), lookback 15w.
-    indpro = fred_dict["INDPRO"].copy()
-    indpro.index = pd.to_datetime(indpro.index)
-    indpro = indpro.sort_index()
-    df["indpro"] = indpro.reindex(target_idx, method="ffill").values
-    df["log_indpro"] = np.log(df["indpro"].clip(lower=1e-8))
-
-    # GDPC1 (Real GDP) raw level — Buffett indicator (sp_close / gdp_real_lag) 분모.
-    # 분기 데이터 → weekly forward-fill. publication lag GDP_LAG=4w 만 (yoy 변환 X).
-    gdp = fred_dict["GDPC1"].copy()
-    gdp.index = pd.to_datetime(gdp.index)
-    gdp = gdp.sort_index()
-    df["gdp_real"] = gdp.reindex(target_idx, method="ffill").values
-
-    # ADS Business Conditions Index (Aruoba-Diebold-Scotti, Phil Fed) — daily, lag 1w.
-    # 별도 cond 채널 (z-score 단위, metab 식엔 안 들어감 — Bodilsen 2025 등 vol forecasting 표준).
-    ads_daily = ads_daily.copy()
-    ads_daily.index = pd.to_datetime(ads_daily.index)
-    ads_daily = ads_daily.sort_index()
-    df["ads"] = ads_daily.reindex(target_idx, method="ffill").values
 
     # WTI spot crude (monthly → weekly forward-fill); 1970s oil shock 핵심
     wti = fred_dict["WTISPLC"].copy()
@@ -349,20 +267,12 @@ def add_derived(df, fred_dict, ads_daily):
     df["m2_growth_lag"] = m2_split_lag(df["m2_growth"], df["date"])
     df["cpi_wr_lag"]    = df["cpi_wr"].shift(CPI_LAG)
     df["wti_wr_lag"]    = df["wti_wr"].shift(CPI_LAG)
-    df["ads_lag"]       = df["ads"].shift(ADS_LAG)
-    df["gdp_real_lag"]  = df["gdp_real"].shift(GDP_LAG)
 
-    # Buffett indicator — stock market level / GDP. valuation macro signal.
-    # raw ratio (yoy 변환 안 함) lookback = GDP_LAG 4w.
-    df["sp_gdp_ratio"] = df["sp_close"] / df["gdp_real_lag"].clip(lower=1e-8)
-
-    # 13w cumulative (모두 13w log return 단위, BIS metab 식 항으로 정합)
+    # 13w cumulative (모두 13w log return 단위)
     df["m2_13w_cum_lag"]    = df["m2_growth_lag"].rolling(WINDOW).sum()
     df["cpi_13w_cum_lag"]   = df["cpi_wr_lag"].rolling(WINDOW).sum()
     df["wti_13w_cum_lag"]   = df["wti_wr_lag"].rolling(WINDOW).sum()
     df["tbill_13w_cum"]     = df["tbill_wr"].rolling(WINDOW).sum()
-    # INDPRO 13w log diff (GDP-growth proxy, % unit) — lookback 13 + INDPRO_LAG 2 = 15w
-    df["indpro_13w_pct_lag"] = (df["log_indpro"].diff(WINDOW)).shift(INDPRO_LAG)
     log_sp = np.log(df["sp_close"].clip(lower=1e-8).values)
     sp_13w = np.full(len(df), np.nan)
     for t in range(WINDOW, len(df)):
@@ -375,11 +285,9 @@ def add_derived(df, fred_dict, ads_daily):
         df[f"sp_std_{w}w"]     = df["sp_return"].rolling(w).std(ddof=1).shift(1)
         df[f"sp_log_std_{w}w"] = np.log(df[f"sp_std_{w}w"].clip(lower=1e-8))
 
-    # BIS metab_13w — m2 - GDP_growth_proxy(INDPRO) - cpi (Stock-Watson 표준 monthly proxy).
-    # 모두 13w log return 단위 (정합), lookback max 15w = fold gap.
-    df["metab_13w"] = (
-        df["m2_13w_cum_lag"] - df["indpro_13w_pct_lag"] - df["cpi_13w_cum_lag"]
-    )
+    # metab_13w = tbill_13w_cum - cpi_13w_cum_lag (real interest rate 누적, 사용자 정의).
+    # 모두 13w log return 단위. lookback max 15w (cpi 13w + lag 2w) = fold gap.
+    df["metab_13w"] = df["tbill_13w_cum"] - df["cpi_13w_cum_lag"]
     df["bondpp_13w_lag"]  = np.log((1.0 + df["tbill_13w_cum"]) / (1.0 + df["metab_13w"]))
     df["stockpp_13w_lag"] = np.log((1.0 + df["sp_13w_cum"])    / (1.0 + df["metab_13w"]))
 
@@ -394,13 +302,12 @@ def cut_and_diagnose(df):
     print(f"\n[5] Cut to {CUT_DATE.date()} + dropna required cols")
     df = df[df["date"] >= CUT_DATE].reset_index(drop=True)
     NEED = [
-        "m2_growth_lag", "cpi_wr_lag", "ads_lag",
-        "m2_13w_cum_lag", "cpi_13w_cum_lag", "indpro_13w_pct_lag",
+        "m2_growth_lag", "cpi_wr_lag",
+        "m2_13w_cum_lag", "cpi_13w_cum_lag",
         "tbill_13w_cum", "sp_13w_cum",
         "metab_13w", "bondpp_13w_lag", "stockpp_13w_lag",
-        "sp_std_13w",  # raw past 13w std (cond magnitude reference)
+        "sp_std_13w",
         "sp_log_std_4w", "sp_log_std_13w", "sp_log_std_26w", "sp_log_std_52w",
-        "sp_gdp_ratio",  # Buffett indicator (sp_close / gdp_real_lag), valuation macro signal
     ]
     n_before = len(df)
     df = df.dropna(subset=NEED).reset_index(drop=True)
@@ -480,10 +387,9 @@ def main():
     print(" Extend train history to 1971 — Nixon Shock + Oil Shock + Stagflation + Volcker peak")
     print("=" * 78)
     fred_dict = fetch_fred()
-    ads_daily = fetch_ads()
     sp_daily  = fetch_sp()
     df = build_weekly_base(fred_dict, sp_daily)
-    df = add_derived(df, fred_dict, ads_daily)
+    df = add_derived(df, fred_dict)
     df = cut_and_diagnose(df)
     add_vix_and_save(df)
 
