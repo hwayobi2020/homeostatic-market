@@ -39,9 +39,9 @@ except Exception:
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
 
-PAST_LEN   = 156   # 3y (52w → 156w, regime cycle 학습)
+PAST_LEN   = 104   # 2y (52w → 104w)
 FUTURE_LEN = 13
-L          = PAST_LEN + FUTURE_LEN  # 169
+L          = PAST_LEN + FUTURE_LEN  # 117
 
 D_MODEL = 128
 N_HEADS = 4

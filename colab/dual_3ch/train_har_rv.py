@@ -33,7 +33,7 @@ import statsmodels.api as sm
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
 
-PAST_LEN   = 156   # 일치: vol_pilot_3m_mtl 와 동일 origin alignment
+PAST_LEN   = 104   # 일치: vol_pilot_3m_mtl 와 동일 origin alignment
 FUTURE_LEN = 13
 L          = PAST_LEN + FUTURE_LEN
 HAR_FEATURES = ["sp_log_std_13w", "sp_std_13w"]

@@ -35,9 +35,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 # === 3M-specific ===
-PAST_LEN = 156    # 3y (regime cycle 학습)
+PAST_LEN = 104    # 2y
 FUTURE_LEN = 13   # 3 months
-L = PAST_LEN + FUTURE_LEN  # 169
+L = PAST_LEN + FUTURE_LEN  # 117
 # ===================
 
 D_MODEL = 128
