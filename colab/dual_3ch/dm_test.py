@@ -89,6 +89,22 @@ def qlike_loss(y_true_log, y_pred_log):
     return ratio ** 2 - 2.0 * np.log(np.clip(ratio, 1e-12, None)) - 1.0
 
 
+def mda_loss(y_true_log, y_pred_log):
+    """1 - MDA per-t (0 = direction match, 1 = mismatch).
+
+    MDA = Mean Directional Accuracy [0,1], 높을수록 좋음.
+    DM test loss 형식 (낮을수록 좋음) 위해 1-MDA per-t 반환.
+    actual_dir[t] = sign(y[t] - y[t-1]),  pred_dir[t] = sign(ŷ[t] - ŷ[t-1])
+    per_t[t] = 1 if mismatch else 0. 첫 element 는 0 (diff 없음).
+    """
+    y = np.asarray(y_true_log, dtype=np.float64).ravel()
+    p = np.asarray(y_pred_log, dtype=np.float64).ravel()
+    actual_dir = np.sign(np.diff(y))
+    pred_dir   = np.sign(np.diff(p))
+    per_t = (actual_dir != pred_dir).astype(np.float64)
+    return np.concatenate([[0.0], per_t])
+
+
 def newey_west_se(d: np.ndarray, lag: int) -> float:
     """Newey-West HAC standard error for mean(d). Bartlett kernel."""
     n = len(d)
@@ -175,80 +191,87 @@ def main():
     y_act_v1,  y_pred_v1,  n_seeds_v1  = load_ml_preds(1,  args.fold, model_type="single")
     y_act_v13, y_pred_v13, n_seeds_v13 = load_ml_preds(13, args.fold, model_type="single")
     y_act_har, y_pred_har              = load_har_preds(args.fold)
-    # v14 / v15 MTL — optional (없으면 skip)
+    # MTL variants (v14/v15/v16/v17) — optional, 자동 감지
     v14_pattern = os.path.join(RESULT, f"vol_pilot_3m_mtl_msel_v14_*_{args.fold}_seed*_test_preds.npz")
     v15_pattern = os.path.join(RESULT, f"vol_pilot_3m_mtl_msel_v15_*_{args.fold}_seed*_test_preds.npz")
+    v16_pattern = os.path.join(RESULT, f"vol_pilot_3m_mtl_msel_v16_*_{args.fold}_seed*_test_preds.npz")
+    v17_pattern = os.path.join(RESULT, f"vol_pilot_3m_mtl_msel_v17_*_{args.fold}_seed*_test_preds.npz")
     has_v14 = bool(glob.glob(v14_pattern))
     has_v15 = bool(glob.glob(v15_pattern))
+    has_v16 = bool(glob.glob(v16_pattern))
+    has_v17 = bool(glob.glob(v17_pattern))
     print(f"    v1      : n={len(y_pred_v1):4d}  (mean of {n_seeds_v1} seeds)")
     print(f"    v13     : n={len(y_pred_v13):4d}  (mean of {n_seeds_v13} seeds)")
     if has_v14:
         y_act_v14, y_pred_v14, n_seeds_v14 = load_ml_preds(14, args.fold, model_type="mtl")
-        print(f"    v14 MTL : n={len(y_pred_v14):4d}  (mean of {n_seeds_v14} seeds)")
-    else:
-        print(f"    v14 MTL : not found — skip")
+        print(f"    v14 mtl_base       : n={len(y_pred_v14):4d}  (mean of {n_seeds_v14} seeds)")
     if has_v15:
         y_act_v15, y_pred_v15, n_seeds_v15 = load_ml_preds(15, args.fold, model_type="mtl")
-        print(f"    v15 clean: n={len(y_pred_v15):4d}  (mean of {n_seeds_v15} seeds)")
-    else:
-        print(f"    v15 clean: not found — skip")
+        print(f"    v15 base_clean_mtl : n={len(y_pred_v15):4d}  (mean of {n_seeds_v15} seeds)")
+    if has_v16:
+        y_act_v16, y_pred_v16, n_seeds_v16 = load_ml_preds(16, args.fold, model_type="mtl")
+        print(f"    v16 base_without_ads      : n={len(y_pred_v16):4d}  (mean of {n_seeds_v16} seeds)")
+    if has_v17:
+        y_act_v17, y_pred_v17, n_seeds_v17 = load_ml_preds(17, args.fold, model_type="mtl")
+        print(f"    v17 mtl_base_without_harm : n={len(y_pred_v17):4d}  (mean of {n_seeds_v17} seeds)")
     print(f"    HAR-RV  : n={len(y_pred_har):4d}")
 
     lengths = [len(y_act_v1), len(y_act_v13), len(y_act_har)]
-    if has_v14:
-        lengths.append(len(y_act_v14))
-    if has_v15:
-        lengths.append(len(y_act_v15))
+    for has, y in [(has_v14, "y_act_v14"), (has_v15, "y_act_v15"), (has_v16, "y_act_v16"), (has_v17, "y_act_v17")]:
+        if has:
+            lengths.append(len(locals()[y]))
     n_min = int(min(lengths))
-    actuals_eq = (np.allclose(y_act_v1[:n_min], y_act_v13[:n_min]) and
-                  np.allclose(y_act_v1[:n_min], y_act_har[:n_min]) and
-                  (not has_v14 or np.allclose(y_act_v1[:n_min], y_act_v14[:n_min])) and
-                  (not has_v15 or np.allclose(y_act_v1[:n_min], y_act_v15[:n_min])))
-    if not actuals_eq:
-        print(f"  [warn] actuals differ across models — truncating to first {n_min} (assume same ordering)")
     y_act = y_act_v1[:n_min]
     y_pred_v1  = y_pred_v1[:n_min]
     y_pred_v13 = y_pred_v13[:n_min]
     y_pred_har = y_pred_har[:n_min]
-    if has_v14:
-        y_pred_v14 = y_pred_v14[:n_min]
-    if has_v15:
-        y_pred_v15 = y_pred_v15[:n_min]
+    if has_v14: y_pred_v14 = y_pred_v14[:n_min]
+    if has_v15: y_pred_v15 = y_pred_v15[:n_min]
+    if has_v16: y_pred_v16 = y_pred_v16[:n_min]
+    if has_v17: y_pred_v17 = y_pred_v17[:n_min]
 
-    # Per-t losses
-    print(f"\n[2] Per-t losses (n = {n_min})")
+    # Per-t losses (MSE, QLIKE, MDA=1-mda per-t)
+    print(f"\n[2] Per-t losses + MDA score (n = {n_min})")
     losses = {}
-    for loss_name, loss_fn in [("MSE", mse_loss), ("QLIKE", qlike_loss)]:
+    for loss_name, loss_fn in [("MSE", mse_loss), ("QLIKE", qlike_loss), ("MDA", mda_loss)]:
         L = dict(
             v1     = loss_fn(y_act, y_pred_v1),
             v13    = loss_fn(y_act, y_pred_v13),
             har_rv = loss_fn(y_act, y_pred_har),
         )
-        if has_v14:
-            L["v14"] = loss_fn(y_act, y_pred_v14)
-        if has_v15:
-            L["v15"] = loss_fn(y_act, y_pred_v15)
+        if has_v14: L["v14"] = loss_fn(y_act, y_pred_v14)
+        if has_v15: L["v15"] = loss_fn(y_act, y_pred_v15)
+        if has_v16: L["v16"] = loss_fn(y_act, y_pred_v16)
+        if has_v17: L["v17"] = loss_fn(y_act, y_pred_v17)
         losses[loss_name] = L
+
+    # MDA scores (= 1 - mean(loss_mda)) per model
+    print("\n  MDA score (higher better, 0.5 = random):")
+    for name in ["v1", "v13", "har_rv", "v14", "v15", "v16", "v17"]:
+        if name in losses["MDA"]:
+            mda = 1.0 - float(np.mean(losses["MDA"][name]))
+            print(f"    {name:>8s}  MDA = {mda:.4f}")
 
     # DM tests
     print("\n[3] DM test results  (*** p<0.01, ** p<0.05, * p<0.10, ns ≥ 0.10)\n")
     results = []
-    for loss_name in ["MSE", "QLIKE"]:
+    for loss_name in ["MSE", "QLIKE", "MDA"]:
         L = losses[loss_name]
-        print(f"  --- Loss = {loss_name} ---")
+        print(f"  --- Loss = {loss_name} (1-MDA per-t)" if loss_name == "MDA" else f"  --- Loss = {loss_name} ---")
         # Existing baselines
         results.append(compare("v1",     L["v1"],     "v13", L["v13"], args.lag, loss_name))
         results.append(compare("HAR-RV", L["har_rv"], "v13", L["v13"], args.lag, loss_name))
-        # v14 MTL
         if has_v14:
             results.append(compare("v13",    L["v13"],    "v14", L["v14"], args.lag, loss_name))
             results.append(compare("HAR-RV", L["har_rv"], "v14", L["v14"], args.lag, loss_name))
-        # v15 clean MTL
         if has_v15:
-            if has_v14:
-                results.append(compare("v14", L["v14"], "v15", L["v15"], args.lag, loss_name))
-            results.append(compare("v13",    L["v13"],    "v15", L["v15"], args.lag, loss_name))
             results.append(compare("HAR-RV", L["har_rv"], "v15", L["v15"], args.lag, loss_name))
+        if has_v16 and has_v14:
+            results.append(compare("v14", L["v14"], "v16", L["v16"], args.lag, loss_name))
+        if has_v17:
+            if has_v14:
+                results.append(compare("v14",    L["v14"],    "v17", L["v17"], args.lag, loss_name))
+            results.append(compare("HAR-RV", L["har_rv"], "v17", L["v17"], args.lag, loss_name))
         print()
 
     out_path = os.path.join(RESULT, f"dm_test_{args.fold}.json")
