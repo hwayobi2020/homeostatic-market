@@ -83,11 +83,12 @@ INDPRO_LAG       = 2   # Fed G.17 Industrial Production release lag ≈ 2w (GDP-
 ADS_LAG          = 1   # Phil Fed ADS index publication lag ≈ 1w (별도 cond 채널)
 WINDOW           = 13
 
-# Single fold F1 (2026-05-12 v9): test 2020-2025 (COVID + 인플레 사이클 전체).
-# past_len 52w → 156w (3년 시퀀스, regime cycle 학습). gap 15w 정책 그대로.
+# Single fold F1 (2026-05-12 v10): PAST_LEN 156w 대응 — val/test 둘 다 ≥ L=169w 필요.
+# train 1971-2014.03 (43.25y), val 2014.07-2019.09 (n=103), test 2020.01-2025.12 (n=142).
+# gap 15w 정책 유지. val 에 COVID 미포함 (selection 깔끔), test 만 COVID + 인플레.
 FOLD_SPLITS = {
-    "F1": {"train_start": "1971-01-01", "train_end": "2017-03-31",
-           "val_start":   "2017-07-15", "val_end":   "2019-09-30",
+    "F1": {"train_start": "1971-01-01", "train_end": "2014-03-31",
+           "val_start":   "2014-07-15", "val_end":   "2019-09-30",
            "test_start":  "2020-01-15", "test_end":  "2025-12-31"},
 }
 
