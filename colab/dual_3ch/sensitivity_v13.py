@@ -1,10 +1,17 @@
 """Sensitivity analysis + Fan Chart for Variant 13 (Model A: base + metab_13w cond).
 
-Variant 13 (code, `base_metab_wti_har_13`):
-  cond = [tbill_wr, m2_13w_cum_lag, gdp_13w_proxy_lag, cpi_13w_cum_lag,
+Variant 13 (code, `base_metab_ads_wti_har_13`):
+  cond = [tbill_wr, m2_13w_cum_lag, ads_lag, cpi_13w_cum_lag,
           metab_13w, wti_wr, sp_log_std_13w]
   target_past = [sp_return]
   output = log( std(future 13w sp_return) )  → σ̂ = exp(log_std_pred)
+
+cond design (fold gap 15w leakage-clean):
+  - GDP 제거 (yoy 변환의 56w lookback > fold gap 15w → leakage)
+  - ADS Business Conditions Index (Aruoba-Diebold-Scotti 2009, daily, lag 1w) 가 GDP 대체
+  - metab_13w = m2_13w_cum_lag - cpi_13w_cum_lag (BIS-실용 정의, gdp 제외)
+  - M2_LAG = 1w (Fed H.6 weekly publication), CPI_LAG = 2w (BLS monthly publication)
+  - 모든 cond lookback ≤ 15w = fold gap → leakage 0
 
 생성하는 Figure (모두 result/ 에 저장):
 

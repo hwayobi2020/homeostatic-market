@@ -77,32 +77,33 @@ TRAIN_TEST_CUT   = pd.Timestamp("2016-01-01")
 M2_SPLICE_DATE   = pd.Timestamp("1981-01-05")     # WM2NS first available date
 SPLIT_DATE       = pd.Timestamp("2021-02-01")     # m2 publication schedule change
 M2_LAG_PRE       = 2
-M2_LAG_POST      = 4
-CPI_LAG          = 2
-GDP_LAG          = 4
+M2_LAG_POST      = 1   # Fed H.6 weekly release lag ≈ 1w (그 주 목요일 직전주 데이터 공개)
+CPI_LAG          = 2   # BLS CPIAUCSL release lag ≈ 2-3w
+ADS_LAG          = 1   # Phil Fed ADS index publication lag ≈ 1w
 WINDOW           = 13
 
-# 3-fold expanding train + 3-month gap (2026-05-12 redesign):
+# 3-fold expanding train + 15-week gap (2026-05-12 redesign, gap 15w 정정):
 # train_start = 1971-01-01 고정 (모든 6개 폭락 포함: 1973-74 oil shock, 1987, 1990, 닷컴, GFC),
-# 각 split 사이 약 3개월 (= FUTURE_LEN 13주) gap 두어 future-horizon leakage 차단.
+# 각 split 사이 약 3.5개월 (≈ 15w) gap 두어 cond lookback leakage 차단.
+# cond 최대 lookback = m2_13w_cum_lag (13w + M2_LAG 1w = 14w) and cpi_13w_cum_lag (13w + CPI_LAG 2w = 15w)
+# → gap ≥ 15w 필요. 13w gap (FUTURE_LEN 만) 은 cond leakage 미차단.
 # test 비중첩, narrative = 인플레 사이클 3단계 (시작 → 정점 → 해소).
 # 한계 (paper 평가 limitation 으로 명시):
 #   1) test 1.5y ≈ 14 windows/fold (3-fold pooled 42) — EMD 주력, CVaR 5% tail 제한적
 #   2) COVID 폭락 (2020-03) 은 F1 val / F2-F3 train 끝 직전 (2018-09) 이후 → 모든 fold train 미포함
-#                                                              (F1 val 시작 2015-07 ~ F3 val 종료 2024-03 안에 들어감)
-#   F1: train 1971.01-2015.03 val 2015.07-2020.09 test 2021.01-2022.06 (인플레 시작)
-#   F2: train 1971.01-2016.12 val 2017.04-2022.06 test 2022.10-2024.03 (인플레 정점)
-#   F3: train 1971.01-2018.09 val 2019.01-2024.03 test 2024.07-2025.12 (인플레 해소)
+#   F1: train 1971.01-2015.03 val 2015.07.15-2020.09 test 2021.01.15-2022.06 (인플레 시작)
+#   F2: train 1971.01-2016.12 val 2017.04.15-2022.06 test 2022.10.15-2024.03 (인플레 정점)
+#   F3: train 1971.01-2018.09 val 2019.01.15-2024.03 test 2024.07.15-2025.12 (인플레 해소)
 FOLD_SPLITS = {
     "F1": {"train_start": "1971-01-01", "train_end": "2015-03-31",
-           "val_start":   "2015-07-01", "val_end":   "2020-09-30",
-           "test_start":  "2021-01-01", "test_end":  "2022-06-30"},
+           "val_start":   "2015-07-15", "val_end":   "2020-09-30",
+           "test_start":  "2021-01-15", "test_end":  "2022-06-30"},
     "F2": {"train_start": "1971-01-01", "train_end": "2016-12-31",
-           "val_start":   "2017-04-01", "val_end":   "2022-06-30",
-           "test_start":  "2022-10-01", "test_end":  "2024-03-31"},
+           "val_start":   "2017-04-15", "val_end":   "2022-06-30",
+           "test_start":  "2022-10-15", "test_end":  "2024-03-31"},
     "F3": {"train_start": "1971-01-01", "train_end": "2018-09-30",
-           "val_start":   "2019-01-01", "val_end":   "2024-03-31",
-           "test_start":  "2024-07-01", "test_end":  "2025-12-31"},
+           "val_start":   "2019-01-15", "val_end":   "2024-03-31",
+           "test_start":  "2024-07-15", "test_end":  "2025-12-31"},
 }
 
 
@@ -118,11 +119,12 @@ def fetch_fred():
         ("WM2NS",    "weekly NSA 1981-01~"),
         ("DTB3",     "daily 3M T-bill 1954~"),
         ("CPIAUCSL", "monthly 1947~"),
-        ("GDPC1",    "quarterly 1947~"),
         ("M2V",      "quarterly 1959~"),
         ("MICH",     "monthly 1978-04~"),
         ("WTISPLC",  "WTI spot crude $/bbl, monthly 1946-01~"),  # 1970s oil shock 핵심
     ]
+    # GDPC1 (quarterly) 제거됨: yoy 변환의 52w lookback 이 fold gap 15w 보다 길어 cond leakage.
+    # 대체 = ADS Business Conditions Index (Phil Fed, daily, lag ~1w) — fetch_ads() 별도.
     series_dict = {}
     for name, desc in fred_specs:
         try:
@@ -139,6 +141,47 @@ def fetch_fred():
             print(f"    {name:10s}: FAILED — {e}")
             sys.exit(1)
     return series_dict
+
+
+def fetch_ads():
+    """Download ADS Business Conditions Index (Aruoba-Diebold-Scotti, Phil Fed).
+
+    Daily real-time business conditions proxy. Replaces GDP (분기 + yoy 변환의 52w
+    lookback 회피). Phil Fed 가 자체 호스팅 (FRED 에 없음).
+
+    Citation: Aruoba, Diebold, Scotti (2009). "Real-Time Measurement of Business
+    Conditions." J. of Business and Economic Statistics.
+
+    Source: https://www.philadelphiafed.org/surveys-and-data/real-time-data-research/ads
+
+    Returns
+    -------
+    pd.Series indexed by date (daily), values = ADS index (standardized, mean 0).
+    """
+    print("\n[1b] Download ADS Business Conditions Index (Phil Fed)")
+    csv_path = os.path.join(DATA, "ads_data.csv")
+    if not os.path.exists(csv_path):
+        sys.exit(
+            f"\n[FATAL] ADS Index data not found at {csv_path}.\n"
+            f"  Manual download required:\n"
+            f"    1) Visit https://www.philadelphiafed.org/surveys-and-data/real-time-data-research/ads\n"
+            f"    2) Download 'Most Current Vintage' CSV (or XLSX).\n"
+            f"    3) Save as {csv_path}  with columns [date, ADS_Index] (or 2-col [date, value]).\n"
+            f"       date format: YYYY:MM:DD or YYYY-MM-DD acceptable.\n"
+        )
+    df = pd.read_csv(csv_path)
+    # 컬럼 자동 탐지: 첫 컬럼 = date, 두 번째 컬럼 = ADS value
+    date_col = df.columns[0]
+    val_col  = df.columns[1] if len(df.columns) > 1 else None
+    if val_col is None:
+        sys.exit(f"[FATAL] {csv_path} has <2 columns")
+    # Date parsing — accept YYYY:MM:DD or YYYY-MM-DD
+    df[date_col] = df[date_col].astype(str).str.replace(":", "-", regex=False)
+    df["date"] = pd.to_datetime(df[date_col], errors="coerce")
+    df = df.dropna(subset=["date"]).set_index("date").sort_index()
+    s = df[val_col].astype(float)
+    print(f"    ADS daily: n={len(s):5d}, {s.index.min().date()} ~ {s.index.max().date()}")
+    return s
 
 
 def fetch_sp():
@@ -256,8 +299,8 @@ def m2_split_lag(s, dates):
     return s.shift(M2_LAG_PRE).where(dates < SPLIT_DATE, s.shift(M2_LAG_POST))
 
 
-def add_derived(df, fred_dict):
-    print(f"\n[4] Add CPI/GDP forward-fill + compute yoy/lag/13w_cum/BIS/bondpp/excess_liq")
+def add_derived(df, fred_dict, ads_daily):
+    print(f"\n[4] Add CPI/ADS forward-fill + compute lag/13w_cum/BIS/bondpp")
 
     # Reindex with ffill — match v33_newmetab style. df["date"] 는 sorted weekly dates.
     target_idx = pd.DatetimeIndex(df["date"])
@@ -269,10 +312,13 @@ def add_derived(df, fred_dict):
     df["log_cpi"] = np.log(df["cpi"].clip(lower=1e-8))
     df["cpi_wr"] = df["log_cpi"].diff()
 
-    gdp = fred_dict["GDPC1"].copy()
-    gdp.index = pd.to_datetime(gdp.index)
-    gdp = gdp.sort_index()
-    df["gdp_real"] = gdp.reindex(target_idx, method="ffill").values
+    # ADS Business Conditions Index (Aruoba-Diebold-Scotti, Phil Fed) — daily real-time
+    # business conditions proxy. Replaces GDP (quarterly + yoy 변환의 56w lookback 회피).
+    # ADS lookback = ADS_LAG 1w (publication) only.
+    ads_daily = ads_daily.copy()
+    ads_daily.index = pd.to_datetime(ads_daily.index)
+    ads_daily = ads_daily.sort_index()
+    df["ads"] = ads_daily.reindex(target_idx, method="ffill").values
 
     # WTI spot crude (monthly → weekly forward-fill); 1970s oil shock 핵심
     wti = fred_dict["WTISPLC"].copy()
@@ -282,20 +328,12 @@ def add_derived(df, fred_dict):
     df["log_wti"] = np.log(df["wti"].clip(lower=1e-8))
     df["wti_wr"] = df["log_wti"].diff()                           # weekly log change
 
-    # yoy (52w)
-    df["m2_yoy"]  = df["m2_level"]  / df["m2_level"].shift(52)  - 1.0
-    df["cpi_yoy"] = df["cpi"]       / df["cpi"].shift(52)       - 1.0
-    df["gdp_yoy"] = df["gdp_real"]  / df["gdp_real"].shift(52)  - 1.0
-    df["wti_yoy"] = df["wti"]       / df["wti"].shift(52)       - 1.0
-
-    # publication lag
+    # publication lag (NO yoy — yoy 변환은 52w lookback 만들어 fold gap leakage 유발).
+    # ADS 가 GDP 대체 (Aruoba-Diebold-Scotti 2009): daily real-time business conditions index.
     df["m2_growth_lag"] = m2_split_lag(df["m2_growth"], df["date"])
-    df["m2_yoy_lag"]    = m2_split_lag(df["m2_yoy"],    df["date"])
     df["cpi_wr_lag"]    = df["cpi_wr"].shift(CPI_LAG)
-    df["cpi_yoy_lag"]   = df["cpi_yoy"].shift(CPI_LAG)
-    df["gdp_yoy_lag"]   = df["gdp_yoy"].shift(GDP_LAG)
-    df["wti_wr_lag"]    = df["wti_wr"].shift(CPI_LAG)              # 같은 lag policy (월 발표)
-    df["wti_yoy_lag"]   = df["wti_yoy"].shift(CPI_LAG)
+    df["wti_wr_lag"]    = df["wti_wr"].shift(CPI_LAG)
+    df["ads_lag"]       = df["ads"].shift(ADS_LAG)
 
     # 13w cumulative
     df["m2_13w_cum_lag"]    = df["m2_growth_lag"].rolling(WINDOW).sum()
@@ -307,7 +345,6 @@ def add_derived(df, fred_dict):
     for t in range(WINDOW, len(df)):
         sp_13w[t] = log_sp[t] - log_sp[t - WINDOW]
     df["sp_13w_cum"] = sp_13w
-    df["gdp_13w_proxy_lag"] = df["gdp_yoy_lag"] * (WINDOW / 52)
 
     # Past realized volatility — HAR-RV (Corsi 2009) 다중 horizon rolling std
     # .shift(1) 적용: window 마지막 past row 가 future target 과 겹치지 않게 (no-leak)
@@ -315,13 +352,9 @@ def add_derived(df, fred_dict):
         df[f"sp_std_{w}w"]     = df["sp_return"].rolling(w).std(ddof=1).shift(1)
         df[f"sp_log_std_{w}w"] = np.log(df[f"sp_std_{w}w"].clip(lower=1e-8))
 
-    # BIS metab + bondpp/stockpp + excess_liq
-    df["metab_13w"] = (
-        df["m2_13w_cum_lag"] - df["gdp_13w_proxy_lag"] - df["cpi_13w_cum_lag"]
-    )
-    df["excess_liq_yoy_lag"] = (
-        df["m2_yoy_lag"] - df["gdp_yoy_lag"] - df["cpi_yoy_lag"]
-    )
+    # BIS-실용 metab_13w (gdp 제외, m2 - cpi only — build_weekly_ppbond.py:54 정의)
+    # gdp 는 yoy 변환의 52w lookback 때문에 cond 에서 제외. 경기 동행 신호는 ads_lag 별도 채널로.
+    df["metab_13w"] = df["m2_13w_cum_lag"] - df["cpi_13w_cum_lag"]
     df["bondpp_13w_lag"]  = np.log((1.0 + df["tbill_13w_cum"]) / (1.0 + df["metab_13w"]))
     df["stockpp_13w_lag"] = np.log((1.0 + df["sp_13w_cum"])    / (1.0 + df["metab_13w"]))
 
@@ -336,10 +369,9 @@ def cut_and_diagnose(df):
     print(f"\n[5] Cut to {CUT_DATE.date()} + dropna required cols")
     df = df[df["date"] >= CUT_DATE].reset_index(drop=True)
     NEED = [
-        "m2_growth_lag", "m2_yoy_lag", "cpi_wr_lag", "cpi_yoy_lag", "gdp_yoy_lag",
+        "m2_growth_lag", "cpi_wr_lag", "ads_lag",
         "m2_13w_cum_lag", "cpi_13w_cum_lag", "tbill_13w_cum", "sp_13w_cum",
-        "gdp_13w_proxy_lag", "metab_13w", "bondpp_13w_lag", "stockpp_13w_lag",
-        "excess_liq_yoy_lag",
+        "metab_13w", "bondpp_13w_lag", "stockpp_13w_lag",
         "sp_log_std_4w", "sp_log_std_13w", "sp_log_std_26w", "sp_log_std_52w",
     ]
     n_before = len(df)
@@ -420,9 +452,10 @@ def main():
     print(" Extend train history to 1971 — Nixon Shock + Oil Shock + Stagflation + Volcker peak")
     print("=" * 78)
     fred_dict = fetch_fred()
+    ads_daily = fetch_ads()
     sp_daily  = fetch_sp()
     df = build_weekly_base(fred_dict, sp_daily)
-    df = add_derived(df, fred_dict)
+    df = add_derived(df, fred_dict, ads_daily)
     df = cut_and_diagnose(df)
     add_vix_and_save(df)
 

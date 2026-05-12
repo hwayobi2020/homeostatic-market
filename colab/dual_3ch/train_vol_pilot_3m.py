@@ -50,22 +50,24 @@ PATIENCE = 30
 GRAD_CLIP = 1.0
 MIN_EPOCH = 20   # selection 시 best_epoch 가 이 값 이상이어야 함 — ep < 20 의 partial-learning 함정 차단 (F1 의 ep 12 케이스 등)
 
-# 3M (13w) horizon 일치 macro 변수 — yoy_lag (52w) → 13w_cum_lag 로 교체
-COLS_COND_BASE        = ["tbill_wr",        "m2_13w_cum_lag", "gdp_13w_proxy_lag", "cpi_13w_cum_lag"]
-COLS_COND_BASE_VIX    = ["tbill_wr", "vix", "m2_13w_cum_lag", "gdp_13w_proxy_lag", "cpi_13w_cum_lag"]
+# 3M (13w) horizon 일치 macro 변수 — gdp_13w_proxy_lag (yoy 변환의 56w lookback) 제거,
+# ADS Business Conditions Index (daily, lag 1w) 로 GDP 대체. fold gap 15w 와 정합.
+COLS_COND_BASE        = ["tbill_wr",        "m2_13w_cum_lag", "ads_lag", "cpi_13w_cum_lag"]
+COLS_COND_BASE_VIX    = ["tbill_wr", "vix", "m2_13w_cum_lag", "ads_lag", "cpi_13w_cum_lag"]
 
 VARIANTS = {
     1:  dict(name="base",                cond_extra=[]),
     2:  dict(name="base_bp",             cond_extra=["bondpp_13w_lag"]),
     3:  dict(name="base_sp",             cond_extra=["stockpp_13w_lag"]),
     4:  dict(name="base_bp_sp",          cond_extra=["bondpp_13w_lag", "stockpp_13w_lag"]),
-    5:  dict(name="base_bp_sp_el",       cond_extra=["bondpp_13w_lag", "stockpp_13w_lag", "excess_liq_yoy_lag"]),
     10: dict(name="base_bondsum",          cond_extra=["tbill_13w_cum"]),
     11: dict(name="base_stocksum",         cond_extra=["sp_13w_cum"]),
     12: dict(name="base_bondsum_stocksum", cond_extra=["tbill_13w_cum", "sp_13w_cum"]),
-    13: dict(name="base_metab_wti_har_13", cond_extra=["metab_13w", "wti_wr",
-                                                       "sp_log_std_13w"]),  # metab_13w = m2_13w_cum_lag - gdp_13w_proxy_lag - cpi_13w_cum_lag (BIS, 13w lookback → fold gap 3mo 정합). yoy_lag (52w) 은 fold gap 3mo 보다 길어 leakage 발생 → 제거.
-    113: dict(name="base_el_only",         cond_extra=["excess_liq_yoy_lag"]),                   # 기존 v13 pilot result 참조용 (no WTI). 주의: 52w lookback 이라 3mo gap fold 와 leakage. pilot_split 에서만 사용 가능.
+    13: dict(name="base_metab_ads_wti_har_13",
+             cond_extra=["metab_13w", "wti_wr", "sp_log_std_13w"]),
+        # metab_13w = m2_13w_cum_lag - cpi_13w_cum_lag (gdp 제외 BIS-실용 정의, 14-15w lookback).
+        # ADS_lag 는 base 에 이미 포함 → cond_extra 에 중복 추가 안 함.
+        # fold gap 15w 와 모든 cond lookback 정합 ✓ (leakage 0).
 }
 
 
