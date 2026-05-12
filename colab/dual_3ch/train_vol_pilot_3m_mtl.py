@@ -57,7 +57,8 @@ MIN_EPOCH = 20
 COLS_COND_BASE = ["tbill_wr", "m2_13w_cum_lag", "ads_lag", "cpi_13w_cum_lag", "sp_std_13w"]
 
 VARIANTS = {
-    14: dict(name="base_mtl_metab",
+    # v14 = paper main baseline. v1 (base only) 와 헷갈리지 않게 이름 "mtl_base".
+    14: dict(name="mtl_base",
              cond_cols=COLS_COND_BASE + ["wti_wr", "sp_log_std_13w"],
              aux_col="metab_13w"),
     # v15: permutation importance 로 HARMFUL 판정된 3개 (ads_lag, wti_wr, sp_log_std_13w) 제거
