@@ -53,14 +53,15 @@ PATIENCE = 30
 GRAD_CLIP = 1.0
 MIN_EPOCH = 20
 
-# Note: 제거된 feature (distribution shift): ads_lag (variance 4.4×), sp_gdp_ratio (mean shift +4.82σ)
-COLS_COND_BASE = ["tbill_wr", "m2_13w_cum_lag", "cpi_13w_cum_lag", "sp_std_13w"]
+# Note: cond 에 sp_std_13w (raw past 13w std) 추가 — magnitude direct read-out 보조
+COLS_COND_BASE = ["tbill_wr", "m2_13w_cum_lag", "ads_lag", "cpi_13w_cum_lag", "sp_std_13w"]
 
 VARIANTS = {
     14: dict(name="base_mtl_metab",
              cond_cols=COLS_COND_BASE + ["wti_wr", "sp_log_std_13w"],
              aux_col="metab_13w"),
-    # v15: macro fundamentals only — past vol scalar (sp_std_13w) + metab aux MTL.
+    # v15: permutation importance 로 HARMFUL 판정된 3개 (ads_lag, wti_wr, sp_log_std_13w) 제거
+    # 단 sp_std_13w (raw) 는 유지 — magnitude reference. paper logic: macro + raw vol level
     15: dict(name="base_clean_mtl",
              cond_cols=["tbill_wr", "m2_13w_cum_lag", "cpi_13w_cum_lag", "sp_std_13w"],
              aux_col="metab_13w"),

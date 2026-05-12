@@ -7,11 +7,13 @@ Variant 13 (code, `base_metab_ads_wti_har_13`):
   output = log( std(future 13w sp_return) )  → σ̂ = exp(log_std_pred)
 
 cond design (fold gap 15w leakage-clean):
-  - metab_13w = tbill_13w_cum − cpi_13w_cum_lag (real interest rate 누적, 사용자 정의).
-    모두 13w log return 단위. lookback max 15w (cpi 13w + lag 2w) = fold gap.
-  - publication lag: M2=1w, CPI=2w
+  - GDPC1 (분기 + yoy 변환의 56w lookback) 폐기 → INDPRO (Industrial Production,
+    Stock-Watson 1989/2002 GDP-growth monthly proxy) 로 metab 식 채움.
+  - metab_13w = m2_13w_cum_lag − indpro_13w_pct_lag − cpi_13w_cum_lag (BIS, 모두 13w log return %)
+  - ADS Business Conditions Index (Aruoba-Diebold-Scotti 2009) 는 별도 cond 채널
+    (z-score 단위라 metab 식 안 들어감; Bodilsen 2025 등 vol forecasting 표준 사용법)
+  - publication lag: M2=1w, CPI=2w, INDPRO=2w, ADS=1w
   - 모든 cond lookback ≤ 15w = fold gap → leakage 0
-  - ADS/INDPRO/GDPC1 모두 제거 (distribution shift 또는 미사용).
 
 생성하는 Figure (모두 result/ 에 저장):
 

@@ -53,9 +53,8 @@ MIN_EPOCH = 20   # selection 시 best_epoch 가 이 값 이상이어야 함 — 
 # 3M (13w) horizon 일치 macro 변수 — gdp_13w_proxy_lag (yoy 변환의 56w lookback) 제거,
 # ADS Business Conditions Index (daily, lag 1w) 로 GDP 대체. fold gap 15w 와 정합.
 # sp_std_13w (raw past 13w std, log 안 한 것) 도 cond 에 추가 — magnitude direct read-out.
-COLS_COND_BASE        = ["tbill_wr",        "m2_13w_cum_lag", "cpi_13w_cum_lag", "sp_std_13w"]
-COLS_COND_BASE_VIX    = ["tbill_wr", "vix", "m2_13w_cum_lag", "cpi_13w_cum_lag", "sp_std_13w"]
-# 제거된 feature (distribution shift): ads_lag (variance 4.4×), sp_gdp_ratio (mean shift +4.82σ)
+COLS_COND_BASE        = ["tbill_wr",        "m2_13w_cum_lag", "ads_lag", "cpi_13w_cum_lag", "sp_std_13w"]
+COLS_COND_BASE_VIX    = ["tbill_wr", "vix", "m2_13w_cum_lag", "ads_lag", "cpi_13w_cum_lag", "sp_std_13w"]
 
 VARIANTS = {
     1:  dict(name="base",                cond_extra=[]),
