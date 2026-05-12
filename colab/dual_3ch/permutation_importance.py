@@ -58,6 +58,16 @@ def qlike_loss(y_log, y_pred_log):
     return float(np.mean(ratio ** 2 - 2.0 * np.log(np.clip(ratio, 1e-12, None)) - 1.0))
 
 
+def pearson_loss(y_log, y_pred_log):
+    """Pearson 은 metric (높을수록 좋음) — 일관성 위해 -Pearson 반환 (낮을수록 좋음 = loss)."""
+    a = np.asarray(y_log, dtype=np.float64).ravel() - np.asarray(y_log).mean()
+    b = np.asarray(y_pred_log, dtype=np.float64).ravel() - np.asarray(y_pred_log).mean()
+    denom = float(np.sqrt((a ** 2).sum() * (b ** 2).sum()))
+    if denom < 1e-12:
+        return 0.0
+    return -float((a * b).sum() / denom)
+
+
 def load_v14_ckpts(fold: str):
     pattern = os.path.join(HERE, "result",
                            f"vol_pilot_3m_mtl_msel_v14_*_{fold}_seed*_best.pt")
@@ -142,8 +152,10 @@ def main():
     y_pred_base = preds_base.mean(axis=0)
     base_mse = mse_loss(y_log, y_pred_base)
     base_qlike = qlike_loss(y_log, y_pred_base)
-    print(f"    baseline MSE   = {base_mse:.5f}")
-    print(f"    baseline QLIKE = {base_qlike:.5f}")
+    base_neg_pearson = pearson_loss(y_log, y_pred_base)  # loss = -Pearson (낮을수록 좋음)
+    print(f"    baseline MSE       = {base_mse:.5f}")
+    print(f"    baseline QLIKE     = {base_qlike:.5f}")
+    print(f"    baseline -Pearson  = {base_neg_pearson:.5f}  (= -{-base_neg_pearson:.3f} Pearson)")
 
     # Permutation: per seed × per feature × per shuffle
     print(f"\n[4] Permutation importance: {len(cols_cond)} features × {n_seeds} seeds × {args.n_shuffles} shuffles")
@@ -154,6 +166,7 @@ def main():
     for i, fname in enumerate(cols_cond):
         d_mse_list = []
         d_qlike_list = []
+        d_neg_pearson_list = []
         for shuf in range(args.n_shuffles):
             perm = rng.permutation(n_w)  # window 축 shuffle
             Cte_shuf = Cte_m.clone()
@@ -167,34 +180,45 @@ def main():
             y_pred_s = preds_s.mean(axis=0)
             d_mse_list.append(mse_loss(y_log, y_pred_s) - base_mse)
             d_qlike_list.append(qlike_loss(y_log, y_pred_s) - base_qlike)
+            d_neg_pearson_list.append(pearson_loss(y_log, y_pred_s) - base_neg_pearson)
         d_mse = np.array(d_mse_list)
         d_qlike = np.array(d_qlike_list)
+        d_neg_p = np.array(d_neg_pearson_list)
+        # Δ(-Pearson) > 0 means Pearson 떨어짐 (feature 중요), < 0 means Pearson 올라감 (해로움)
+        # 보고 편의 위해 ΔPearson = -Δ(-Pearson) (양수 = Pearson 도움, 같은 부호 convention 으로 MSE/QLIKE 와 일치 X)
+        # 단순화: ΔPearson_shuffled = Pearson_shuffled - Pearson_base = -Δ(-Pearson)
+        d_pearson = -d_neg_p
         row = dict(
             feature=fname,
             d_mse_mean=float(d_mse.mean()),
             d_mse_std=float(d_mse.std(ddof=1)),
             d_qlike_mean=float(d_qlike.mean()),
             d_qlike_std=float(d_qlike.std(ddof=1)),
+            d_pearson_shuffled_mean=float(d_pearson.mean()),  # < 0 means Pearson 떨어짐 (feature 중요)
+            d_pearson_shuffled_std=float(d_pearson.std(ddof=1)),
             n_shuffles=int(args.n_shuffles),
         )
         rows.append(row)
-        print(f"    [{i}] {fname:22s}  ΔMSE = {d_mse.mean():+.5f} ± {d_mse.std(ddof=1):.5f}   "
-              f"ΔQLIKE = {d_qlike.mean():+.5f} ± {d_qlike.std(ddof=1):.5f}")
+        print(f"    [{i}] {fname:22s}  ΔMSE={d_mse.mean():+.5f}   "
+              f"ΔQLIKE={d_qlike.mean():+.5f}   ΔPearson={d_pearson.mean():+.4f}")
 
     # Sort by ΔMSE descending (큰 양수 = 가장 중요)
     rows_sorted = sorted(rows, key=lambda r: -r["d_mse_mean"])
-    print(f"\n{'='*84}")
-    print(" RANKING (sorted by ΔMSE, descending — 큰 양수일수록 중요, 음수는 해로움)")
-    print(f"{'='*84}")
-    print(f"  {'rank':4s}  {'feature':24s}  {'ΔMSE':>16s}     {'ΔQLIKE':>16s}     verdict")
-    print("  " + "-" * 82)
+    print(f"\n{'='*108}")
+    print(" RANKING (sorted by ΔMSE descending)")
+    print("   ΔMSE/ΔQLIKE > 0 = feature 중요 (shuffle 시 loss 증가)")
+    print("   ΔPearson  < 0 = feature 중요 (shuffle 시 Pearson 떨어짐)")
+    print(f"{'='*108}")
+    print(f"  {'rank':4s}  {'feature':22s}  {'ΔMSE':>18s}     {'ΔQLIKE':>18s}     {'ΔPearson':>16s}     verdict (MSE)")
+    print("  " + "-" * 106)
     for k, r in enumerate(rows_sorted, start=1):
         verdict = "  IMPORTANT" if r["d_mse_mean"] > 0.005 else (
                   "  ≈ ZERO"    if abs(r["d_mse_mean"]) <= 0.005 else
                   "  HARMFUL ⚠ ")
-        print(f"  {k:4d}  {r['feature']:24s}  "
+        print(f"  {k:4d}  {r['feature']:22s}  "
               f"{r['d_mse_mean']:+8.5f} ± {r['d_mse_std']:.5f}   "
-              f"{r['d_qlike_mean']:+8.5f} ± {r['d_qlike_std']:.5f}    {verdict}")
+              f"{r['d_qlike_mean']:+8.5f} ± {r['d_qlike_std']:.5f}   "
+              f"{r['d_pearson_shuffled_mean']:+7.4f} ± {r['d_pearson_shuffled_std']:.4f}    {verdict}")
 
     # Save
     csv_path = os.path.join(HERE, "result", f"permutation_importance_v14_{args.fold}.csv")
