@@ -83,15 +83,23 @@ INDPRO_LAG       = 2   # Fed G.17 Industrial Production release lag ≈ 2w (GDP-
 ADS_LAG          = 1   # Phil Fed ADS index publication lag ≈ 1w (별도 cond 채널)
 WINDOW           = 13
 
-# Single fold (2026-05-12 v5): train 시작 1971 → 1981 (Volcker disinflation 이후 modern era).
-# 1970s 오일쇼크/스태그플레이션의 macro level (tbill 3-15%, CPI 두자리수) 이 현대 (Fed inflation
-# targeting 이후) 와 매우 다름 → multi-modal training 으로 모델 over-prediction 강화 의심.
-# 1981+ modern era only 학습 → test (2020-2025) 와 monetary regime 단일성 가까움.
-# CUT_DATE (1971-01-08) 자체는 그대로 — 데이터는 1971 부터 build, FOLD_SPLITS 가 1981 부터 사용.
+# 3 folds (2026-05-12 v6): train 시작년 1971/1981/1991 비교 (v15 만으로 ablation).
+# 1970s 오일쇼크/스태그플레이션, 1980s Volcker, 1990s+ Fed inflation targeting era — train 의
+# regime homogeneity 가 modern test (2020-2025) 평가에 미치는 영향 검증.
+# val/test 동일, train_start 만 변경 (F71 36.2y, F81 36.2y... wait, 다 다름)
+#   F71: train 1971-2017 (46.25y) — 모든 폭락 포함
+#   F81: train 1981-2017 (36.25y) — Volcker 이후 modern era
+#   F91: train 1991-2017 (26.25y) — Fed inflation targeting era only
 FOLD_SPLITS = {
-    "F1": {"train_start": "1981-01-09", "train_end": "2017-03-31",
-           "val_start":   "2017-07-15", "val_end":   "2019-09-30",
-           "test_start":  "2020-01-15", "test_end":  "2025-12-31"},
+    "F71": {"train_start": "1971-01-01", "train_end": "2017-03-31",
+            "val_start":   "2017-07-15", "val_end":   "2019-09-30",
+            "test_start":  "2020-01-15", "test_end":  "2025-12-31"},
+    "F81": {"train_start": "1981-01-01", "train_end": "2017-03-31",
+            "val_start":   "2017-07-15", "val_end":   "2019-09-30",
+            "test_start":  "2020-01-15", "test_end":  "2025-12-31"},
+    "F91": {"train_start": "1991-01-01", "train_end": "2017-03-31",
+            "val_start":   "2017-07-15", "val_end":   "2019-09-30",
+            "test_start":  "2020-01-15", "test_end":  "2025-12-31"},
 }
 
 
