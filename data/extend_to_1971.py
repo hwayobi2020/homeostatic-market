@@ -83,23 +83,22 @@ INDPRO_LAG       = 2   # Fed G.17 Industrial Production release lag ≈ 2w (GDP-
 ADS_LAG          = 1   # Phil Fed ADS index publication lag ≈ 1w (별도 cond 채널)
 WINDOW           = 13
 
-# 3-fold expanding train (2026-05-12 v7): 인플레 사이클 3단계 비중첩 test.
-# 모든 fold val 에 COVID 2020-03 폭락 포함, test 는 각각 다른 인플레 단계.
-# fold gap 15w (val/test_start 15일).
-#   F1 test 2021.01-22.06: 인플레 시작 (저금리 → Fed 금리인상 시작)
-#   F2 test 2022.10-24.03: 인플레 정점 (CPI 9% → 점차 감소)
-#   F3 test 2024.07-25.12: 인플레 해소
-# 한계: test 1.5y ≈ 14 windows/fold (pooled 42) — paper §평가 limitation 명시 필수.
+# 3-fold expanding train (2026-05-12 v8): 3 위기 시기 직접 test.
+# 각 fold test 3.21y ≈ 103 windows. pooled 309 windows (통계 power 매우 강).
+# expanding train (1971 시작), gap 15w 정책.
+#   F1 test 1999.01-2002.03: 닷컴 버블 + 폭락 (peak Mar 2000 → trough Oct 2002, -49%)
+#   F2 test 2007.07-2010.09: GFC (peak Oct 2007 → trough Mar 2009, -57%) + 회복
+#   F3 test 2019.01-2022.03: COVID 폭락 (Feb-Mar 2020, -34%) + 인플레 진입
 FOLD_SPLITS = {
-    "F1": {"train_start": "1971-01-01", "train_end": "2015-03-31",
-           "val_start":   "2015-07-15", "val_end":   "2020-09-30",
-           "test_start":  "2021-01-15", "test_end":  "2022-06-30"},
-    "F2": {"train_start": "1971-01-01", "train_end": "2016-12-31",
-           "val_start":   "2017-04-15", "val_end":   "2022-06-30",
-           "test_start":  "2022-10-15", "test_end":  "2024-03-31"},
-    "F3": {"train_start": "1971-01-01", "train_end": "2018-09-30",
-           "val_start":   "2019-01-15", "val_end":   "2024-03-31",
-           "test_start":  "2024-07-15", "test_end":  "2025-12-31"},
+    "F1": {"train_start": "1971-01-01", "train_end": "1995-03-31",
+           "val_start":   "1995-07-15", "val_end":   "1998-09-30",
+           "test_start":  "1999-01-15", "test_end":  "2002-03-31"},
+    "F2": {"train_start": "1971-01-01", "train_end": "2003-09-30",
+           "val_start":   "2004-01-15", "val_end":   "2007-03-31",
+           "test_start":  "2007-07-15", "test_end":  "2010-09-30"},
+    "F3": {"train_start": "1971-01-01", "train_end": "2015-03-31",
+           "val_start":   "2015-07-15", "val_end":   "2018-09-30",
+           "test_start":  "2019-01-15", "test_end":  "2022-03-31"},
 }
 
 
