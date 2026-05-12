@@ -44,7 +44,7 @@ FUTURE_LEN = 13
 
 def load_ml_preds(variant_id: int, fold: str):
     """Load all seeds' (actual, pred) for an ML variant. Returns (actual_n, seed_mean_pred_n)."""
-    pattern = os.path.join(RESULT, f"vol_pilot_3m_*sel*_v{variant_id}_*_{fold}_seed*_pred.npz")
+    pattern = os.path.join(RESULT, f"vol_pilot_3m_*sel*_v{variant_id}_*_{fold}_seed*_test_preds.npz")
     paths = sorted(glob.glob(pattern))
     if not paths:
         sys.exit(f"[FATAL] no preds for v{variant_id} fold={fold}: {pattern}")
