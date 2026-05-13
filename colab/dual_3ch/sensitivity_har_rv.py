@@ -64,6 +64,9 @@ def load_cond_flow(fold, device, ckpt_name=None):
                  f"--save-name {ckpt_name}")
     state = torch.load(ckpt_path, map_location=device, weights_only=False)
     meta = state["meta"]
+    # K = source-of-truth = len(cond_features). 일부 ckpt 는 meta["context_features"] 가
+    # 잘못 저장됐을 수 있음 (학습 코드 버그) → cond_features list 의 길이를 신뢰.
+    K_meta = len(meta.get("cond_features", [])) or meta["context_features"]
     flow = build_cond_flow(
         base_kind=meta["base_kind"],
         df=meta["df"],
@@ -72,7 +75,7 @@ def load_cond_flow(fold, device, ckpt_name=None):
         tail_bound=meta["tail_bound"],
         hidden_features=meta["hidden_features"],
         num_blocks=meta.get("num_blocks", 2),
-        context_features=meta["context_features"],
+        context_features=K_meta,
         alpha_init=meta.get("alpha_init", -5.0),
     ).to(device)
     flow.load_state_dict(state["model_state"])

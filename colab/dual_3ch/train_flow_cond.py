@@ -253,6 +253,8 @@ def train_cond_flow(eps, cond, save_path, base_kind, df, alpha_init,
         print(f"  [SKIP] flow ckpt 이미 존재: {save_path}")
         state = torch.load(save_path, map_location=device, weights_only=False)
         meta = state["meta"]
+        # K = source-of-truth = len(cond_features). context_features 키는 잘못 저장될 수 있음.
+        K_meta = len(meta.get("cond_features", [])) or meta.get("context_features", K)
         flow = build_cond_flow(
             base_kind=meta.get("base_kind", base_kind),
             df=meta.get("df", df),
@@ -261,14 +263,22 @@ def train_cond_flow(eps, cond, save_path, base_kind, df, alpha_init,
             tail_bound=meta.get("tail_bound", tail_bound),
             hidden_features=meta.get("hidden_features", hidden_features),
             num_blocks=meta.get("num_blocks", num_blocks),
-            context_features=meta.get("context_features", K),
+            context_features=K_meta,
             alpha_init=meta.get("alpha_init", alpha_init),
         ).to(device)
         flow.load_state_dict(state["model_state"])
         print(f"    [load] base={meta.get('base_kind','?')}, layers={meta.get('num_layers','?')}, "
               f"bins={meta.get('num_bins','?')}, hidden={meta.get('hidden_features','?')}, "
               f"context_features={meta.get('context_features','?')}")
-        return flow
+        # SKIP path: 호출측이 (flow, train_stats) tuple unpack 하므로 동일 형식 반환
+        return flow, dict(
+            n_params=sum(p.numel() for p in flow.parameters()),
+            final_train_nll=meta.get("final_train_nll"),
+            best_train_nll=meta.get("best_train_nll"),
+            alpha_final=meta.get("alpha_final"),
+            alpha_history=meta.get("alpha_history"),
+            skipped=True,
+        )
 
     flow = build_cond_flow(
         base_kind=base_kind, df=df, alpha_init=alpha_init,
@@ -470,7 +480,7 @@ def main():
         alpha_history=train_stats.get("alpha_history"),
         num_layers=args.num_layers, num_bins=args.num_bins, tail_bound=args.tail_bound,
         hidden_features=args.hidden_features, num_blocks=args.num_blocks,
-        context_features=len(COND_FEATURES),
+        context_features=len(train_meta["cond_features"]),
         cond_features=train_meta["cond_features"],
         cond_mean=train_meta["cond_mean"],
         cond_std=train_meta["cond_std"],
