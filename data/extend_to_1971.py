@@ -99,12 +99,20 @@ FOLD_SPLITS = {
     "F3": {"train_start": "1971-01-01", "train_end": "2018-09-30",
            "val_start":   "2019-01-15", "val_end":   "2024-03-31",
            "test_start":  "2024-07-15", "test_end":  "2025-12-31"},
-    # F_long : single-fold, longest train (43.25y). User 요청 (2026-05-13).
-    # val 6.5y 가 COVID 포함, test 4.75y 는 post-COVID 회복기.
-    # gap 3.5mo (val_end 2020-12-31 → test_start 2021-04-15).
-    "F_long": {"train_start": "1971-01-01", "train_end": "2014-03-31",
-               "val_start":   "2014-07-15", "val_end":   "2020-12-31",
-               "test_start":  "2021-04-15", "test_end":  "2025-12-31"},
+    # F_long_* : single-fold robustness 검증 (3개 시간 shift, 각 5년씩).
+    # 사용자 요청 (2026-05-13). 각 fold 의 train ~ test 길이 동일 구조.
+    #   F_long_A test 2011-2015: Fed QE / 저금리 / 경기 회복기
+    #   F_long_B test 2016-2020: Fed 금리인상 시작 + COVID
+    #   F_long   test 2021-2025: post-COVID + 인플레 / Fed hike (paper main)
+    "F_long_A": {"train_start": "1971-01-01", "train_end": "2004-03-31",
+                 "val_start":   "2004-07-15", "val_end":   "2010-12-31",
+                 "test_start":  "2011-04-15", "test_end":  "2015-12-31"},
+    "F_long_B": {"train_start": "1971-01-01", "train_end": "2009-03-31",
+                 "val_start":   "2009-07-15", "val_end":   "2015-12-31",
+                 "test_start":  "2016-04-15", "test_end":  "2020-12-31"},
+    "F_long":   {"train_start": "1971-01-01", "train_end": "2014-03-31",
+                 "val_start":   "2014-07-15", "val_end":   "2020-12-31",
+                 "test_start":  "2021-04-15", "test_end":  "2025-12-31"},
 }
 
 
