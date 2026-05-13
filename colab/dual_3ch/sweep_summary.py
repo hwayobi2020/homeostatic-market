@@ -122,22 +122,32 @@ def print_table(rows, sort_key):
 
 
 def highlight_best(rows, per_fold=True):
-    """Identify and print best (lowest test_nll) entry per fold and overall."""
+    """Identify and print best entry per fold using VAL NLL only.
+
+    Test NLL / CRPS / cov95 are shown as reporting-only numbers for the
+    val-selected spec.  Selecting by test_nll would be data leakage.
+    """
     by_fold = {}
     for r in rows:
-        if r.get("test_nll") is None:
+        if r.get("val_nll") is None:
             continue
         by_fold.setdefault(r["fold"], []).append(r)
     print()
+    print("  [spec selection key = val_nll only -- test_nll / CRPS / cov95 "
+          "below are reporting numbers, NOT used for selection]")
     for fold, group in by_fold.items():
-        best = min(group, key=lambda r: r["test_nll"])
-        print(f"  best test_nll @ {fold:8s}: tag={best['tag']!r:18s}  "
+        best = min(group, key=lambda r: r["val_nll"])
+        cvar = best.get("cvar1_diff")
+        cvar_str = f"{abs(cvar):.4f}" if cvar is not None else "--"
+        cov_str  = f"{best['cov95']:.3f}" if best.get("cov95") is not None else "--"
+        test_str = f"{best['test_nll']:+.4f}" if best.get("test_nll") is not None else "--"
+        print(f"  best val_nll @ {fold:8s}: tag={best['tag']!r:18s}  "
               f"d_m={best['d_model']}, nML={best['n_mamba_layers']}, "
               f"nFL={best['n_flow_layers']}, nFH={best['n_flow_hidden']}, "
               f"wd={best['weight_decay']}, dr={best['dropout']}  "
-              f"-> test_nll = {best['test_nll']:+.4f}, "
-              f"cov95 = {best.get('cov95'):.3f}, "
-              f"|CVaR1Δ| = {abs(best.get('cvar1_diff') or 0):.4f}")
+              f"-> val_nll = {best['val_nll']:+.4f}  "
+              f"[report: test_nll = {test_str}, cov95 = {cov_str}, "
+              f"|CVaR1Δ| = {cvar_str}]")
 
 
 def main():
@@ -148,10 +158,11 @@ def main():
     ap.add_argument("--fold", default="all",
                     help="F_long_A / F_long_B / F_long / all")
     ap.add_argument("--result-dir", default=os.path.join(HERE, "result"))
-    ap.add_argument("--sort", default="test_nll",
-                    choices=["test_nll", "val_nll", "crps", "emd",
+    ap.add_argument("--sort", default="val_nll",
+                    choices=["val_nll", "test_nll", "crps", "emd",
                              "cvar1_diff", "cov95", "tag"],
-                    help="sort key (default test_nll, ascending)")
+                    help="sort key (default val_nll -- spec selection must "
+                         "NOT use test_nll to avoid leakage)")
     args = ap.parse_args()
 
     if not os.path.isdir(args.result_dir):
