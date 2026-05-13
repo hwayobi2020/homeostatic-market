@@ -1,15 +1,20 @@
 """HAR-OLS Autoregressive baseline - fair comparison with Mamba AR + Flow head.
 
-Design (session 2026-05-13b L11-16):
-  - HAR-style OLS: 1w / 4w / 13w / 52w means x 8 channels = 32 features
-    + const + future_tbill_wr[tau] = 34 features per (origin, step).
+Design (session 2026-05-13b L11-16, refined per user follow-up 2026-05-13):
+  - HAR-style OLS: 4w / 13w / 26w / 52w x (mean + std (ddof=1)) x 8 channels
+    = 64 features + const + future_tbill_wr[tau] = 66 features per (origin, step).
   - AR rollout: sampled y[tau-1] feeds back to sp_return history at step tau
     in inference; teacher-forced (true y[tau-1]) in training.  macro 6 channels
     are frozen at origin row in BOTH train and inference, mirroring
     train_flow_seq.py future-mask design (only tbill_wr is unmask).  tbill_wr
     uses true future sequence in both train and inference.
-  - Single pooled OLS across (origin x step).  Gaussian residual, sigma pooled
-    (single sigma_z estimated from train residuals).
+  - Single pooled Ridge regression across (origin x step).  Const exempt from
+    L2 penalty.  alpha selection via CLI --l2-alpha:
+      * 'cv' (default): grid CV on val csv pairs (MSE z-score), grid =
+        [0.01, 0.1, 1, 10, 100].  Final fit on train only with best alpha.
+      * float (e.g. 1.0): use that alpha directly.  0 -> plain OLS.
+    Gaussian residual, sigma pooled (single sigma_z from train residuals;
+    ddof=p, conservative wrt ridge effective-df shrinkage).
   - Z-score standardization (cond per channel + target sp_return) - matches
     train_flow_seq.py so per-week NLL (Gaussian closed-form, z-score units)
     is directly comparable.
@@ -49,12 +54,13 @@ sys.path.insert(0, HERE)
 from train_flow_seq import COND_COLS, TBILL_CH, PAST_LEN, FUTURE_LEN
 
 N_CHANNELS   = len(COND_COLS)                  # 8
-HORIZONS     = [1, 4, 13, 52]                  # HAR-style horizon means (weekly)
-N_HAR_FEAT   = N_CHANNELS * len(HORIZONS)      # 32
-N_FEAT_TOTAL = N_HAR_FEAT + 2                  # +const +future_tbill[tau]  -> 34
+HORIZONS     = [4, 13, 26, 52]                 # HAR-style horizon windows (weekly)
+N_STATS      = 2                               # {mean, std (ddof=1)} per horizon
+N_HAR_FEAT   = N_CHANNELS * len(HORIZONS) * N_STATS      # 64
+N_FEAT_TOTAL = N_HAR_FEAT + 2                  # +const +future_tbill[tau]  -> 66
 SP_CH        = COND_COLS.index("sp_return")    # 0
 MACRO_CH     = [c for c in range(N_CHANNELS) if c not in (SP_CH, TBILL_CH)]   # 6 ch
-N_MACRO_FEAT = len(MACRO_CH) * len(HORIZONS)   # 24
+N_MACRO_FEAT = len(MACRO_CH) * len(HORIZONS) * N_STATS   # 48
 
 
 # =====================================================================
@@ -78,51 +84,67 @@ def fit_target_stats(target_arr):
 # =====================================================================
 
 def compute_macro_origin_features(channel_z, origin_idx):
-    """Frozen-at-origin macro horizon means (6 channels x 4 horizons = 24).
+    """Frozen-at-origin macro horizon features (6 channels x 4 horizons x 2 stats = 48).
 
-    For each macro channel c and horizon h, take mean of
+    For each macro channel c and each horizon h, take mean and std (ddof=1) of
       channel_z[origin_idx + PAST_LEN - h : origin_idx + PAST_LEN, c]
     i.e. the last h weeks of past data ending at origin row.
-    Layout order: [c2_h1, c2_h4, c2_h13, c2_h52, c3_h1, ..., c7_h52].
+
+    Layout: outer loop over channels (in MACRO_CH order), within each channel's
+    8-entry block the first 4 entries are means at HORIZONS and the last 4 are
+    stds at HORIZONS:
+      [c2_h4_mean, c2_h13_mean, c2_h26_mean, c2_h52_mean,
+       c2_h4_std,  c2_h13_std,  c2_h26_std,  c2_h52_std,
+       c3_h4_mean, ..., c7_h52_std]
     """
+    n_h   = len(HORIZONS)
     feats = np.empty(N_MACRO_FEAT, dtype=np.float64)
-    end = origin_idx + PAST_LEN
-    k = 0
+    end   = origin_idx + PAST_LEN
+    block = 0
     for c in MACRO_CH:
-        for h in HORIZONS:
+        for hi, h in enumerate(HORIZONS):
             start = end - h
-            feats[k] = channel_z[start:end, c].mean()
-            k += 1
+            seg = channel_z[start:end, c]
+            feats[block + hi]       = seg.mean()
+            feats[block + hi + n_h] = seg.std(ddof=1)
+        block += n_h * N_STATS
     return feats
 
 
-def compute_horizon_means_1d(series, end_idx):
-    """Rolling horizon means for a 1-D series up to (not including) end_idx.
-    Returns array of shape (len(HORIZONS),) in order [h1, h4, h13, h52].
+def compute_horizon_features_1d(series, end_idx):
+    """Rolling horizon mean + std for a 1-D series up to (not including) end_idx.
+
+    Returns array of shape (len(HORIZONS) * N_STATS,) = (8,) in order:
+      [h4_mean, h13_mean, h26_mean, h52_mean, h4_std, h13_std, h26_std, h52_std].
+    Each window has exactly h values (end_idx >= PAST_LEN = 52 >= max horizon).
+    Caller guarantees no NaN inside the slice (window-level NaN filter upstream).
     """
-    out = np.empty(len(HORIZONS), dtype=np.float64)
+    n_h = len(HORIZONS)
+    out = np.empty(n_h * N_STATS, dtype=np.float64)
     for hi, h in enumerate(HORIZONS):
         start = max(0, end_idx - h)
-        out[hi] = series[start:end_idx].mean()
+        seg   = series[start:end_idx]
+        out[hi]       = seg.mean()
+        out[hi + n_h] = seg.std(ddof=1)
     return out
 
 
-def assemble_feature_vector(sp_h, tbill_h, macro_orig, future_tbill_at_tau):
-    """Assemble 34-dim feature vector.
+def assemble_feature_vector(sp_feats, tbill_feats, macro_orig, future_tbill_at_tau):
+    """Assemble 66-dim feature vector.
 
     Layout:
-      [0]      const = 1
-      [1:5]    sp_return horizon means (4)              dynamic per step
-      [5:9]    tbill_wr horizon means (4)               dynamic per step
-      [9:33]   macro 6 channels x 4 horizons (24)       frozen at origin
-      [33]     future_tbill_wr at current step tau (1)  unmask channel
+      [0]       const = 1
+      [1:9]     sp_return: 4 horizon means + 4 horizon stds      (dynamic per step)
+      [9:17]    tbill_wr:  4 horizon means + 4 horizon stds      (dynamic per step)
+      [17:65]   macro 6 ch x (4 mean + 4 std) = 48               (frozen at origin)
+      [65]      future_tbill_wr at current step tau (1)          (unmask channel)
     """
     feat = np.empty(N_FEAT_TOTAL, dtype=np.float64)
-    feat[0]     = 1.0
-    feat[1:5]   = sp_h
-    feat[5:9]   = tbill_h
-    feat[9:33]  = macro_orig
-    feat[33]    = future_tbill_at_tau
+    feat[0]      = 1.0
+    feat[1:9]    = sp_feats
+    feat[9:17]   = tbill_feats
+    feat[17:65]  = macro_orig
+    feat[65]     = future_tbill_at_tau
     return feat
 
 
@@ -163,11 +185,11 @@ def build_train_pairs(channel_z):
         sp_full     = window[:, SP_CH]      # (L,) z-score
         tbill_full  = window[:, TBILL_CH]   # (L,) z-score
         for tau in range(FUTURE_LEN):
-            end_idx  = PAST_LEN + tau
-            sp_h     = compute_horizon_means_1d(sp_full, end_idx)
-            tbill_h  = compute_horizon_means_1d(tbill_full, end_idx)
-            feat     = assemble_feature_vector(sp_h, tbill_h, macro_orig,
-                                               tbill_full[end_idx])
+            end_idx     = PAST_LEN + tau
+            sp_feats    = compute_horizon_features_1d(sp_full,    end_idx)
+            tbill_feats = compute_horizon_features_1d(tbill_full, end_idx)
+            feat        = assemble_feature_vector(sp_feats, tbill_feats, macro_orig,
+                                                  tbill_full[end_idx])
             X_rows.append(feat)
             y_rows.append(sp_full[end_idx])
 
@@ -176,16 +198,70 @@ def build_train_pairs(channel_z):
     return X, y, n_valid
 
 
-def ols_fit(X, y):
-    """Closed-form pooled OLS via lstsq.  Returns (beta, sigma_resid_df_adj).
+def ridge_fit(X, y, alpha):
+    """Closed-form Ridge regression with const exempt from L2 penalty.
 
-    sigma estimated with df = N - p where p = X.shape[1].
+    beta = argmin || y - X beta ||^2 + alpha * sum_{j>=1} beta_j^2
+         = (X'X + alpha * diag(0, 1, 1, ..., 1))^-1 X'y
+
+    alpha = 0 reduces to plain OLS (same numerics as np.linalg.lstsq within
+    rounding).  sigma_resid uses ddof = X.shape[1] (conservative; ignores
+    ridge effective-df shrinkage which is small for n >> p).
     """
-    beta, *_ = np.linalg.lstsq(X, y, rcond=None)
+    p = X.shape[1]
+    if alpha <= 0.0:
+        beta, *_ = np.linalg.lstsq(X, y, rcond=None)
+    else:
+        Reg = alpha * np.eye(p)
+        Reg[0, 0] = 0.0      # do not penalise intercept
+        XtX = X.T @ X
+        Xty = X.T @ y
+        beta = np.linalg.solve(XtX + Reg, Xty)
     pred  = X @ beta
     resid = y - pred
-    sigma = float(np.std(resid, ddof=X.shape[1]))
+    sigma = float(np.std(resid, ddof=p))
     return beta, sigma
+
+
+# Default Ridge alpha grid for --l2-alpha cv.  log-spaced around 1.0 since
+# features are z-scored (so the unit scale is naturally O(1)).
+CV_ALPHA_GRID = [0.01, 0.1, 1.0, 10.0, 100.0]
+
+
+def parse_l2_alpha(val):
+    """Parse --l2-alpha CLI value: literal 'cv' / 'auto' or non-negative float."""
+    if isinstance(val, str) and val.lower() in ("cv", "auto"):
+        return "cv"
+    try:
+        f = float(val)
+    except (TypeError, ValueError):
+        sys.exit(f"[FATAL] --l2-alpha must be a non-negative float or 'cv', "
+                 f"got {val!r}")
+    if f < 0.0:
+        sys.exit(f"[FATAL] --l2-alpha must be >= 0, got {f}")
+    return f
+
+
+def select_alpha_cv(X_tr, y_tr, X_v, y_v, grid=CV_ALPHA_GRID):
+    """Pick alpha in `grid` minimising val MSE (z-score units).
+
+    For each alpha:
+      1) Fit Ridge on train (X_tr, y_tr).
+      2) Predict on val and compute MSE in z-score units.
+
+    Returns (best_alpha, results) where results is a list of
+    dict(alpha=..., val_mse_z=...) one per grid point.
+    """
+    results = []
+    best = None
+    for a in grid:
+        beta, _ = ridge_fit(X_tr, y_tr, a)
+        err_v   = y_v - X_v @ beta
+        mse_v   = float((err_v ** 2).mean())
+        results.append(dict(alpha=float(a), val_mse_z=mse_v))
+        if best is None or mse_v < best["val_mse_z"]:
+            best = results[-1]
+    return float(best["alpha"]), results
 
 
 # =====================================================================
@@ -237,24 +313,27 @@ def ar_rollout_simulate(channel_z, beta, sigma_z, target_stats, n_sim, seed=2026
 
         for tau in range(FUTURE_LEN):
             end_idx = PAST_LEN + tau
+            n_h     = len(HORIZONS)
 
-            # sp_return horizon means: vectorized across n_sim
-            sp_feats = np.empty((n_sim, len(HORIZONS)), dtype=np.float64)
+            # sp_return horizon features (mean + std): vectorized across n_sim
+            sp_feats = np.empty((n_sim, n_h * N_STATS), dtype=np.float64)
             for hi, h in enumerate(HORIZONS):
                 start = max(0, end_idx - h)
-                sp_feats[:, hi] = sp_hist[:, start:end_idx].mean(axis=1)
+                seg   = sp_hist[:, start:end_idx]                # (n_sim, h)
+                sp_feats[:, hi]       = seg.mean(axis=1)
+                sp_feats[:, hi + n_h] = seg.std(axis=1, ddof=1)
 
-            # tbill_wr horizon means: deterministic, broadcast to all sims
-            tbill_h = compute_horizon_means_1d(tbill_full, end_idx)
+            # tbill_wr horizon features (deterministic across sims, broadcast)
+            tbill_feats         = compute_horizon_features_1d(tbill_full, end_idx)
             future_tbill_at_tau = float(tbill_full[end_idx])
 
-            # Assemble feature matrix (n_sim, 34)
+            # Assemble feature matrix (n_sim, 66)
             X_step = np.empty((n_sim, N_FEAT_TOTAL), dtype=np.float64)
             X_step[:, 0]      = 1.0
-            X_step[:, 1:5]    = sp_feats
-            X_step[:, 5:9]    = tbill_h[None, :]
-            X_step[:, 9:33]   = macro_orig[None, :]
-            X_step[:, 33]     = future_tbill_at_tau
+            X_step[:, 1:9]    = sp_feats
+            X_step[:, 9:17]   = tbill_feats[None, :]
+            X_step[:, 17:65]  = macro_orig[None, :]
+            X_step[:, 65]     = future_tbill_at_tau
 
             mu_step = X_step @ beta                                  # (n_sim,)
             eps     = rng.standard_normal(n_sim) * sigma_z
@@ -394,12 +473,18 @@ def plot_histogram(actual_flat, sim_flat, title, save_path):
 # =====================================================================
 
 def feature_names():
-    """Human-readable names for the 34 feature columns (matches assemble layout)."""
+    """Human-readable names for the N_FEAT_TOTAL feature columns (matches assemble)."""
     names = ["const"]
-    names += [f"sp_h{h}" for h in HORIZONS]
-    names += [f"tbill_h{h}" for h in HORIZONS]
+    # sp_return: 4 means then 4 stds
+    names += [f"sp_h{h}_mean" for h in HORIZONS]
+    names += [f"sp_h{h}_std"  for h in HORIZONS]
+    # tbill_wr: 4 means then 4 stds
+    names += [f"tbill_h{h}_mean" for h in HORIZONS]
+    names += [f"tbill_h{h}_std"  for h in HORIZONS]
+    # macro 6 channels: each contributes 4 means + 4 stds
     for c in MACRO_CH:
-        names += [f"{COND_COLS[c]}_h{h}" for h in HORIZONS]
+        names += [f"{COND_COLS[c]}_h{h}_mean" for h in HORIZONS]
+        names += [f"{COND_COLS[c]}_h{h}_std"  for h in HORIZONS]
     names += ["future_tbill_at_tau"]
     assert len(names) == N_FEAT_TOTAL, (len(names), N_FEAT_TOTAL)
     return names
@@ -417,6 +502,10 @@ def main():
     ap.add_argument("--result-dir", default=os.path.join(HERE, "result"))
     ap.add_argument("--n-sim", type=int, default=1000,
                     help="AR rollout sample paths per test origin")
+    ap.add_argument("--l2-alpha", default="cv",
+                    help="Ridge L2 alpha.  'cv' (default) selects from "
+                         f"{CV_ALPHA_GRID} via val MSE; a float (e.g. 1.0) uses "
+                         "that value directly; 0 = plain OLS")
     ap.add_argument("--seed", type=int, default=2026)
     args = ap.parse_args()
 
@@ -430,14 +519,16 @@ def main():
     os.makedirs(args.result_dir, exist_ok=True)
 
     print("=" * 78)
-    print(f" HAR-OLS AR baseline  -  fold = {args.fold}")
+    print(f" HAR-Ridge AR baseline  -  fold = {args.fold}")
     print(f"  channels      : {COND_COLS}")
-    print(f"  feature dim   : const + 8 ch x 4 horizons + future_tbill[tau] = "
-          f"{N_FEAT_TOTAL}")
+    print(f"  feature dim   : const + 8 ch x 4 horizons x (mean+std) "
+          f"+ future_tbill[tau] = {N_FEAT_TOTAL}")
     print(f"  AR rule       : sp_return  teacher-forced (train) / sampled (test)")
     print(f"                  tbill_wr   true future (both)")
     print(f"                  macro 6    frozen at origin (both)")
     print(f"  residual dist : Gaussian, sigma pooled (single sigma_z)")
+    print(f"  L2 alpha      : --l2-alpha = {args.l2_alpha!r}  "
+          f"(grid for cv: {CV_ALPHA_GRID})")
     print(f"  NLL           : closed-form per-week Gaussian, z-score units")
     print(f"  n_sim         : {args.n_sim} per test origin")
     print(f"  seed          : {args.seed}")
@@ -471,17 +562,60 @@ def main():
     print(f"    X.shape = {X_tr.shape}  y.shape = {y_tr.shape}")
 
     # -----------------------------------------------------------------
-    # [3] Pooled OLS fit
+    # [3] Pooled Ridge fit + L2 alpha selection (CV via val csv if requested)
     # -----------------------------------------------------------------
-    print(f"\n[3] Pooled OLS fit")
-    beta, sigma_z = ols_fit(X_tr, y_tr)
+    print(f"\n[3] Pooled Ridge fit + L2 alpha selection")
+
+    l2_arg = parse_l2_alpha(args.l2_alpha)
+
+    # Build val pairs (used both for CV alpha selection and val diagnostic).
+    val_pairs = None
+    if has_val:
+        df_v   = pd.read_csv(val_csv)
+        arr_v  = df_v[COND_COLS].values.astype(np.float64)
+        ch_z_v = (arr_v - cond_mu) / cond_sd
+        X_v, y_v, n_orig_v = build_train_pairs(ch_z_v)
+        if X_v.shape[0] > 0:
+            val_pairs = (X_v, y_v, int(n_orig_v))
+            print(f"    val pairs built : origins = {n_orig_v}, "
+                  f"pairs = {X_v.shape[0]}")
+        else:
+            print(f"    [WARN] val csv has no valid pairs after NaN filter")
+    else:
+        print(f"    (no val csv at {val_csv})")
+
+    cv_results = None
+    if l2_arg == "cv":
+        if val_pairs is None:
+            print(f"    [WARN] --l2-alpha=cv but no usable val pairs; "
+                  f"falling back to alpha = 1.0")
+            l2_alpha_final = 1.0
+        else:
+            X_v_pairs, y_v_pairs, _ = val_pairs
+            l2_alpha_final, cv_results = select_alpha_cv(
+                X_tr, y_tr, X_v_pairs, y_v_pairs
+            )
+            print(f"    CV grid (val MSE, z-score):")
+            for r in cv_results:
+                marker = "  <-- best" if r["alpha"] == l2_alpha_final else ""
+                print(f"      alpha = {r['alpha']:>8.3f}   "
+                      f"val_mse_z = {r['val_mse_z']:.6f}{marker}")
+    else:
+        l2_alpha_final = float(l2_arg)
+        print(f"    fixed alpha (no CV) = {l2_alpha_final}")
+    print(f"    selected L2 alpha   = {l2_alpha_final}")
+
+    # Final Ridge fit on train with the selected alpha.
+    beta, sigma_z = ridge_fit(X_tr, y_tr, l2_alpha_final)
     pred_tr  = X_tr @ beta
     resid_tr = y_tr - pred_tr
     ss_tot   = float(((y_tr - y_tr.mean()) ** 2).sum())
     ss_res   = float((resid_tr ** 2).sum())
     r2_tr    = 1.0 - ss_res / max(ss_tot, 1e-12)
-    print(f"    sigma_z (residual std, df = N - p) = {sigma_z:.6f}")
-    print(f"    train R^2                          = {r2_tr:+.4f}")
+    beta_l2  = float(np.sqrt((beta[1:] ** 2).sum()))    # excludes intercept
+    print(f"    sigma_z (residual std, ddof = p)    = {sigma_z:.6f}")
+    print(f"    train R^2                           = {r2_tr:+.4f}")
+    print(f"    beta L2 norm (excluding const)      = {beta_l2:.4f}")
     print(f"    top |beta| features:")
     feat_names = feature_names()
     order = np.argsort(-np.abs(beta))
@@ -492,31 +626,26 @@ def main():
     # [4] Optional val diagnostic (teacher-forced, no AR sampling)
     # -----------------------------------------------------------------
     val_metrics = None
-    if has_val:
-        print(f"\n[4] Val diagnostic (teacher-forced features, closed-form NLL)")
-        df_v   = pd.read_csv(val_csv)
-        arr_v  = df_v[COND_COLS].values.astype(np.float64)
-        ch_z_v = (arr_v - cond_mu) / cond_sd
-        X_v, y_v, n_orig_v = build_train_pairs(ch_z_v)
-        if X_v.shape[0] > 0:
-            mu_v   = X_v @ beta
-            err_v  = y_v - mu_v
-            nll_v  = (0.5 * np.log(2 * math.pi * sigma_z ** 2)
-                      + (err_v ** 2) / (2 * sigma_z ** 2))
-            mse_v  = float((err_v ** 2).mean())
-            val_metrics = dict(
-                n_origins=int(n_orig_v),
-                n_pairs=int(X_v.shape[0]),
-                per_week_nll_z=float(nll_v.mean()),
-                mse_z=mse_v,
-            )
-            print(f"    val origins              = {n_orig_v}")
-            print(f"    per-week NLL (z-score)   = {val_metrics['per_week_nll_z']:+.4f}")
-            print(f"    MSE  (z-score, residual) = {mse_v:.4f}")
-        else:
-            print(f"    [skip] no valid val pairs")
+    if val_pairs is not None:
+        print(f"\n[4] Val diagnostic (closed-form NLL using train sigma_z, "
+              f"best alpha = {l2_alpha_final})")
+        X_v, y_v, n_orig_v = val_pairs
+        mu_v   = X_v @ beta
+        err_v  = y_v - mu_v
+        nll_v  = (0.5 * np.log(2 * math.pi * sigma_z ** 2)
+                  + (err_v ** 2) / (2 * sigma_z ** 2))
+        mse_v  = float((err_v ** 2).mean())
+        val_metrics = dict(
+            n_origins      = int(n_orig_v),
+            n_pairs        = int(X_v.shape[0]),
+            per_week_nll_z = float(nll_v.mean()),
+            mse_z          = mse_v,
+        )
+        print(f"    val origins              = {n_orig_v}")
+        print(f"    per-week NLL (z-score)   = {val_metrics['per_week_nll_z']:+.4f}")
+        print(f"    MSE  (z-score, residual) = {mse_v:.4f}")
     else:
-        print(f"\n[4] (no val csv at {val_csv} -- skip val diagnostic)")
+        print(f"\n[4] (no usable val pairs -- skip val diagnostic)")
 
     # -----------------------------------------------------------------
     # [5] Test AR rollout simulation
@@ -638,11 +767,18 @@ def main():
     # -----------------------------------------------------------------
     print(f"\n[10] Save summary JSON")
     summary = dict(
-        model            = ("HAR-OLS AR baseline (pooled OLS, Gaussian sigma pooled, "
-                            "teacher-forced training, AR rollout inference)"),
+        model            = ("HAR-Ridge AR baseline (pooled Ridge regression, "
+                            "Gaussian sigma pooled, teacher-forced training, "
+                            "AR rollout inference)"),
         fold             = args.fold,
+        l2_alpha_arg     = str(args.l2_alpha),
+        l2_alpha_used    = float(l2_alpha_final),
+        cv_grid          = list(CV_ALPHA_GRID),
+        cv_results       = cv_results,
+        beta_l2_norm     = float(beta_l2),
         channels         = list(COND_COLS),
         horizons         = list(HORIZONS),
+        n_stats          = int(N_STATS),
         n_features       = N_FEAT_TOTAL,
         n_train_origins  = int(n_orig_tr),
         n_train_pairs    = int(X_tr.shape[0]),
