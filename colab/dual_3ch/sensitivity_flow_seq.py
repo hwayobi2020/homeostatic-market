@@ -35,7 +35,7 @@ ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
 sys.path.insert(0, HERE)
 
 from train_flow_seq import (
-    SequenceEncoder, SequenceCondFlow, build_joint_flow,
+    SequenceEncoder, SequenceCondFlow, build_1d_cond_flow,
     load_windows_seq, mask_future_channels,
     PAST_LEN, FUTURE_LEN, COND_COLS, N_CHANNELS, TBILL_CH, MASK_FUTURE_CH,
 )
@@ -143,13 +143,13 @@ def load_model_from_ckpt(ckpt_path, device):
         d_model=meta["d_model"], n_heads=meta["n_heads"], n_layers=meta["n_layers"],
         past_len=meta["past_len"], future_len=meta["future_len"],
     )
-    flow = build_joint_flow(
-        features=meta["future_len"], context_features=meta["d_model"],
+    flow = build_1d_cond_flow(
+        context_features=meta["d_model"],
         num_layers=meta["n_flow_layers"], hidden_features=meta["n_flow_hidden"],
         num_blocks=meta["n_flow_blocks"], num_bins=meta["n_flow_bins"],
         tail_bound=meta["flow_tail_bound"],
     )
-    model = SequenceCondFlow(encoder, flow).to(device)
+    model = SequenceCondFlow(encoder, flow, future_len=meta["future_len"]).to(device)
     model.load_state_dict(state["model_state"])
     model.eval()
     return model, meta

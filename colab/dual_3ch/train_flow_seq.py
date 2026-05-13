@@ -1,18 +1,19 @@
-"""Sequence-conditioned Flow — 사용자 5/10 architecture (future tbill scenario → sp_return path).
+"""Sequence-conditioned Flow — Conditional independence across 13 weeks.
 
 User design 의도 (chat/215ace1f.jsonl L47, L101, 2026-05-10):
   - in_cond(past 52w):   sp_return + macro 7 = 8 channel sequence
   - in_cond(future 13w): tbill_wr 만 unmask (다른 macro mask)
-  - Output: 13-step sp_return path joint distribution
+  - Output: 13-step sp_return path, **13 step 간 conditional i.i.d. given encoder embedding**
 
-Architecture:
+Architecture (2026-05-13 변경 — joint AR 폐기, conditional i.i.d. 로 복귀):
   Encoder = TransformerEncoder (v14 CausalTransformerVolMTL encoder 구조 차용)
            input  (B, 65, 8)  ← past 52 + future 13, future 의 tbill_wr 만 unmask
-           output (B, d_model) ← pooled embedding
-  Decoder = Joint 13-dim Conditional NSF
+           output (B, d_model) ← pooled embedding C_t
+  Decoder = 1D Conditional NSF (features=1)
            MaskedPiecewiseRationalQuadraticAutoregressiveTransform × 6
-           features=13, context_features=d_model
-  Loss   = -log p(sp_return_path | past_seq, future_tbill_seq)
+           features=1, context_features=d_model
+  Loss   = -mean over (origin, week) of log p(ε_w | C_t)
+           각 origin 의 13 ε samples 가 same C_t 받음 → conditional i.i.d.
 
 Output (per fold):
   result/flow_seq_{fold}_best.pt
@@ -132,19 +133,20 @@ class SequenceEncoder(nn.Module):
         return self.pool_proj(pooled)
 
 
-def build_joint_flow(features, context_features, num_layers, hidden_features,
-                     num_blocks, num_bins, tail_bound):
-    """Joint multivariate Conditional NSF.
+def build_1d_cond_flow(context_features, num_layers, hidden_features,
+                       num_blocks, num_bins, tail_bound):
+    """1D Conditional NSF (features=1).
 
-    features = future_len = 13 (sp_return path 의 joint distribution)
-    base = StandardNormal(shape=[features]) — multivariate i.i.d. standard normal
-    transforms = (MaskedPiecewiseRationalQuadraticAutoregressive + ReversePermutation) × num_layers
+    매 week 별로 same flow 호출 → 13 step conditional i.i.d. given encoder embedding.
+    base = StandardNormal(shape=[1])
+    transforms = MaskedPiecewiseRationalQuadraticAutoregressiveTransform × num_layers
+                 (features=1 이면 ReversePermutation 의미 없음 — 생략)
     """
-    base = StandardNormal(shape=[features])
+    base = StandardNormal(shape=[1])
     transforms = []
     for _ in range(num_layers):
         transforms.append(MaskedPiecewiseRationalQuadraticAutoregressiveTransform(
-            features=features,
+            features=1,
             hidden_features=hidden_features,
             context_features=context_features,
             num_blocks=num_blocks,
@@ -152,25 +154,50 @@ def build_joint_flow(features, context_features, num_layers, hidden_features,
             tails="linear",
             tail_bound=tail_bound,
         ))
-        transforms.append(ReversePermutation(features=features))
     return Flow(CompositeTransform(transforms), base)
 
 
+# Backward-compat alias (for old ckpts loading sensitivity_flow_seq.py)
+build_joint_flow = build_1d_cond_flow   # deprecated, will be removed
+
+
 class SequenceCondFlow(nn.Module):
-    """Encoder + Joint Conditional NSF wrapper."""
-    def __init__(self, encoder, flow):
+    """Encoder + 1D Conditional NSF wrapper (13 step 간 conditional i.i.d.)."""
+    def __init__(self, encoder, flow, future_len=FUTURE_LEN):
         super().__init__()
         self.encoder = encoder
         self.flow = flow
+        self.future_len = future_len
 
     def log_prob(self, target_path, x_cond):
-        ctx = self.encoder(x_cond)
-        return self.flow.log_prob(inputs=target_path, context=ctx)
+        """target_path: (B, future_len), x_cond: (B, L, N_CHANNELS).
+
+        Returns per-origin log p = sum over weeks of log p(ε_w | C_t).
+        For batch loss: caller takes .mean() / future_len for per-(origin, week) average.
+        """
+        B, T = target_path.shape
+        ctx = self.encoder(x_cond)                       # (B, d_model)
+        # Flatten (B, T) → (B*T, 1), repeat ctx
+        y_flat = target_path.reshape(B * T, 1)           # (B*T, 1)
+        ctx_rep = ctx.repeat_interleave(T, dim=0)        # (B*T, d_model)
+        log_p_flat = self.flow.log_prob(inputs=y_flat, context=ctx_rep)   # (B*T,)
+        # Reshape back and sum over weeks
+        log_p = log_p_flat.reshape(B, T).sum(dim=1)      # (B,)
+        return log_p
 
     @torch.no_grad()
     def sample(self, n_sim, x_cond):
-        ctx = self.encoder(x_cond)
-        return self.flow.sample(n_sim, context=ctx)
+        """Sample n_sim × future_len conditional i.i.d. samples per origin.
+
+        Returns (B, n_sim, future_len).
+        """
+        B = x_cond.shape[0]
+        T = self.future_len
+        ctx = self.encoder(x_cond)                       # (B, d_model)
+        # 13 i.i.d. samples per (origin, path)
+        samples = self.flow.sample(n_sim * T, context=ctx)   # (B, n_sim*T, 1)
+        samples = samples.reshape(B, n_sim, T)
+        return samples
 
 
 # =====================================================================
@@ -282,8 +309,7 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
 
     # Build model
     encoder = SequenceEncoder(N_CHANNELS, D_MODEL, N_HEADS, N_LAYERS, PAST_LEN, FUTURE_LEN)
-    flow = build_joint_flow(
-        features=FUTURE_LEN,
+    flow = build_1d_cond_flow(
         context_features=D_MODEL,
         num_layers=N_FLOW_LAYERS,
         hidden_features=N_FLOW_HIDDEN,
@@ -332,7 +358,9 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
             pat += 1
         if ep == 1 or ep % 5 == 0 or improved or ep == max_epoch:
             mark = " ★" if improved else ""
-            print(f"    ep{ep:>3d}: train_nll={train_nll:+.4f}  val_nll={val_nll:+.4f}"
+            # per-origin = sum over 13 weeks 의 NLL.  per-week = nll / 13.
+            print(f"    ep{ep:>3d}: train_nll={train_nll:+.4f} (per-week {train_nll/FUTURE_LEN:+.3f})"
+                  f"  val_nll={val_nll:+.4f} (per-week {val_nll/FUTURE_LEN:+.3f})"
                   f"  (best {best_val_nll:+.4f} @ep{best_epoch}){mark}")
         if pat >= patience:
             print(f"    [early stop] ep{ep}  (patience {patience} from ep{best_epoch})")
@@ -398,7 +426,8 @@ def main():
     print(f" Sequence-cond Flow training — fold={args.fold}")
     print(f"  past 52w channels: all 8 unmask  ({COND_COLS})")
     print(f"  future 13w channel: only ch{TBILL_CH} ({COND_COLS[TBILL_CH]}) unmask")
-    print(f"  output: joint 13-dim sp_return path distribution")
+    print(f"  output: 13-step sp_return — conditional i.i.d. given encoder embedding")
+    print(f"  flow: 1D Cond NSF (features=1), 13 step 간 shared NSF, same context")
     print(f"  device: {device}")
     print("=" * 78)
 
