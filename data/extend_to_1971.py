@@ -99,6 +99,12 @@ FOLD_SPLITS = {
     "F3": {"train_start": "1971-01-01", "train_end": "2018-09-30",
            "val_start":   "2019-01-15", "val_end":   "2024-03-31",
            "test_start":  "2024-07-15", "test_end":  "2025-12-31"},
+    # F_long : single-fold, longest train (43.25y). User 요청 (2026-05-13).
+    # val 6.5y 가 COVID 포함, test 4.75y 는 post-COVID 회복기.
+    # gap 3.5mo (val_end 2020-12-31 → test_start 2021-04-15).
+    "F_long": {"train_start": "1971-01-01", "train_end": "2014-03-31",
+               "val_start":   "2014-07-15", "val_end":   "2020-12-31",
+               "test_start":  "2021-04-15", "test_end":  "2025-12-31"},
 }
 
 
