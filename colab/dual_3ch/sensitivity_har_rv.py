@@ -84,7 +84,7 @@ def load_cond_flow(fold, device, ckpt_name=None):
     if meta["base_kind"] == "skew_t":
         a_str = f", α_final={meta.get('alpha_final', 'N/A')}"
     print(f"  Cond Flow loaded: base={meta['base_kind']}{a_str}, "
-          f"K_cond={meta['context_features']}, layers={meta['num_layers']}")
+          f"K_cond={K_meta}, layers={meta['num_layers']}")
     print(f"    cond_features = {meta['cond_features']}")
     print(f"    r_mean_train={meta['r_mean_train']:+.6f}, r_std_train={meta['r_std_train']:.6f}")
     return flow, meta
@@ -379,11 +379,19 @@ def main():
         if args.v14_test_pred_npz is None:
             sys.exit(f"[FATAL] ckpt cond_features 에 'v14_oof_log_std' 가 있는데 "
                      f"--v14-test-pred-npz 가 지정되지 않았습니다.")
-        v14_path = args.v14_test_pred_npz
-        if not os.path.isabs(v14_path):
-            v14_path = os.path.join(RESULT, v14_path)
-        if not os.path.exists(v14_path):
-            sys.exit(f"[FATAL] v14 test_preds.npz 없음: {v14_path}")
+        v14_path_in = args.v14_test_pred_npz
+        # 후보 경로 시도: 절대 / repo root 상대 / RESULT 상대 / basename(RESULT 안)
+        candidates = [v14_path_in]
+        if not os.path.isabs(v14_path_in):
+            candidates += [
+                os.path.join(ROOT, v14_path_in),
+                os.path.join(RESULT, v14_path_in),
+                os.path.join(RESULT, os.path.basename(v14_path_in)),
+            ]
+        v14_path = next((c for c in candidates if os.path.exists(c)), None)
+        if v14_path is None:
+            sys.exit(f"[FATAL] v14 test_preds.npz 없음. 시도한 경로:\n  " +
+                     "\n  ".join(candidates))
         v14_npz = np.load(v14_path, allow_pickle=False)
         v14_preds = np.asarray(v14_npz["y_pred_log_std"], dtype=np.float64)
         # Align by HAR test origin order — both follow csv origin order (PAST_LEN-1 offset)
