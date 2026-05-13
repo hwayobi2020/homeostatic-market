@@ -232,17 +232,19 @@ def compute_valid_mask(csv_path, cond_stats):
 class _MambaResBlock(nn.Module):
     """Pre-norm + residual wrapper around a single mamba-ssm Mamba block.
 
-    Standard SSM block layout (Tri Dao 2023, Mamba paper):  out = x + Mamba(LN(x)).
+    Standard SSM block layout (Tri Dao 2023, Mamba paper):
+      out = x + dropout(Mamba(LN(x))).
     """
     def __init__(self, d_model, d_state=MAMBA_D_STATE, d_conv=MAMBA_D_CONV,
-                 expand=MAMBA_EXPAND):
+                 expand=MAMBA_EXPAND, dropout=0.0):
         super().__init__()
-        self.norm  = nn.LayerNorm(d_model)
-        self.mamba = Mamba(d_model=d_model, d_state=d_state,
-                           d_conv=d_conv, expand=expand)
+        self.norm    = nn.LayerNorm(d_model)
+        self.mamba   = Mamba(d_model=d_model, d_state=d_state,
+                             d_conv=d_conv, expand=expand)
+        self.dropout = nn.Dropout(dropout) if dropout > 0.0 else nn.Identity()
 
     def forward(self, x):
-        return x + self.mamba(self.norm(x))
+        return x + self.dropout(self.mamba(self.norm(x)))
 
 
 class MambaEncoder(nn.Module):
@@ -257,10 +259,11 @@ class MambaEncoder(nn.Module):
     shift on the sp channel there is no target leakage.
     """
     def __init__(self, d_model, n_layers, d_state=MAMBA_D_STATE,
-                 d_conv=MAMBA_D_CONV, expand=MAMBA_EXPAND):
+                 d_conv=MAMBA_D_CONV, expand=MAMBA_EXPAND, dropout=0.0):
         super().__init__()
         self.layers = nn.ModuleList([
-            _MambaResBlock(d_model, d_state=d_state, d_conv=d_conv, expand=expand)
+            _MambaResBlock(d_model, d_state=d_state, d_conv=d_conv,
+                           expand=expand, dropout=dropout)
             for _ in range(n_layers)
         ])
         self.final_norm = nn.LayerNorm(d_model)
@@ -282,7 +285,7 @@ class MambaFlowAR(nn.Module):
                  n_mamba_layers=N_MAMBA_LAYERS,
                  n_flow_layers=N_FLOW_LAYERS, n_flow_hidden=N_FLOW_HIDDEN,
                  n_flow_blocks=N_FLOW_BLOCKS, n_flow_bins=N_FLOW_BINS,
-                 flow_tail_bound=FLOW_TAIL_BOUND,
+                 flow_tail_bound=FLOW_TAIL_BOUND, dropout=0.0,
                  past_len=PAST_LEN, future_len=FUTURE_LEN):
         super().__init__()
         self.d_input    = d_input
@@ -301,6 +304,7 @@ class MambaFlowAR(nn.Module):
         self.mamba = MambaEncoder(
             d_model=d_model, n_layers=n_mamba_layers,
             d_state=MAMBA_D_STATE, d_conv=MAMBA_D_CONV, expand=MAMBA_EXPAND,
+            dropout=dropout,
         )
 
         # 1D Conditional NSF (same spec as train_flow_seq.build_1d_cond_flow).
@@ -315,6 +319,7 @@ class MambaFlowAR(nn.Module):
                 num_bins=n_flow_bins,
                 tails="linear",
                 tail_bound=flow_tail_bound,
+                dropout_probability=dropout,
             ))
         self.flow = Flow(CompositeTransform(transforms), base)
 
@@ -499,6 +504,7 @@ def plot_histogram(actual_flat, sim_flat, title, save_path):
 def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
           d_model=D_MODEL, n_mamba_layers=N_MAMBA_LAYERS,
           n_flow_layers=N_FLOW_LAYERS, n_flow_hidden=N_FLOW_HIDDEN,
+          weight_decay=0.01, dropout=0.0,
           max_epoch=MAX_EPOCH, patience=PATIENCE, batch=BATCH, lr=LR,
           device="cuda", seed=2026):
     torch.manual_seed(seed); np.random.seed(seed)
@@ -517,11 +523,12 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
     model = MambaFlowAR(
         d_model=d_model, n_mamba_layers=n_mamba_layers,
         n_flow_layers=n_flow_layers, n_flow_hidden=n_flow_hidden,
+        dropout=dropout,
     ).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"    model params  = {n_params:,}")
 
-    opt = torch.optim.AdamW(model.parameters(), lr=lr)
+    opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     train_ds = TensorDataset(Xtr, Ytr)
     train_dl = DataLoader(train_ds, batch_size=batch, shuffle=True, drop_last=False)
     Xv_dev = Xv.to(device); Yv_dev = Yv.to(device)
@@ -580,6 +587,7 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
             mamba_d_state=MAMBA_D_STATE, mamba_d_conv=MAMBA_D_CONV,
             mamba_expand=MAMBA_EXPAND,
             n_flow_layers=n_flow_layers, n_flow_hidden=n_flow_hidden,
+            weight_decay=weight_decay, dropout=dropout,
             n_flow_blocks=N_FLOW_BLOCKS, n_flow_bins=N_FLOW_BINS,
             flow_tail_bound=FLOW_TAIL_BOUND,
             cond_stats=cond_stats, target_stats=target_stats,
@@ -599,6 +607,7 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
         mamba_d_state=int(MAMBA_D_STATE), mamba_d_conv=int(MAMBA_D_CONV),
         mamba_expand=int(MAMBA_EXPAND),
         n_flow_layers=int(n_flow_layers), n_flow_hidden=int(n_flow_hidden),
+        weight_decay=float(weight_decay), dropout=float(dropout),
         n_flow_blocks=int(N_FLOW_BLOCKS), n_flow_bins=int(N_FLOW_BINS),
         flow_tail_bound=float(FLOW_TAIL_BOUND),
         best_epoch=int(best_epoch), best_val_nll=float(best_val_nll),
@@ -795,6 +804,10 @@ def main():
     ap.add_argument("--n-mamba-layers",  type=int, default=N_MAMBA_LAYERS)
     ap.add_argument("--n-flow-layers",   type=int, default=N_FLOW_LAYERS)
     ap.add_argument("--n-flow-hidden",   type=int, default=N_FLOW_HIDDEN)
+    ap.add_argument("--weight-decay",    type=float, default=0.01,
+                    help="AdamW weight_decay (L2 regularization)")
+    ap.add_argument("--dropout",         type=float, default=0.0,
+                    help="dropout for Mamba residual + Flow head MLPs")
     ap.add_argument("--seed",      type=int, default=2026)
     args = ap.parse_args()
 
@@ -828,6 +841,7 @@ def main():
           f"blocks = {N_FLOW_BLOCKS}, bins = {N_FLOW_BINS}")
     print(f"  output prefix  : {prefix_base}")
     print(f"  train          : AdamW lr = {args.lr}, batch = {args.batch}, "
+          f"weight_decay = {args.weight_decay}, dropout = {args.dropout}, "
           f"max_epoch = {args.max_epoch}, patience = {args.patience}")
     print(f"  n_sim          : {args.n_sim} per test origin "
           f"(chunk {args.chunk_origins})")
@@ -838,6 +852,7 @@ def main():
         args.fold, train_csv, val_csv, save_path, log_path, summary_path,
         d_model=args.d_model, n_mamba_layers=args.n_mamba_layers,
         n_flow_layers=args.n_flow_layers, n_flow_hidden=args.n_flow_hidden,
+        weight_decay=args.weight_decay, dropout=args.dropout,
         max_epoch=args.max_epoch, patience=args.patience,
         batch=args.batch, lr=args.lr, device=device, seed=args.seed,
     )
