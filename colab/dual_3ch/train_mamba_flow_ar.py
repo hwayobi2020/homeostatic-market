@@ -497,6 +497,8 @@ def plot_histogram(actual_flat, sim_flat, title, save_path):
 # =====================================================================
 
 def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
+          d_model=D_MODEL, n_mamba_layers=N_MAMBA_LAYERS,
+          n_flow_layers=N_FLOW_LAYERS, n_flow_hidden=N_FLOW_HIDDEN,
           max_epoch=MAX_EPOCH, patience=PATIENCE, batch=BATCH, lr=LR,
           device="cuda", seed=2026):
     torch.manual_seed(seed); np.random.seed(seed)
@@ -512,7 +514,10 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
     if n_v == 0:
         sys.exit(f"[FATAL] no val windows in {val_csv}")
 
-    model = MambaFlowAR().to(device)
+    model = MambaFlowAR(
+        d_model=d_model, n_mamba_layers=n_mamba_layers,
+        n_flow_layers=n_flow_layers, n_flow_hidden=n_flow_hidden,
+    ).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"    model params  = {n_params:,}")
 
@@ -571,10 +576,10 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
         "meta": dict(
             fold=fold, cond_cols=COND_COLS,
             past_len=PAST_LEN, future_len=FUTURE_LEN,
-            d_model=D_MODEL, n_mamba_layers=N_MAMBA_LAYERS,
+            d_model=d_model, n_mamba_layers=n_mamba_layers,
             mamba_d_state=MAMBA_D_STATE, mamba_d_conv=MAMBA_D_CONV,
             mamba_expand=MAMBA_EXPAND,
-            n_flow_layers=N_FLOW_LAYERS, n_flow_hidden=N_FLOW_HIDDEN,
+            n_flow_layers=n_flow_layers, n_flow_hidden=n_flow_hidden,
             n_flow_blocks=N_FLOW_BLOCKS, n_flow_bins=N_FLOW_BINS,
             flow_tail_bound=FLOW_TAIL_BOUND,
             cond_stats=cond_stats, target_stats=target_stats,
@@ -590,10 +595,10 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
         cond_cols=list(COND_COLS),
         mask_future_macro_ch=list(MACRO_CH),
         past_len=int(PAST_LEN), future_len=int(FUTURE_LEN),
-        d_model=int(D_MODEL), n_mamba_layers=int(N_MAMBA_LAYERS),
+        d_model=int(d_model), n_mamba_layers=int(n_mamba_layers),
         mamba_d_state=int(MAMBA_D_STATE), mamba_d_conv=int(MAMBA_D_CONV),
         mamba_expand=int(MAMBA_EXPAND),
-        n_flow_layers=int(N_FLOW_LAYERS), n_flow_hidden=int(N_FLOW_HIDDEN),
+        n_flow_layers=int(n_flow_layers), n_flow_hidden=int(n_flow_hidden),
         n_flow_blocks=int(N_FLOW_BLOCKS), n_flow_bins=int(N_FLOW_BINS),
         flow_tail_bound=float(FLOW_TAIL_BOUND),
         best_epoch=int(best_epoch), best_val_nll=float(best_val_nll),
@@ -783,6 +788,13 @@ def main():
     ap.add_argument("--n-sim",     type=int, default=1000)
     ap.add_argument("--chunk-origins", type=int, default=8,
                     help="AR rollout origin chunk size (GPU memory control)")
+    ap.add_argument("--tag", default="",
+                    help="output prefix suffix (e.g. 'small') -- preserves "
+                         "previous results when sweeping hyperparams")
+    ap.add_argument("--d-model",         type=int, default=D_MODEL)
+    ap.add_argument("--n-mamba-layers",  type=int, default=N_MAMBA_LAYERS)
+    ap.add_argument("--n-flow-layers",   type=int, default=N_FLOW_LAYERS)
+    ap.add_argument("--n-flow-hidden",   type=int, default=N_FLOW_HIDDEN)
     ap.add_argument("--seed",      type=int, default=2026)
     args = ap.parse_args()
 
@@ -793,7 +805,9 @@ def main():
         if not os.path.exists(p):
             sys.exit(f"[FATAL] missing csv: {p}")
     os.makedirs(args.out_dir, exist_ok=True)
-    result_prefix = os.path.join(args.out_dir, f"mamba_flow_ar_{args.fold}")
+    prefix_base = (f"mamba_flow_ar_{args.tag}_{args.fold}" if args.tag
+                   else f"mamba_flow_ar_{args.fold}")
+    result_prefix = os.path.join(args.out_dir, prefix_base)
     save_path    = f"{result_prefix}_best.pt"
     log_path     = f"{result_prefix}_log.csv"
     summary_path = f"{result_prefix}_summary.json"
@@ -805,12 +819,14 @@ def main():
     print(f"  input mask     : sp_return  shifted-by-1 (teacher / AR feedback)")
     print(f"                   tbill_wr   real future scenario (unmasked)")
     print(f"                   macro 6    future 13w zero-mask")
-    print(f"  Mamba-SSM      : d_model = {D_MODEL}, n_layers = {N_MAMBA_LAYERS}, "
+    print(f"  Mamba-SSM      : d_model = {args.d_model}, "
+          f"n_layers = {args.n_mamba_layers}, "
           f"d_state = {MAMBA_D_STATE}, d_conv = {MAMBA_D_CONV}, "
           f"expand = {MAMBA_EXPAND}")
     print(f"  Flow head      : 1D Cond NSF features = 1, "
-          f"layers = {N_FLOW_LAYERS}, hidden = {N_FLOW_HIDDEN}, "
+          f"layers = {args.n_flow_layers}, hidden = {args.n_flow_hidden}, "
           f"blocks = {N_FLOW_BLOCKS}, bins = {N_FLOW_BINS}")
+    print(f"  output prefix  : {prefix_base}")
     print(f"  train          : AdamW lr = {args.lr}, batch = {args.batch}, "
           f"max_epoch = {args.max_epoch}, patience = {args.patience}")
     print(f"  n_sim          : {args.n_sim} per test origin "
@@ -820,8 +836,10 @@ def main():
 
     model, best_state, cond_stats, target_stats = train(
         args.fold, train_csv, val_csv, save_path, log_path, summary_path,
+        d_model=args.d_model, n_mamba_layers=args.n_mamba_layers,
+        n_flow_layers=args.n_flow_layers, n_flow_hidden=args.n_flow_hidden,
         max_epoch=args.max_epoch, patience=args.patience,
-        batch=args.batch, lr=args.lr, device=device, seed=args.seed
+        batch=args.batch, lr=args.lr, device=device, seed=args.seed,
     )
 
     eval_metrics = evaluate_test(
