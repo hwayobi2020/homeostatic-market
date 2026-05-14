@@ -124,6 +124,32 @@ GRAD_CLIP = 1.0
 # Data loader (z-score, shifted sp, masked future macro)
 # =====================================================================
 
+# Module-level dataset cache for in-process sweeps -- avoids re-reading the
+# same train/val/test csv across many (spec, fold) combinations.  Key is
+# (csv_path, fingerprint of cond_stats, fingerprint of target_stats).
+_DATA_CACHE = {}
+
+
+def _cache_key(csv_path, cond_stats, target_stats):
+    cs_key = None if cond_stats is None else (
+        tuple(cond_stats["mean"]), tuple(cond_stats["std"]))
+    ts_key = None if target_stats is None else (
+        float(target_stats["mean"]), float(target_stats["std"]))
+    return (csv_path, cs_key, ts_key)
+
+
+def cached_load_windows_seq(csv_path, past_len=PAST_LEN, future_len=FUTURE_LEN,
+                            cond_stats=None, target_stats=None):
+    """Memoized wrapper around load_windows_seq.  Identical signature."""
+    key = _cache_key(csv_path, cond_stats, target_stats)
+    if key in _DATA_CACHE:
+        return _DATA_CACHE[key]
+    out = load_windows_seq(csv_path, past_len=past_len, future_len=future_len,
+                           cond_stats=cond_stats, target_stats=target_stats)
+    _DATA_CACHE[key] = out
+    return out
+
+
 def load_windows_seq(csv_path, past_len=PAST_LEN, future_len=FUTURE_LEN,
                      cond_stats=None, target_stats=None):
     """Build (X_input, Y_target) windows with shifted sp + future macro mask.
@@ -510,10 +536,10 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
     torch.manual_seed(seed); np.random.seed(seed)
 
     print(f"\n[1] Load train + val (teacher-forced sequences)")
-    Xtr, Ytr, cond_stats, target_stats, n_tr = load_windows_seq(train_csv)
+    Xtr, Ytr, cond_stats, target_stats, n_tr = cached_load_windows_seq(train_csv)
     print(f"    train windows = {n_tr}, X.shape = {tuple(Xtr.shape)}, "
           f"Y.shape = {tuple(Ytr.shape)}")
-    Xv, Yv, _, _, n_v = load_windows_seq(
+    Xv, Yv, _, _, n_v = cached_load_windows_seq(
         val_csv, cond_stats=cond_stats, target_stats=target_stats
     )
     print(f"    val windows   = {n_v}")
@@ -637,7 +663,7 @@ def evaluate_test(model, best_state, test_csv, cond_stats, target_stats,
     model.eval()
 
     print(f"\n[5] Load test + closed-form NLL (teacher-forced)")
-    Xte, Yte, _, _, n_te = load_windows_seq(
+    Xte, Yte, _, _, n_te = cached_load_windows_seq(
         test_csv, cond_stats=cond_stats, target_stats=target_stats
     )
     print(f"    test windows = {n_te}")
@@ -780,6 +806,98 @@ def evaluate_test(model, best_state, test_csv, cond_stats, target_stats,
 # Main
 # =====================================================================
 
+def main_worker(args):
+    """In-process entry point for one (fold, spec) train + evaluate.
+
+    Accepts argparse.Namespace OR a dict of overrides.  Reuses the module-level
+    _DATA_CACHE so repeated calls on the same fold avoid re-reading csv files.
+    At the end frees CUDA memory (Gemini critique: VRAM leak prevention for
+    long sweeps).
+
+    Returns the test eval metrics dict.
+    """
+    import gc
+
+    if isinstance(args, dict):
+        defaults = dict(
+            folds_dir=os.path.join(ROOT, "data", "folds_v33_vix_expanding"),
+            out_dir=os.path.join(HERE, "result"),
+            max_epoch=MAX_EPOCH, patience=PATIENCE,
+            batch=BATCH, lr=LR,
+            n_sim=1000, chunk_origins=8, tag="",
+            d_model=D_MODEL, n_mamba_layers=N_MAMBA_LAYERS,
+            n_flow_layers=N_FLOW_LAYERS, n_flow_hidden=N_FLOW_HIDDEN,
+            weight_decay=0.01, dropout=0.0, seed=2026,
+        )
+        merged = {**defaults, **args}
+        if "fold" not in merged:
+            raise ValueError("args dict must include 'fold'")
+        args = argparse.Namespace(**merged)
+
+    train_csv = os.path.join(args.folds_dir, f"{args.fold}_train.csv")
+    val_csv   = os.path.join(args.folds_dir, f"{args.fold}_val.csv")
+    test_csv  = os.path.join(args.folds_dir, f"{args.fold}_test.csv")
+    for p in (train_csv, val_csv, test_csv):
+        if not os.path.exists(p):
+            sys.exit(f"[FATAL] missing csv: {p}")
+    os.makedirs(args.out_dir, exist_ok=True)
+    prefix_base = (f"mamba_flow_ar_{args.tag}_{args.fold}" if args.tag
+                   else f"mamba_flow_ar_{args.fold}")
+    result_prefix = os.path.join(args.out_dir, prefix_base)
+    save_path    = f"{result_prefix}_best.pt"
+    log_path     = f"{result_prefix}_log.csv"
+    summary_path = f"{result_prefix}_summary.json"
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print("=" * 78)
+    print(f" Mamba AR + Conditional Flow head  -  fold = {args.fold}")
+    print(f"  Mamba-SSM      : d_model = {args.d_model}, "
+          f"n_layers = {args.n_mamba_layers}, "
+          f"d_state = {MAMBA_D_STATE}, d_conv = {MAMBA_D_CONV}, "
+          f"expand = {MAMBA_EXPAND}")
+    print(f"  Flow head      : 1D Cond NSF features = 1, "
+          f"layers = {args.n_flow_layers}, hidden = {args.n_flow_hidden}, "
+          f"blocks = {N_FLOW_BLOCKS}, bins = {N_FLOW_BINS}")
+    print(f"  train          : AdamW lr = {args.lr}, batch = {args.batch}, "
+          f"weight_decay = {args.weight_decay}, dropout = {args.dropout}, "
+          f"max_epoch = {args.max_epoch}, patience = {args.patience}")
+    print(f"  output prefix  : {prefix_base}")
+    print(f"  device         : {device}")
+    print("=" * 78)
+
+    model, best_state, cond_stats, target_stats = train(
+        args.fold, train_csv, val_csv, save_path, log_path, summary_path,
+        d_model=args.d_model, n_mamba_layers=args.n_mamba_layers,
+        n_flow_layers=args.n_flow_layers, n_flow_hidden=args.n_flow_hidden,
+        weight_decay=args.weight_decay, dropout=args.dropout,
+        max_epoch=args.max_epoch, patience=args.patience,
+        batch=args.batch, lr=args.lr, device=device, seed=args.seed,
+    )
+    eval_metrics = evaluate_test(
+        model, best_state, test_csv, cond_stats, target_stats,
+        result_prefix, args.n_sim, args.seed, device,
+        chunk_origins=args.chunk_origins,
+    )
+
+    with open(summary_path, "r") as f:
+        existing = json.load(f)
+    existing.update(dict(test_eval=eval_metrics))
+    with open(summary_path, "w") as f:
+        json.dump(existing, f, indent=2, default=str)
+    print(f"\n  updated summary with test eval : {summary_path}")
+
+    # VRAM cleanup (Gemini: VRAM leak prevention in long sweeps)
+    del model
+    if best_state is not None:
+        del best_state
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    print("[done]\n")
+    return eval_metrics
+
+
 def main():
     ap = argparse.ArgumentParser(
         description="Mamba AR + Conditional Flow head -- End-to-End sp_return "
@@ -810,67 +928,7 @@ def main():
                     help="dropout for Mamba residual + Flow head MLPs")
     ap.add_argument("--seed",      type=int, default=2026)
     args = ap.parse_args()
-
-    train_csv = os.path.join(args.folds_dir, f"{args.fold}_train.csv")
-    val_csv   = os.path.join(args.folds_dir, f"{args.fold}_val.csv")
-    test_csv  = os.path.join(args.folds_dir, f"{args.fold}_test.csv")
-    for p in (train_csv, val_csv, test_csv):
-        if not os.path.exists(p):
-            sys.exit(f"[FATAL] missing csv: {p}")
-    os.makedirs(args.out_dir, exist_ok=True)
-    prefix_base = (f"mamba_flow_ar_{args.tag}_{args.fold}" if args.tag
-                   else f"mamba_flow_ar_{args.fold}")
-    result_prefix = os.path.join(args.out_dir, prefix_base)
-    save_path    = f"{result_prefix}_best.pt"
-    log_path     = f"{result_prefix}_log.csv"
-    summary_path = f"{result_prefix}_summary.json"
-
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print("=" * 78)
-    print(f" Mamba AR + Conditional Flow head  -  fold = {args.fold}")
-    print(f"  channels       : {COND_COLS}")
-    print(f"  input mask     : sp_return  shifted-by-1 (teacher / AR feedback)")
-    print(f"                   tbill_wr   real future scenario (unmasked)")
-    print(f"                   macro 6    future 13w zero-mask")
-    print(f"  Mamba-SSM      : d_model = {args.d_model}, "
-          f"n_layers = {args.n_mamba_layers}, "
-          f"d_state = {MAMBA_D_STATE}, d_conv = {MAMBA_D_CONV}, "
-          f"expand = {MAMBA_EXPAND}")
-    print(f"  Flow head      : 1D Cond NSF features = 1, "
-          f"layers = {args.n_flow_layers}, hidden = {args.n_flow_hidden}, "
-          f"blocks = {N_FLOW_BLOCKS}, bins = {N_FLOW_BINS}")
-    print(f"  output prefix  : {prefix_base}")
-    print(f"  train          : AdamW lr = {args.lr}, batch = {args.batch}, "
-          f"weight_decay = {args.weight_decay}, dropout = {args.dropout}, "
-          f"max_epoch = {args.max_epoch}, patience = {args.patience}")
-    print(f"  n_sim          : {args.n_sim} per test origin "
-          f"(chunk {args.chunk_origins})")
-    print(f"  device         : {device}")
-    print("=" * 78)
-
-    model, best_state, cond_stats, target_stats = train(
-        args.fold, train_csv, val_csv, save_path, log_path, summary_path,
-        d_model=args.d_model, n_mamba_layers=args.n_mamba_layers,
-        n_flow_layers=args.n_flow_layers, n_flow_hidden=args.n_flow_hidden,
-        weight_decay=args.weight_decay, dropout=args.dropout,
-        max_epoch=args.max_epoch, patience=args.patience,
-        batch=args.batch, lr=args.lr, device=device, seed=args.seed,
-    )
-
-    eval_metrics = evaluate_test(
-        model, best_state, test_csv, cond_stats, target_stats,
-        result_prefix, args.n_sim, args.seed, device,
-        chunk_origins=args.chunk_origins
-    )
-
-    # Append test evaluation metrics to the summary JSON.
-    with open(summary_path, "r") as f:
-        existing = json.load(f)
-    existing.update(dict(test_eval=eval_metrics))
-    with open(summary_path, "w") as f:
-        json.dump(existing, f, indent=2, default=str)
-    print(f"\n  updated summary with test eval : {summary_path}")
-    print("\n[done]")
+    main_worker(args)
 
 
 if __name__ == "__main__":
