@@ -130,21 +130,25 @@ def compute_horizon_features_1d(series, end_idx):
 
 
 def assemble_feature_vector(sp_feats, tbill_feats, macro_orig, future_tbill_at_tau):
-    """Assemble 66-dim feature vector.
+    """Assemble feature vector dynamically based on current N_FEAT_TOTAL /
+    N_MACRO_FEAT (which depend on COND_COLS, possibly extended via
+    --extra-channels).
 
-    Layout:
-      [0]       const = 1
-      [1:9]     sp_return: 4 horizon means + 4 horizon stds      (dynamic per step)
-      [9:17]    tbill_wr:  4 horizon means + 4 horizon stds      (dynamic per step)
-      [17:65]   macro 6 ch x (4 mean + 4 std) = 48               (frozen at origin)
-      [65]      future_tbill_wr at current step tau (1)          (unmask channel)
+    Layout (n_per_ch = len(HORIZONS) * N_STATS = 8):
+      [0]                              const = 1
+      [1 : 1+n_per_ch]                 sp_return feats (dynamic per step)
+      [1+n_per_ch : 1+2*n_per_ch]      tbill_wr feats (dynamic per step)
+      [1+2*n_per_ch : macro_end]       macro (N_MACRO_FEAT entries, frozen at origin)
+      [macro_end]                      future_tbill_wr at current step tau
     """
+    n_per_ch  = len(HORIZONS) * N_STATS
+    macro_end = 1 + 2 * n_per_ch + N_MACRO_FEAT
     feat = np.empty(N_FEAT_TOTAL, dtype=np.float64)
-    feat[0]      = 1.0
-    feat[1:9]    = sp_feats
-    feat[9:17]   = tbill_feats
-    feat[17:65]  = macro_orig
-    feat[65]     = future_tbill_at_tau
+    feat[0]                                       = 1.0
+    feat[1                  : 1 + n_per_ch]       = sp_feats
+    feat[1 + n_per_ch       : 1 + 2 * n_per_ch]   = tbill_feats
+    feat[1 + 2 * n_per_ch   : macro_end]          = macro_orig
+    feat[macro_end]                               = future_tbill_at_tau
     return feat
 
 
@@ -329,11 +333,13 @@ def ar_rollout_simulate(channel_z, beta, sigma_z, target_stats, n_sim, seed=2026
 
             # Assemble feature matrix (n_sim, 66)
             X_step = np.empty((n_sim, N_FEAT_TOTAL), dtype=np.float64)
-            X_step[:, 0]      = 1.0
-            X_step[:, 1:9]    = sp_feats
-            X_step[:, 9:17]   = tbill_feats[None, :]
-            X_step[:, 17:65]  = macro_orig[None, :]
-            X_step[:, 65]     = future_tbill_at_tau
+            n_per_ch  = len(HORIZONS) * N_STATS
+            macro_end = 1 + 2 * n_per_ch + N_MACRO_FEAT
+            X_step[:, 0]                                     = 1.0
+            X_step[:, 1                : 1 + n_per_ch]       = sp_feats
+            X_step[:, 1 + n_per_ch     : 1 + 2 * n_per_ch]   = tbill_feats[None, :]
+            X_step[:, 1 + 2 * n_per_ch : macro_end]          = macro_orig[None, :]
+            X_step[:, macro_end]                             = future_tbill_at_tau
 
             mu_step = X_step @ beta                                  # (n_sim,)
             eps     = rng.standard_normal(n_sim) * sigma_z
@@ -507,7 +513,29 @@ def main():
                          f"{CV_ALPHA_GRID} via val MSE; a float (e.g. 1.0) uses "
                          "that value directly; 0 = plain OLS")
     ap.add_argument("--seed", type=int, default=2026)
+    ap.add_argument("--tag", default="",
+                    help="output prefix suffix (e.g. 'bondpp') -- preserves "
+                         "previous results when adding extra channels")
+    ap.add_argument("--extra-channels", default="",
+                    help="comma-separated extra channels appended to COND_COLS "
+                         "(e.g. 'bondpp_13w_lag,stockpp_13w_lag'). Treated as "
+                         "macro: future zero-mask + origin frozen.")
     args = ap.parse_args()
+
+    # Optional extra channels: append to COND_COLS and recompute all derived
+    # module constants so downstream functions see the extended channel set.
+    if args.extra_channels:
+        extras = [c.strip() for c in args.extra_channels.split(",") if c.strip()]
+        global COND_COLS, N_CHANNELS, MACRO_CH, N_HAR_FEAT, N_MACRO_FEAT, N_FEAT_TOTAL
+        COND_COLS    = list(COND_COLS) + extras
+        N_CHANNELS   = len(COND_COLS)
+        MACRO_CH     = [c for c in range(N_CHANNELS) if c not in (SP_CH, TBILL_CH)]
+        N_HAR_FEAT   = N_CHANNELS * len(HORIZONS) * N_STATS
+        N_MACRO_FEAT = len(MACRO_CH) * len(HORIZONS) * N_STATS
+        N_FEAT_TOTAL = N_HAR_FEAT + 2
+        print(f"  [extra channels appended] {extras}")
+        print(f"  [updated] N_CHANNELS = {N_CHANNELS}, "
+              f"N_MACRO_FEAT = {N_MACRO_FEAT}, N_FEAT_TOTAL = {N_FEAT_TOTAL}")
 
     train_csv = os.path.join(args.folds_dir, f"{args.fold}_train.csv")
     val_csv   = os.path.join(args.folds_dir, f"{args.fold}_val.csv")
@@ -724,7 +752,8 @@ def main():
     # [8] Plots
     # -----------------------------------------------------------------
     print(f"\n[8] Plots")
-    out_prefix = f"baseline_har_ar_{args.fold}"
+    out_prefix = (f"baseline_har_ar_{args.tag}_{args.fold}" if args.tag
+                  else f"baseline_har_ar_{args.fold}")
     title = (f"HAR-OLS AR baseline -- fold {args.fold}  "
              f"(n_origin = {n_te_origins}, n_sim = {args.n_sim})\n"
              f"34 features (8 ch x 4 horizons + const + future_tbill[tau]), "
