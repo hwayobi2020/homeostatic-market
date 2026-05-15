@@ -150,6 +150,46 @@ def cached_load_windows_seq(csv_path, past_len=PAST_LEN, future_len=FUTURE_LEN,
     return out
 
 
+def load_extra_context(csv_path, extra_cols, past_len=PAST_LEN, future_len=FUTURE_LEN,
+                       extra_stats=None):
+    """Load per-origin extra context features (origin-frozen).
+
+    For each origin t in 0 .. n_w-1, extract the z-scored values of `extra_cols`
+    at row (t + past_len - 1) -- the last past row, i.e. origin row.  Origin
+    frozen policy mirrors macro-6 masking (운영 시 미래 derived 모름 가정).
+
+    Returns (X_extra (n_w, len(extra_cols)), extra_stats, n_valid_origins,
+             valid_mask).  Caller must align with load_windows_seq's valid mask
+    by intersecting the two masks.
+    """
+    df = pd.read_csv(csv_path)
+    missing = [c for c in extra_cols if c not in df.columns]
+    if missing:
+        sys.exit(f"[FATAL] missing extra context cols in {csv_path}: {missing}")
+    arr = df[extra_cols].values.astype(np.float64)
+    if extra_stats is None:
+        mu = np.nanmean(arr, axis=0)
+        sd = np.nanstd(arr, axis=0, ddof=1) + 1e-8
+        extra_stats_out = {"mean": mu.tolist(), "std": sd.tolist(),
+                           "cols": list(extra_cols)}
+    else:
+        mu = np.asarray(extra_stats["mean"], dtype=np.float64)
+        sd = np.asarray(extra_stats["std"],  dtype=np.float64)
+        extra_stats_out = extra_stats
+    arr_z = (arr - mu) / sd
+    n = len(df)
+    n_w = n - past_len - future_len + 1
+    out = np.zeros((n_w, len(extra_cols)), dtype=np.float32)
+    valid = np.ones(n_w, dtype=bool)
+    for t in range(n_w):
+        row = arr_z[t + past_len - 1]    # origin row (last past)
+        if np.any(np.isnan(row)):
+            valid[t] = False
+            continue
+        out[t] = row.astype(np.float32)
+    return torch.from_numpy(out[valid]), extra_stats_out, int(valid.sum()), valid
+
+
 def load_windows_seq(csv_path, past_len=PAST_LEN, future_len=FUTURE_LEN,
                      cond_stats=None, target_stats=None):
     """Build (X_input, Y_target) windows with shifted sp + future macro mask.
@@ -235,6 +275,60 @@ def load_windows_seq(csv_path, past_len=PAST_LEN, future_len=FUTURE_LEN,
             cond_stats_out, target_stats_out, int(valid.sum()))
 
 
+# ---- Derived (skip-connection) feature helpers ----------------------------
+# Derived channels are NOT fed into the Mamba encoder; they are concatenated
+# directly into the Flow head's context.  Extracted at the ORIGIN ROW
+# (z-scored, frozen) and broadcast across all future steps.
+
+def compute_derived_stats(csv_path, derived_cols):
+    """Fit z-score stats for derived columns on the given csv (typically train)."""
+    if not derived_cols:
+        return None
+    df = pd.read_csv(csv_path)
+    missing = [c for c in derived_cols if c not in df.columns]
+    if missing:
+        sys.exit(f"[FATAL] missing derived cols in {csv_path}: {missing}")
+    arr = df[derived_cols].values.astype(np.float64)
+    mu = np.nanmean(arr, axis=0)
+    sd = np.nanstd(arr, axis=0, ddof=1) + 1e-8
+    return {"mean": mu.tolist(), "std": sd.tolist(), "cols": list(derived_cols)}
+
+
+def extract_derived_origin(csv_path, derived_cols, derived_stats, valid_mask,
+                           past_len=PAST_LEN, future_len=FUTURE_LEN):
+    """For each VALID origin t, return z-scored derived values at the origin
+    row (t + past_len - 1).  Returns torch.FloatTensor (n_valid, n_d) or None.
+    """
+    if not derived_cols:
+        return None
+    df = pd.read_csv(csv_path)
+    arr = df[derived_cols].values.astype(np.float64)
+    mu = np.asarray(derived_stats["mean"], dtype=np.float64)
+    sd = np.asarray(derived_stats["std"],  dtype=np.float64)
+    z = (arr - mu) / sd
+    n = arr.shape[0]
+    n_w = n - past_len - future_len + 1
+    origin_row_idx = np.arange(n_w) + past_len - 1
+    derived_all = z[origin_row_idx].astype(np.float32)
+    return torch.from_numpy(derived_all[valid_mask])
+
+
+def cond_valid_mask(csv_path, cond_stats, past_len=PAST_LEN, future_len=FUTURE_LEN):
+    """Recompute valid-origin mask consistently with load_windows_seq.
+    Used to align derived_origin extraction with (X, Y) from load_windows_seq.
+    """
+    df = pd.read_csv(csv_path)
+    arr = df[COND_COLS].values.astype(np.float64)
+    cmu = np.asarray(cond_stats["mean"], dtype=np.float64)
+    csd = np.asarray(cond_stats["std"],  dtype=np.float64)
+    z = (arr - cmu) / csd
+    n = z.shape[0]
+    n_w = n - past_len - future_len + 1
+    L_full = past_len + future_len
+    return np.array([not np.any(np.isnan(z[t : t + L_full])) for t in range(n_w)],
+                    dtype=bool)
+
+
 def compute_valid_mask(csv_path, cond_stats):
     """Recompute the valid origin mask consistently with load_windows_seq.
     Returns (valid_mask (n_w,) bool, full_z (n, N_CH)).
@@ -312,13 +406,16 @@ class MambaFlowAR(nn.Module):
                  n_flow_layers=N_FLOW_LAYERS, n_flow_hidden=N_FLOW_HIDDEN,
                  n_flow_blocks=N_FLOW_BLOCKS, n_flow_bins=N_FLOW_BINS,
                  flow_tail_bound=FLOW_TAIL_BOUND, dropout=0.0,
+                 extra_context_dim=0,
                  past_len=PAST_LEN, future_len=FUTURE_LEN):
         super().__init__()
-        self.d_input    = d_input
-        self.d_model    = d_model
-        self.past_len   = past_len
-        self.future_len = future_len
-        self.L          = past_len + future_len
+        self.d_input           = d_input
+        self.d_model           = d_model
+        self.extra_context_dim = extra_context_dim
+        self.flow_context_dim  = d_model + extra_context_dim
+        self.past_len          = past_len
+        self.future_len        = future_len
+        self.L                 = past_len + future_len
 
         self.input_proj = nn.Linear(d_input, d_model)
         self.pos_emb    = nn.Parameter(torch.zeros(self.L, d_model))
@@ -340,7 +437,7 @@ class MambaFlowAR(nn.Module):
             transforms.append(MaskedPiecewiseRationalQuadraticAutoregressiveTransform(
                 features=1,
                 hidden_features=n_flow_hidden,
-                context_features=d_model,
+                context_features=self.flow_context_dim,
                 num_blocks=n_flow_blocks,
                 num_bins=n_flow_bins,
                 tails="linear",
@@ -365,26 +462,38 @@ class MambaFlowAR(nn.Module):
         h = self.mamba(h)
         return h
 
-    def log_prob(self, x_input, target_path):
+    def log_prob(self, x_input, target_path, extra_context=None):
         """Teacher-forced per-origin log probability summed over future steps.
 
-        x_input    : (B, L, N_CHANNELS)
-        target_path: (B, FUTURE_LEN)   = sp_return z at positions [PAST_LEN, L)
+        x_input      : (B, L, N_CHANNELS)
+        target_path  : (B, FUTURE_LEN)
+        extra_context: (B, extra_context_dim) or None  -- origin-frozen extra
+                       signals (e.g. bondpp/stockpp/metab origin row z-score)
+                       concatenated to h_tau as Flow context, NOT into Mamba.
 
-        Returns (B,) -- sum over future steps of log p(sp_z[tau] | h_tau).
+        Returns (B,) -- sum over future steps of log p(sp_z[tau] | h_tau, extra).
         """
         B = x_input.shape[0]
         T = target_path.shape[1]
         h = self.encode(x_input)                                # (B, L, d_model)
         h_future = h[:, self.past_len:, :]                      # (B, T, d_model)
+        if self.extra_context_dim > 0:
+            if extra_context is None:
+                raise ValueError("extra_context required when "
+                                 "extra_context_dim > 0")
+            extra_expanded = extra_context.unsqueeze(1).expand(-1, T, -1)
+            ctx_seq = torch.cat([h_future, extra_expanded], dim=-1)    # (B, T, flow_ctx)
+        else:
+            ctx_seq = h_future
         y_flat   = target_path.reshape(B * T, 1)
-        ctx_flat = h_future.reshape(B * T, self.d_model)
-        log_p_flat = self.flow.log_prob(inputs=y_flat, context=ctx_flat)  # (B*T,)
+        ctx_flat = ctx_seq.reshape(B * T, self.flow_context_dim)
+        log_p_flat = self.flow.log_prob(inputs=y_flat, context=ctx_flat)
         log_p = log_p_flat.reshape(B, T).sum(dim=1)             # (B,)
         return log_p
 
     @torch.no_grad()
-    def ar_sample(self, x_past, future_tbill_z, last_past_sp_z, n_sim):
+    def ar_sample(self, x_past, future_tbill_z, last_past_sp_z, n_sim,
+                  extra_context=None):
         """AR rollout sampling.
 
         x_past        : (B, PAST_LEN, N_CHANNELS) -- input past portion
@@ -401,12 +510,23 @@ class MambaFlowAR(nn.Module):
         """
         device = x_past.device
         B = x_past.shape[0]
+        N_CH = x_past.shape[-1]   # support arbitrary channel count after extra
         # Replicate the past block for each sim path.
         seq = x_past.unsqueeze(1).expand(B, n_sim, -1, -1).contiguous()
-        seq = seq.view(B * n_sim, PAST_LEN, N_CHANNELS)
+        seq = seq.view(B * n_sim, PAST_LEN, N_CH)
         tbill_fut = future_tbill_z.unsqueeze(1).expand(B, n_sim, -1).contiguous()
         tbill_fut = tbill_fut.view(B * n_sim, FUTURE_LEN)
         last_sp = last_past_sp_z.unsqueeze(1).expand(B, n_sim).contiguous().view(-1)
+        # Extra context: replicate origin-frozen vector across sim paths.
+        if self.extra_context_dim > 0:
+            if extra_context is None:
+                raise ValueError("extra_context required when "
+                                 "extra_context_dim > 0")
+            extra_rep = extra_context.unsqueeze(1).expand(
+                B, n_sim, -1
+            ).contiguous().view(B * n_sim, self.extra_context_dim)
+        else:
+            extra_rep = None
 
         sampled = []
         for tau in range(FUTURE_LEN):
@@ -419,8 +539,12 @@ class MambaFlowAR(nn.Module):
             seq = torch.cat([seq, next_input], dim=1)            # (BN, L_cur, 8)
             h_seq = self.encode(seq)                              # (BN, L_cur, d_model)
             h_tau = h_seq[:, -1, :]                               # (BN, d_model)
-            # Flow.sample(num_samples=1, context=ctx) -> (ctx_batch, 1, 1) for features=1.
-            sp_z = self.flow.sample(1, context=h_tau).squeeze(-1).squeeze(-1)
+            if self.extra_context_dim > 0:
+                ctx_tau = torch.cat([h_tau, extra_rep], dim=-1)   # (BN, flow_ctx)
+            else:
+                ctx_tau = h_tau
+            # Flow.sample(num_samples=1, context=ctx) -> (ctx_batch, 1, 1).
+            sp_z = self.flow.sample(1, context=ctx_tau).squeeze(-1).squeeze(-1)
             sampled.append(sp_z)
             last_sp = sp_z                                        # AR feedback
 
@@ -531,6 +655,7 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
           d_model=D_MODEL, n_mamba_layers=N_MAMBA_LAYERS,
           n_flow_layers=N_FLOW_LAYERS, n_flow_hidden=N_FLOW_HIDDEN,
           weight_decay=0.01, dropout=0.0,
+          extra_cond_cols=None,
           max_epoch=MAX_EPOCH, patience=PATIENCE, batch=BATCH, lr=LR,
           device="cuda", seed=2026):
     torch.manual_seed(seed); np.random.seed(seed)
@@ -546,18 +671,39 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
     if n_v == 0:
         sys.exit(f"[FATAL] no val windows in {val_csv}")
 
+    # Extra context (Flow-only, NOT Mamba input).  Origin-frozen z-score values.
+    extra_stats = None
+    Xtr_extra = None; Xv_extra = None
+    extra_context_dim = 0
+    if extra_cond_cols:
+        Xtr_extra, extra_stats, n_extra_tr, _ = load_extra_context(
+            train_csv, extra_cond_cols)
+        Xv_extra, _, n_extra_v, _ = load_extra_context(
+            val_csv, extra_cond_cols, extra_stats=extra_stats)
+        if n_extra_tr != n_tr or n_extra_v != n_v:
+            sys.exit(f"[FATAL] extra context valid count mismatch: "
+                     f"train {n_extra_tr} vs {n_tr}, val {n_extra_v} vs {n_v}")
+        extra_context_dim = len(extra_cond_cols)
+        print(f"    extra context : {list(extra_cond_cols)} "
+              f"(dim={extra_context_dim}, origin-frozen, Flow-only)")
+
     model = MambaFlowAR(
         d_model=d_model, n_mamba_layers=n_mamba_layers,
         n_flow_layers=n_flow_layers, n_flow_hidden=n_flow_hidden,
-        dropout=dropout,
+        dropout=dropout, extra_context_dim=extra_context_dim,
     ).to(device)
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"    model params  = {n_params:,}")
+    print(f"    model params  = {n_params:,}  "
+          f"(flow_context_dim={model.flow_context_dim})")
 
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
-    train_ds = TensorDataset(Xtr, Ytr)
+    if Xtr_extra is not None:
+        train_ds = TensorDataset(Xtr, Ytr, Xtr_extra)
+    else:
+        train_ds = TensorDataset(Xtr, Ytr)
     train_dl = DataLoader(train_ds, batch_size=batch, shuffle=True, drop_last=False)
     Xv_dev = Xv.to(device); Yv_dev = Yv.to(device)
+    Xv_extra_dev = Xv_extra.to(device) if Xv_extra is not None else None
 
     best_val_nll = float("inf"); best_epoch = -1
     best_state = None
@@ -569,9 +715,15 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
     for ep in range(1, max_epoch + 1):
         model.train()
         losses = []
-        for xb, yb in train_dl:
-            xb = xb.to(device); yb = yb.to(device)
-            loss = -model.log_prob(xb, yb).mean()
+        for batch_tuple in train_dl:
+            if Xtr_extra is not None:
+                xb, yb, eb = batch_tuple
+                xb = xb.to(device); yb = yb.to(device); eb = eb.to(device)
+                loss = -model.log_prob(xb, yb, extra_context=eb).mean()
+            else:
+                xb, yb = batch_tuple
+                xb = xb.to(device); yb = yb.to(device)
+                loss = -model.log_prob(xb, yb).mean()
             opt.zero_grad(); loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
             opt.step()
@@ -580,7 +732,9 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
 
         model.eval()
         with torch.no_grad():
-            val_nll = float(-model.log_prob(Xv_dev, Yv_dev).mean().item())
+            val_nll = float(-model.log_prob(
+                Xv_dev, Yv_dev, extra_context=Xv_extra_dev,
+            ).mean().item())
 
         log_rows.append(dict(epoch=ep, train_nll=train_nll, val_nll=val_nll))
         improved = val_nll < best_val_nll
@@ -617,6 +771,9 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
             n_flow_blocks=N_FLOW_BLOCKS, n_flow_bins=N_FLOW_BINS,
             flow_tail_bound=FLOW_TAIL_BOUND,
             cond_stats=cond_stats, target_stats=target_stats,
+            extra_cond_cols=(list(extra_cond_cols) if extra_cond_cols else []),
+            extra_context_dim=int(extra_context_dim),
+            extra_stats=extra_stats,
             best_epoch=best_epoch, best_val_nll=best_val_nll,
             n_train=int(n_tr), n_val=int(n_v),
             n_params=int(n_params), seed=seed,
@@ -641,6 +798,9 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
         n_train=int(n_tr), n_val=int(n_v), n_params=int(n_params),
         seed=int(seed),
         target_stats=target_stats, cond_stats=cond_stats,
+        extra_cond_cols=(list(extra_cond_cols) if extra_cond_cols else []),
+        extra_context_dim=int(extra_context_dim),
+        extra_stats=extra_stats,
     )
     with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2, default=str)
@@ -649,7 +809,7 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
     print(f"  saved summary : {summary_path}")
     print(f"\n  best val NLL = {best_val_nll:+.4f} (per-week "
           f"{best_val_nll / FUTURE_LEN:+.4f}) @ep{best_epoch}")
-    return model, best_state, cond_stats, target_stats
+    return model, best_state, cond_stats, target_stats, extra_stats
 
 
 # =====================================================================
@@ -658,7 +818,8 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
 
 @torch.no_grad()
 def evaluate_test(model, best_state, test_csv, cond_stats, target_stats,
-                  result_prefix, n_sim, seed, device, chunk_origins=8):
+                  result_prefix, n_sim, seed, device, chunk_origins=8,
+                  extra_cond_cols=None, extra_stats=None):
     model.load_state_dict(best_state)
     model.eval()
 
@@ -670,8 +831,19 @@ def evaluate_test(model, best_state, test_csv, cond_stats, target_stats,
     if n_te == 0:
         sys.exit(f"[FATAL] no test windows in {test_csv}")
 
+    Xte_extra_dev = None
+    if extra_cond_cols:
+        Xte_extra, _, n_extra_te, _ = load_extra_context(
+            test_csv, extra_cond_cols, extra_stats=extra_stats)
+        if n_extra_te != n_te:
+            sys.exit(f"[FATAL] test extra valid {n_extra_te} != main {n_te}")
+        Xte_extra_dev = Xte_extra.to(device)
+        print(f"    extra context : {list(extra_cond_cols)} "
+              f"(dim={len(extra_cond_cols)}, origin-frozen)")
+
     Xte_dev = Xte.to(device); Yte_dev = Yte.to(device)
-    nll_test = -model.log_prob(Xte_dev, Yte_dev)                          # (n_te,)
+    nll_test = -model.log_prob(Xte_dev, Yte_dev,
+                                extra_context=Xte_extra_dev)              # (n_te,)
     per_origin_nll_z = float(nll_test.mean().item())
     per_week_nll_z   = float(per_origin_nll_z / FUTURE_LEN)
     print(f"    per-week NLL (z-score)              = {per_week_nll_z:+.4f}")
@@ -698,8 +870,10 @@ def evaluate_test(model, best_state, test_csv, cond_stats, target_stats,
         x_past_chunk = Xte_dev[s:e, :PAST_LEN, :]                  # (k, PAST_LEN, 8)
         future_tbill_chunk = Xte_dev[s:e, PAST_LEN:, TBILL_CH]     # (k, FUTURE_LEN)
         last_sp_chunk = last_sp_dev[s:e]
+        extra_chunk = Xte_extra_dev[s:e] if Xte_extra_dev is not None else None
         sim_chunk = model.ar_sample(
-            x_past_chunk, future_tbill_chunk, last_sp_chunk, n_sim
+            x_past_chunk, future_tbill_chunk, last_sp_chunk, n_sim,
+            extra_context=extra_chunk,
         )                                                           # (k, n_sim, T)
         sim_paths_z_chunks.append(sim_chunk.cpu())
     sim_paths_z = torch.cat(sim_paths_z_chunks, dim=0).numpy()      # (n_v, n_sim, T)
@@ -828,6 +1002,7 @@ def main_worker(args):
             d_model=D_MODEL, n_mamba_layers=N_MAMBA_LAYERS,
             n_flow_layers=N_FLOW_LAYERS, n_flow_hidden=N_FLOW_HIDDEN,
             weight_decay=0.01, dropout=0.0, seed=2026,
+            extra_context_channels="",
         )
         merged = {**defaults, **args}
         if "fold" not in merged:
@@ -865,11 +1040,17 @@ def main_worker(args):
     print(f"  device         : {device}")
     print("=" * 78)
 
-    model, best_state, cond_stats, target_stats = train(
+    extra_cond_cols = (
+        [c.strip() for c in args.extra_context_channels.split(",") if c.strip()]
+        if getattr(args, "extra_context_channels", "") else None
+    )
+
+    model, best_state, cond_stats, target_stats, extra_stats = train(
         args.fold, train_csv, val_csv, save_path, log_path, summary_path,
         d_model=args.d_model, n_mamba_layers=args.n_mamba_layers,
         n_flow_layers=args.n_flow_layers, n_flow_hidden=args.n_flow_hidden,
         weight_decay=args.weight_decay, dropout=args.dropout,
+        extra_cond_cols=extra_cond_cols,
         max_epoch=args.max_epoch, patience=args.patience,
         batch=args.batch, lr=args.lr, device=device, seed=args.seed,
     )
@@ -877,6 +1058,7 @@ def main_worker(args):
         model, best_state, test_csv, cond_stats, target_stats,
         result_prefix, args.n_sim, args.seed, device,
         chunk_origins=args.chunk_origins,
+        extra_cond_cols=extra_cond_cols, extra_stats=extra_stats,
     )
 
     with open(summary_path, "r") as f:
@@ -922,6 +1104,11 @@ def main():
     ap.add_argument("--n-mamba-layers",  type=int, default=N_MAMBA_LAYERS)
     ap.add_argument("--n-flow-layers",   type=int, default=N_FLOW_LAYERS)
     ap.add_argument("--n-flow-hidden",   type=int, default=N_FLOW_HIDDEN)
+    ap.add_argument("--extra-context-channels", default="",
+                    help="comma-separated extra channels passed ONLY to Flow "
+                         "context (concat to h_tau), NOT into Mamba input. "
+                         "e.g. 'bondpp_13w_lag,stockpp_13w_lag,metab_13w'. "
+                         "Origin-frozen z-score (운영 시 미래 derived 모름 가정).")
     ap.add_argument("--weight-decay",    type=float, default=0.01,
                     help="AdamW weight_decay (L2 regularization)")
     ap.add_argument("--dropout",         type=float, default=0.0,
