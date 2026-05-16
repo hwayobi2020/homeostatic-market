@@ -364,17 +364,18 @@ class NoneEncoder(nn.Module):
 
 class MLPEncoder(nn.Module):
     """Per-step MLP encoder — no sequence modeling, history 무시.
-    h_τ = MLP(input[τ]) only."""
-    def __init__(self, d_model, dropout=0.0):
+    h_τ = MLP(input[τ]) only.  num_layers 만큼 Linear+LN+GELU 반복."""
+    def __init__(self, d_model, num_layers=2, dropout=0.0):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(d_model, d_model),
-            nn.LayerNorm(d_model),
-            nn.GELU(),
-            nn.Dropout(dropout) if dropout > 0 else nn.Identity(),
-            nn.Linear(d_model, d_model),
-            nn.LayerNorm(d_model),
-        )
+        layers = []
+        for i in range(num_layers):
+            layers.append(nn.Linear(d_model, d_model))
+            layers.append(nn.LayerNorm(d_model))
+            if i < num_layers - 1:
+                layers.append(nn.GELU())
+                if dropout > 0:
+                    layers.append(nn.Dropout(dropout))
+        self.net = nn.Sequential(*layers)
 
     def forward(self, x):
         return self.net(x)   # per-step independent
@@ -471,6 +472,7 @@ class MambaFlowAR(nn.Module):
                  n_flow_blocks=N_FLOW_BLOCKS, n_flow_bins=N_FLOW_BINS,
                  flow_tail_bound=FLOW_TAIL_BOUND, dropout=0.0,
                  extra_context_dim=0, encoder_type="mamba",
+                 transformer_n_heads=4, mlp_num_layers=2,
                  past_len=PAST_LEN, future_len=FUTURE_LEN):
         super().__init__()
         self.d_input           = d_input
@@ -496,7 +498,7 @@ class MambaFlowAR(nn.Module):
         elif self.encoder_type == "transformer":
             self.mamba = TransformerEncoder(
                 d_model=d_model, n_layers=n_mamba_layers,
-                n_heads=4, dropout=dropout,
+                n_heads=transformer_n_heads, dropout=dropout,
             )
         elif self.encoder_type == "lstm":
             self.mamba = LSTMEncoder(
@@ -504,7 +506,9 @@ class MambaFlowAR(nn.Module):
                 dropout=dropout,
             )
         elif self.encoder_type == "mlp":
-            self.mamba = MLPEncoder(d_model=d_model, dropout=dropout)
+            self.mamba = MLPEncoder(
+                d_model=d_model, num_layers=mlp_num_layers, dropout=dropout,
+            )
         elif self.encoder_type == "none":
             self.mamba = NoneEncoder(d_model=d_model)
         else:
@@ -736,6 +740,7 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
           n_flow_layers=N_FLOW_LAYERS, n_flow_hidden=N_FLOW_HIDDEN,
           weight_decay=0.01, dropout=0.0,
           extra_cond_cols=None, encoder_type="mamba",
+          transformer_n_heads=4, mlp_num_layers=2,
           max_epoch=MAX_EPOCH, patience=PATIENCE, batch=BATCH, lr=LR,
           device="cuda", seed=2026):
     torch.manual_seed(seed); np.random.seed(seed)
@@ -772,6 +777,8 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
         n_flow_layers=n_flow_layers, n_flow_hidden=n_flow_hidden,
         dropout=dropout, extra_context_dim=extra_context_dim,
         encoder_type=encoder_type,
+        transformer_n_heads=transformer_n_heads,
+        mlp_num_layers=mlp_num_layers,
     ).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"    model params  = {n_params:,}  "
@@ -1085,6 +1092,7 @@ def main_worker(args):
             weight_decay=0.01, dropout=0.0, seed=2026,
             extra_context_channels="",
             encoder_type="mamba",
+            transformer_n_heads=4, mlp_num_layers=2,
         )
         merged = {**defaults, **args}
         if "fold" not in merged:
@@ -1134,6 +1142,8 @@ def main_worker(args):
         weight_decay=args.weight_decay, dropout=args.dropout,
         extra_cond_cols=extra_cond_cols,
         encoder_type=getattr(args, "encoder_type", "mamba"),
+        transformer_n_heads=getattr(args, "transformer_n_heads", 4),
+        mlp_num_layers=getattr(args, "mlp_num_layers", 2),
         max_epoch=args.max_epoch, patience=args.patience,
         batch=args.batch, lr=args.lr, device=device, seed=args.seed,
     )
@@ -1200,6 +1210,10 @@ def main():
     ap.add_argument("--encoder-type", default="mamba",
                     choices=["mamba", "transformer", "lstm", "mlp", "none"],
                     help="sequence encoder type for ablation")
+    ap.add_argument("--transformer-n-heads", type=int, default=4,
+                    help="number of attention heads (Transformer only)")
+    ap.add_argument("--mlp-num-layers", type=int, default=2,
+                    help="MLP encoder depth (MLP only)")
     args = ap.parse_args()
     main_worker(args)
 
