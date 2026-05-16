@@ -349,6 +349,70 @@ def compute_valid_mask(csv_path, cond_stats):
 # Model
 # =====================================================================
 
+# Note: 모든 encoder 는 외부 input_proj + pos_emb 거친 (B, L, d_model) 받음.
+# 따라서 자체 input_proj X.
+
+class NoneEncoder(nn.Module):
+    """Pass-through (no sequence modeling at all).  Input 그대로 반환.
+    Floor baseline — input embedding + pos_emb 만의 효과 측정."""
+    def __init__(self, d_model, dropout=0.0):
+        super().__init__()
+
+    def forward(self, x):
+        return x   # (B, L, d_model) identity
+
+
+class MLPEncoder(nn.Module):
+    """Per-step MLP encoder — no sequence modeling, history 무시.
+    h_τ = MLP(input[τ]) only."""
+    def __init__(self, d_model, dropout=0.0):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.LayerNorm(d_model),
+            nn.GELU(),
+            nn.Dropout(dropout) if dropout > 0 else nn.Identity(),
+            nn.Linear(d_model, d_model),
+            nn.LayerNorm(d_model),
+        )
+
+    def forward(self, x):
+        return self.net(x)   # per-step independent
+
+
+class TransformerEncoder(nn.Module):
+    """Causal Transformer encoder (PyTorch nn.TransformerEncoder with causal mask)."""
+    def __init__(self, d_model, n_layers=3, n_heads=4, dropout=0.0):
+        super().__init__()
+        layer = nn.TransformerEncoderLayer(
+            d_model=d_model, nhead=n_heads, dim_feedforward=d_model * 4,
+            dropout=dropout, batch_first=True, norm_first=True,
+        )
+        self.encoder = nn.TransformerEncoder(layer, num_layers=n_layers)
+
+    def forward(self, x):
+        L = x.shape[1]
+        mask = torch.triu(torch.ones(L, L, dtype=torch.bool, device=x.device),
+                          diagonal=1)
+        return self.encoder(x, mask=mask)
+
+
+class LSTMEncoder(nn.Module):
+    """LSTM sequence encoder.  Causal by construction (forward direction)."""
+    def __init__(self, d_model, n_layers=2, dropout=0.0):
+        super().__init__()
+        self.lstm = nn.LSTM(
+            input_size=d_model, hidden_size=d_model,
+            num_layers=n_layers,
+            dropout=dropout if n_layers > 1 else 0.0,
+            batch_first=True,
+        )
+
+    def forward(self, x):
+        out, _ = self.lstm(x)
+        return out
+
+
 class _MambaResBlock(nn.Module):
     """Pre-norm + residual wrapper around a single mamba-ssm Mamba block.
 
@@ -406,7 +470,7 @@ class MambaFlowAR(nn.Module):
                  n_flow_layers=N_FLOW_LAYERS, n_flow_hidden=N_FLOW_HIDDEN,
                  n_flow_blocks=N_FLOW_BLOCKS, n_flow_bins=N_FLOW_BINS,
                  flow_tail_bound=FLOW_TAIL_BOUND, dropout=0.0,
-                 extra_context_dim=0,
+                 extra_context_dim=0, encoder_type="mamba",
                  past_len=PAST_LEN, future_len=FUTURE_LEN):
         super().__init__()
         self.d_input           = d_input
@@ -421,14 +485,30 @@ class MambaFlowAR(nn.Module):
         self.pos_emb    = nn.Parameter(torch.zeros(self.L, d_model))
         nn.init.normal_(self.pos_emb, std=0.02)
 
-        # mamba-ssm Mamba block expects (B, L, d_model) and returns the same
-        # shape; it is intrinsically causal (selective scan SSM).  We wrap
-        # it in a pre-norm + residual stack to get a multi-layer encoder.
-        self.mamba = MambaEncoder(
-            d_model=d_model, n_layers=n_mamba_layers,
-            d_state=MAMBA_D_STATE, d_conv=MAMBA_D_CONV, expand=MAMBA_EXPAND,
-            dropout=dropout,
-        )
+        # Encoder type branching (ablation): mamba / transformer / lstm / mlp / none
+        self.encoder_type = encoder_type.lower()
+        if self.encoder_type == "mamba":
+            self.mamba = MambaEncoder(
+                d_model=d_model, n_layers=n_mamba_layers,
+                d_state=MAMBA_D_STATE, d_conv=MAMBA_D_CONV, expand=MAMBA_EXPAND,
+                dropout=dropout,
+            )
+        elif self.encoder_type == "transformer":
+            self.mamba = TransformerEncoder(
+                d_model=d_model, n_layers=n_mamba_layers,
+                n_heads=4, dropout=dropout,
+            )
+        elif self.encoder_type == "lstm":
+            self.mamba = LSTMEncoder(
+                d_model=d_model, n_layers=max(n_mamba_layers, 1),
+                dropout=dropout,
+            )
+        elif self.encoder_type == "mlp":
+            self.mamba = MLPEncoder(d_model=d_model, dropout=dropout)
+        elif self.encoder_type == "none":
+            self.mamba = NoneEncoder(d_model=d_model)
+        else:
+            raise ValueError(f"Unknown encoder_type: {self.encoder_type!r}")
 
         # 1D Conditional NSF (same spec as train_flow_seq.build_1d_cond_flow).
         base = StandardNormal(shape=[1])
@@ -655,7 +735,7 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
           d_model=D_MODEL, n_mamba_layers=N_MAMBA_LAYERS,
           n_flow_layers=N_FLOW_LAYERS, n_flow_hidden=N_FLOW_HIDDEN,
           weight_decay=0.01, dropout=0.0,
-          extra_cond_cols=None,
+          extra_cond_cols=None, encoder_type="mamba",
           max_epoch=MAX_EPOCH, patience=PATIENCE, batch=BATCH, lr=LR,
           device="cuda", seed=2026):
     torch.manual_seed(seed); np.random.seed(seed)
@@ -691,6 +771,7 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
         d_model=d_model, n_mamba_layers=n_mamba_layers,
         n_flow_layers=n_flow_layers, n_flow_hidden=n_flow_hidden,
         dropout=dropout, extra_context_dim=extra_context_dim,
+        encoder_type=encoder_type,
     ).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"    model params  = {n_params:,}  "
@@ -1003,6 +1084,7 @@ def main_worker(args):
             n_flow_layers=N_FLOW_LAYERS, n_flow_hidden=N_FLOW_HIDDEN,
             weight_decay=0.01, dropout=0.0, seed=2026,
             extra_context_channels="",
+            encoder_type="mamba",
         )
         merged = {**defaults, **args}
         if "fold" not in merged:
@@ -1051,6 +1133,7 @@ def main_worker(args):
         n_flow_layers=args.n_flow_layers, n_flow_hidden=args.n_flow_hidden,
         weight_decay=args.weight_decay, dropout=args.dropout,
         extra_cond_cols=extra_cond_cols,
+        encoder_type=getattr(args, "encoder_type", "mamba"),
         max_epoch=args.max_epoch, patience=args.patience,
         batch=args.batch, lr=args.lr, device=device, seed=args.seed,
     )
@@ -1114,6 +1197,9 @@ def main():
     ap.add_argument("--dropout",         type=float, default=0.0,
                     help="dropout for Mamba residual + Flow head MLPs")
     ap.add_argument("--seed",      type=int, default=2026)
+    ap.add_argument("--encoder-type", default="mamba",
+                    choices=["mamba", "transformer", "lstm", "mlp", "none"],
+                    help="sequence encoder type for ablation")
     args = ap.parse_args()
     main_worker(args)
 
