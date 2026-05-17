@@ -7,7 +7,9 @@ Spec grid (8 specs):
     d_model          in {64, 128}
     n_mamba_layers   in {2, 3}
     dropout          in {0.1, 0.2}
-Seeds (5):           {42, 123, 777, 0, 99}        -- same as Stage 1 multi-seed.
+Seeds (5):           {2026, 2027, 2028, 2029, 2030} -- sequential extension of
+                     Phase 1 single-seed default (seed=2026 in LSTM/MLP/
+                     Transformer sweeps).
 Folds (3):           F_long_A / F_long_B_origin / F_long.
 Total = 8 specs * 5 seeds * 3 folds = 120 runs.
 
@@ -41,7 +43,7 @@ sys.path.insert(0, HERE)
 from train_mamba_flow_ar import main_worker  # noqa: E402
 
 FOLDS = ["F_long_A", "F_long_B_origin", "F_long"]
-SEEDS = [42, 123, 777, 0, 99]
+SEEDS = [2026, 2027, 2028, 2029, 2030]
 GRID = list(itertools.product(
     [64, 128],   # d_model
     [2, 3],      # n_mamba_layers
