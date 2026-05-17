@@ -11,6 +11,13 @@ Seeds (5):           {2026, 2027, 2028, 2029, 2030} -- sequential extension of
                      Phase 1 single-seed default (seed=2026 in LSTM/MLP/
                      Transformer sweeps).
 Folds (3):           F_long_A / F_long_B_origin / F_long.
+Fixed (match LSTM/MLP/Transformer sweep, verified from a LSTM summary.json):
+    n_flow_layers    = 4   (train script default is 6 -- explicitly overridden)
+    weight_decay     = 0.5 (train script default is 0.01 -- explicitly overridden)
+    n_flow_hidden    = 64  (= train script default)
+    everything else  = train script default (max_epoch=60, patience=30,
+                       batch=32, lr=1e-4, d_state=16, d_conv=4, expand=2,
+                       n_flow_blocks=2, n_flow_bins=16, tail_bound=10.0).
 Total = 8 specs * 5 seeds * 3 folds = 120 runs.
 
 Output:
@@ -86,6 +93,8 @@ for fold in FOLDS:
                 n_mamba_layers=n_mamba_layers,
                 dropout=dropout,
                 encoder_type="mamba",
+                n_flow_layers=4,    # match LSTM/MLP/Transformer sweep
+                weight_decay=0.5,   # match LSTM/MLP/Transformer sweep
             )
             idx = done + skipped + failed + 1
             print(f"\n[run  {idx:3d}/{n_total}] tag={tag}  fold={fold}")
