@@ -30,7 +30,7 @@ from train_mamba_flow_ar import main_worker  # noqa: E402
 from best_specs import BEST_SPECS, FOLDS    # noqa: E402
 
 RESULT_DIR = os.path.join(HERE, "result")
-SEEDS = [2026, 2027, 2028]
+SEEDS = [2026, 2027, 2028, 2029, 2030]
 
 CH6 = ["sp_return", "tbill_wr", "ads_lag", "sp_std_13w", "wti_wr", "sp_log_std_13w"]
 M, B, S = "metab_13w", "bondpp_13w_lag", "stockpp_13w_lag"
@@ -42,16 +42,12 @@ CONFIGS = [
     ("ch6_lstm",        CH6,         "", "lstm",        "encoder"),
     ("ch6_transformer", CH6,         "", "transformer", "encoder"),
     ("ch6_mlp",         CH6,         "", "mlp",         "encoder"),
-    ("ch9_indiv",       CH6 + INDIV, "", "mamba",       "개별 m2/indpro/cpi"),
     ("metab_embed",     CH6 + [M],   "", "mamba",       "metab embed"),
+    ("ch9_indiv",       CH6 + INDIV, "", "mamba",       "개별 m2/indpro/cpi"),
     ("metab_dc",        CH6,         M,  "mamba",       "metab DC"),
     ("metab_both",      CH6 + [M],   M,  "mamba",       "metab both"),
     ("bondpp_embed",    CH6 + [B],   "", "mamba",       "bondpp embed"),
-    ("bondpp_dc",       CH6,         B,  "mamba",       "bondpp DC"),
-    ("bondpp_both",     CH6 + [B],   B,  "mamba",       "bondpp both"),
     ("stockpp_embed",   CH6 + [S],   "", "mamba",       "stockpp embed"),
-    ("stockpp_dc",      CH6,         S,  "mamba",       "stockpp DC"),
-    ("stockpp_both",    CH6 + [S],   S,  "mamba",       "stockpp both"),
 ]
 
 
@@ -141,7 +137,7 @@ def _ms(xs):
 
 
 print("\n" + "=" * 108)
-print("Ablation full — 구성별 mean±std (3 seed × 3 fold pooled, n≤9)")
+print("Ablation full — 구성별 mean±std (5 seed × 3 fold pooled, n≤15)")
 print("  NLL/EMD 낮을수록 좋음 | cov80 0.80 근접 | CVaR5Δ 0 근접")
 print("=" * 108)
 print(f"{'config':<16} {'desc':<20} {'NLL':<16} {'EMD':<16} "
