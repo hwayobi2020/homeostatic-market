@@ -70,11 +70,12 @@ COND_COLS = [
     "sp_return",          # 0  past only
     "tbill_wr",           # 1  past + FUTURE unmask  ← 사용자 강조
     "m2_13w_cum_lag",     # 2  past only
-    "cpi_13w_cum_lag",    # 3  past only
-    "indpro_13w_pct_lag", # 4  past only  ← ADS 대체: 화폐가치절하(m2-INDPRO-cpi) 실물생산 축. ADS(distribution shift 4.4배, perm +0.001 무영향) 제거하고 metab 핵심 분모 INDPRO 투입.
-    "sp_std_13w",         # 5  past only
-    "wti_wr",             # 6  past only
-    "sp_log_std_13w",     # 7  past only
+    "ads_lag",            # 3  past only  ← 경기순환 cond (COVID robust, INDPRO 와 상관 0.5 = 고유정보)
+    "cpi_13w_cum_lag",    # 4  past only
+    "indpro_13w_pct_lag", # 5  past only  ← 실물생산 (metab=m2-INDPRO-cpi 핵심 분모). ADS 와 역할 분리: ADS=경기 cond / INDPRO=화폐가치절하 실물축.
+    "sp_std_13w",         # 6  past only
+    "wti_wr",             # 7  past only
+    "sp_log_std_13w",     # 8  past only
 ]
 N_CHANNELS = len(COND_COLS)
 TBILL_CH = 1                                       # 미래 unmask 인 channel
