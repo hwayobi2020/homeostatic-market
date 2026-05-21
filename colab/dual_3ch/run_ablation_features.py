@@ -178,8 +178,8 @@ def summarize_ablation():
     print("=" * 116)
     print(f"{'variant':<10} {'extra_col':<22} {'val_pw mean±std':<18} "
           f"{'test_pw_z mean±std':<20} {'EMD':>10} {'CVaR5Δ':>11} "
-          f"{'CVaR1Δ':>11} {'cov80':>7} {'cov95':>7}")
-    print("-" * 116)
+          f"{'CVaR1Δ':>11} {'cov80 m±std':>14} {'cov95 m±std':>14}")
+    print("-" * 124)
 
     pooled = {}
     for label, extra_cols in ABLATIONS:
@@ -197,7 +197,7 @@ def summarize_ablation():
                     c95.append(r["cov95"])
         vm, vs = _mean_std(v); tm, ts = _mean_std(t)
         em_m, _ = _mean_std(em); c5_m, _ = _mean_std(c5); c1_m, _ = _mean_std(c1)
-        c80_m, _ = _mean_std(c80); c95_m, _ = _mean_std(c95)
+        c80_m, c80_sd = _mean_std(c80); c95_m, c95_sd = _mean_std(c95)
         pooled[label] = dict(
             val=vm, test=tm, emd=em_m, cv5=c5_m, cv1=c1_m,
             cov80=c80_m, cov95=c95_m,
@@ -207,11 +207,11 @@ def summarize_ablation():
         em_s = f"{em_m:.5f}"  if em_m is not None else "n/a"
         c5_s = f"{c5_m:+.5f}" if c5_m is not None else "n/a"
         c1_s = f"{c1_m:+.5f}" if c1_m is not None else "n/a"
-        c80_s = f"{c80_m:.3f}" if c80_m is not None else "n/a"
-        c95_s = f"{c95_m:.3f}" if c95_m is not None else "n/a"
+        c80_s = f"{c80_m:.3f}±{c80_sd:.3f}" if c80_m is not None else "n/a"
+        c95_s = f"{c95_m:.3f}±{c95_sd:.3f}" if c95_m is not None else "n/a"
         extra_disp = extra_cols if extra_cols else "(base only)"
         print(f"{label:<10} {extra_disp:<22} {v_s:<18} {t_s:<20} "
-              f"{em_s:>10} {c5_s:>11} {c1_s:>11} {c80_s:>7} {c95_s:>7}")
+              f"{em_s:>10} {c5_s:>11} {c1_s:>11} {c80_s:>14} {c95_s:>14}")
 
     # ----- 2-A2. Baseline row (HAR-Ridge AR) -----
     print("-" * 116)
@@ -248,22 +248,52 @@ def summarize_ablation():
                 c80.append(r["cov80"]);    c95.append(r["cov95"])
         tm, ts = _mean_std(t); em_m, _ = _mean_std(em)
         c5_m, _ = _mean_std(c5); c1_m, _ = _mean_std(c1)
-        c80_m, _ = _mean_std(c80); c95_m, _ = _mean_std(c95)
+        c80_m, c80_sd = _mean_std(c80); c95_m, c95_sd = _mean_std(c95)
         t_s   = f"{tm:+.4f}±{ts:.4f}" if tm is not None else "n/a"
         em_s  = f"{em_m:.5f}"  if em_m is not None else "n/a"
         c5_s  = f"{c5_m:+.5f}" if c5_m is not None else "n/a"
         c1_s  = f"{c1_m:+.5f}" if c1_m is not None else "n/a"
-        c80_s = f"{c80_m:.3f}" if c80_m is not None else "n/a"
-        c95_s = f"{c95_m:.3f}" if c95_m is not None else "n/a"
+        c80_s = f"{c80_m:.3f}±{c80_sd:.3f}" if c80_m is not None else "n/a"
+        c95_s = f"{c95_m:.3f}±{c95_sd:.3f}" if c95_m is not None else "n/a"
         print(f"{'baseline':<10} {'HAR-Ridge AR':<22} {'(no val)':<18} "
               f"{t_s:<20} {em_s:>10} {c5_s:>11} {c1_s:>11} "
-              f"{c80_s:>7} {c95_s:>7}  [{n_har} HAR run]")
+              f"{c80_s:>14} {c95_s:>14}  [{n_har} HAR run]")
         pooled["baseline_har"] = dict(
             val=None, test=tm, emd=em_m,
             cv5=c5_m, cv1=c1_m, cov80=c80_m, cov95=c95_m,
         )
     else:
         print(f"{'baseline':<10} (no baseline_har_ar_*_summary.json in result/)")
+
+    # ----- 2-A3. Coverage 통계 검정 (one-sample t vs target) -----
+    print("\n" + "-" * 124)
+    print("Coverage 유의성 — variant 별 cov 가 target 과 유의하게 다른가 "
+          "(one-sample t over 15 run)")
+    print("  |t| < 2.14 (df=14, two-tail p=0.05) => target 과 유의차 없음 "
+          "= 통계적으로 well-calibrated (좋음)")
+    print("  |t| >= 2.14 => target 에서 유의하게 벗어남 (분포 폭 과대/과소)")
+    print("-" * 124)
+    print(f"{'variant':<10} {'cov80 mean±std':<18} {'t(vs0.80)':>10}  "
+          f"{'cov95 mean±std':<18} {'t(vs0.95)':>10}")
+    for label in LABEL_ORDER:
+        if label not in runs:
+            continue
+        c80 = [runs[label][s][f]["cov80"] for s in PHASE2_SEEDS for f in FOLDS
+               if s in runs[label] and f in runs[label][s]
+               and runs[label][s][f]["cov80"] is not None]
+        c95 = [runs[label][s][f]["cov95"] for s in PHASE2_SEEDS for f in FOLDS
+               if s in runs[label] and f in runs[label][s]
+               and runs[label][s][f]["cov95"] is not None]
+        m80, s80 = _mean_std(c80); m95, s95 = _mean_std(c95)
+        t80 = ((m80 - 0.80) / (s80 / len(c80) ** 0.5)
+               if (s80 and s80 > 1e-12) else None)
+        t95 = ((m95 - 0.95) / (s95 / len(c95) ** 0.5)
+               if (s95 and s95 > 1e-12) else None)
+        m80s = f"{m80:.3f}±{s80:.3f}" if m80 is not None else "n/a"
+        m95s = f"{m95:.3f}±{s95:.3f}" if m95 is not None else "n/a"
+        t80s = f"{t80:+.2f}" if t80 is not None else "n/a"
+        t95s = f"{t95:+.2f}" if t95 is not None else "n/a"
+        print(f"{label:<10} {m80s:<18} {t80s:>10}  {m95s:<18} {t95s:>10}")
 
     # ----- 2-B. Contribution (variant - null) -----
     if "null" in pooled:
