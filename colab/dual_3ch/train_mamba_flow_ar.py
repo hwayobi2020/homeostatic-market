@@ -773,6 +773,7 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
               f"(dim={extra_context_dim}, origin-frozen, Flow-only)")
 
     model = MambaFlowAR(
+        d_input=int(Xtr.shape[-1]),   # 데이터 채널 수 자동 (monkey-patch / 채널수 변경 robust)
         d_model=d_model, n_mamba_layers=n_mamba_layers,
         n_flow_layers=n_flow_layers, n_flow_hidden=n_flow_hidden,
         dropout=dropout, extra_context_dim=extra_context_dim,
