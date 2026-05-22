@@ -191,11 +191,25 @@ def main():
     ap.add_argument("--use-arx", type=int, default=0,
                     help="0 = ConstantMean GARCH (pure), "
                          "1 = ARX(1) mean with 7 macro covariates")
+    ap.add_argument("--dist", default="normal", choices=["normal", "t"],
+                    help="innovation distribution: 'normal' (canonical "
+                         "GARCH(1,1) reference) or 't' (Student-t, standard "
+                         "fat-tail spec for returns).  Both textbook; report "
+                         "both as reference floors.")
     ap.add_argument("--n-sim",  type=int, default=1000)
     ap.add_argument("--seed",   type=int, default=2026)
     args = ap.parse_args()
 
-    spec_tag = "arx" if args.use_arx else "pure"
+    # ARX path is non-standard + has a known forecast-x limitation; keep the
+    # Student-t reference on the standard pure GARCH(1,1) only.
+    if args.use_arx and args.dist != "normal":
+        sys.exit("[FATAL] --dist t is supported only on pure GARCH(1,1) "
+                 "(--use-arx 0).")
+
+    # Tag keeps Gaussian filenames stable (garch_pure_*) and appends '_t' for
+    # the Student-t variant so the two reference specs never overwrite.
+    base_tag = "arx" if args.use_arx else "pure"
+    spec_tag = base_tag if args.dist == "normal" else f"{base_tag}_{args.dist}"
     train_csv = os.path.join(args.folds_dir, f"{args.fold}_train.csv")
     test_csv  = os.path.join(args.folds_dir, f"{args.fold}_test.csv")
     for p in (train_csv, test_csv):
@@ -211,7 +225,7 @@ def main():
     print(f" GARCH(1,1) baseline  -  fold = {args.fold}, spec = {spec_tag}")
     print(f"  mean equation : {'ARX(1) + 7 macro' if args.use_arx else 'ConstantMean'}")
     print(f"  variance      : GARCH(p=1, q=1)")
-    print(f"  distribution  : Normal (Gaussian)")
+    print(f"  distribution  : {'Normal (Gaussian)' if args.dist == 'normal' else 'Student-t'}")
     print(f"  n_sim         : {args.n_sim} paths per test origin (13 step)")
     print("=" * 78)
 
@@ -244,7 +258,7 @@ def main():
     else:
         # ConstantMean via arch_model factory
         am = arch_model(y_series, mean="Constant", vol="GARCH", p=1, q=1,
-                        dist="normal")
+                        dist=args.dist)
     if args.use_arx:
         am.volatility = GARCH(p=1, q=1)
         am.distribution = Normal()
@@ -254,8 +268,16 @@ def main():
     print(res.params.to_string())
 
     # ---- Forecast at each test origin -------------------------------
-    # Each test origin's 13-step forecast simulates n_sim paths in z-score.
-    test_origin_idx = np.arange(n_train, n_train + n_test - FUTURE_LEN + 1)
+    # origin_row = last-observed row.  arch forecast(start=r) predicts
+    # y[r+1 .. r+H] (verified, arch 8.0.0: fc.mean.index label r -> cols
+    # h.1..h.H = y[r+1..r+H]).  Align to main model / HAR: their origin t
+    # conditions on test rows [t : t+PAST_LEN] (last-observed = t+PAST_LEN-1)
+    # and predicts test rows [t+PAST_LEN : t+L].  In this concat indexing the
+    # matching last-observed rows are  r = n_train + (PAST_LEN-1) + t,
+    # t = 0 .. n_w-1, giving the IDENTICAL forecast targets and origin count
+    # (n_test - PAST_LEN - FUTURE_LEN + 1) as the main model.
+    test_origin_idx = np.arange(n_train + PAST_LEN - 1,
+                                n_train + n_test - FUTURE_LEN)
     print(f"\n[3] Simulate forecast paths at {len(test_origin_idx)} test origins")
     fc = res.forecast(
         horizon=FUTURE_LEN, start=int(test_origin_idx[0]),
@@ -268,11 +290,23 @@ def main():
     print(f"    sims_z.shape = {sims_z.shape}  (origins, n_sim, horizon)")
 
     # ---- Build actual_z and filter NaN origins ----------------------
+    # #3 origin-set parity: drop any origin whose main-model cond window
+    # (test[t:t+L] = concat[r-(PAST_LEN-1) : r+1+FUTURE_LEN]) contains a NaN,
+    # so GARCH is scored on the EXACT same origin set as the Flow main model
+    # (which NaN-filters the full COND_COLS window in load_windows_seq).
+    miss_cond = [c for c in COND_COLS if c not in df.columns]
+    if miss_cond:
+        sys.exit(f"[FATAL] missing cond cols for origin-parity mask: {miss_cond}")
+    cond_arr_full = df[list(COND_COLS)].values.astype(np.float64)
     actual_z = np.empty((len(test_origin_idx), FUTURE_LEN), dtype=np.float64)
     valid = np.ones(len(test_origin_idx), dtype=bool)
     for k, origin_row in enumerate(test_origin_idx):
-        path = y_z[origin_row : origin_row + FUTURE_LEN]
-        if np.any(np.isnan(path)) or np.any(np.isnan(sims_z[k])):
+        # forecast at origin_row predicts y[r+1 .. r+FUTURE_LEN]
+        path = y_z[origin_row + 1 : origin_row + 1 + FUTURE_LEN]
+        cond_win = cond_arr_full[origin_row - (PAST_LEN - 1):
+                                 origin_row + 1 + FUTURE_LEN]
+        if (np.any(np.isnan(path)) or np.any(np.isnan(sims_z[k]))
+                or np.any(np.isnan(cond_win))):
             valid[k] = False
             continue
         actual_z[k] = path
@@ -283,20 +317,29 @@ def main():
     print(f"    valid test origins = {n_origins}")
 
     # ---- Compute NLL (Gaussian closed-form, z-score units) ----------
-    # GARCH per-step Gaussian with sigma_t implied by fitted process.
-    # For paper-comparable NLL we use closed-form Gaussian likelihood:
-    #   p(sp_z[tau] | sigma_t) = N(mu_z[tau], sigma_t^2)
-    # mu and sigma per-origin/step from `fc.mean` and `fc.variance`.
-    mu_fc  = fc.mean.values[: len(actual_z) + (~valid).sum()][valid]   # align
-    var_fc = fc.variance.values[: len(actual_z) + (~valid).sum()][valid]
-    # In z-score units (already standardised target)
-    err_z = actual_z - mu_fc
-    nll_z = 0.5 * np.log(2.0 * math.pi * var_fc) + (err_z ** 2) / (2.0 * var_fc)
-    per_week_nll_z   = float(np.nanmean(nll_z))
-    per_origin_nll_z = float(np.nanmean(np.nansum(nll_z, axis=1)))
-    print(f"\n[4] Closed-form Gaussian NLL (z-score units)")
-    print(f"    per-week NLL   = {per_week_nll_z:+.4f}")
-    print(f"    per-origin NLL = {per_origin_nll_z:+.4f}")
+    # NOTE (scope): this is the MULTI-STEP MARGINAL Gaussian NLL (mu/var from
+    # the h-step forecast).  It is NOT yet aligned with the main model's
+    # teacher-forced one-step JOINT NLL -- the fair filtered one-step NLL is a
+    # separate pending rework.  For dist='t' the closed-form below does not
+    # apply (the multi-step marginal is not Student-t), and the proper one-step
+    # filtered Student-t NLL is part of that same pending rework, so we skip NLL
+    # here for dist != 'normal' rather than emit a wrong-density number.
+    if args.dist == "normal":
+        mu_fc  = fc.mean.values[: len(actual_z) + (~valid).sum()][valid]   # align
+        var_fc = fc.variance.values[: len(actual_z) + (~valid).sum()][valid]
+        # In z-score units (already standardised target)
+        err_z = actual_z - mu_fc
+        nll_z = 0.5 * np.log(2.0 * math.pi * var_fc) + (err_z ** 2) / (2.0 * var_fc)
+        per_week_nll_z   = float(np.nanmean(nll_z))
+        per_origin_nll_z = float(np.nanmean(np.nansum(nll_z, axis=1)))
+        print(f"\n[4] Closed-form Gaussian NLL (z-score units, multi-step marginal)")
+        print(f"    per-week NLL   = {per_week_nll_z:+.4f}")
+        print(f"    per-origin NLL = {per_origin_nll_z:+.4f}")
+    else:
+        per_week_nll_z = None
+        per_origin_nll_z = None
+        print(f"\n[4] NLL skipped for dist={args.dist} "
+              f"(needs one-step filtered Student-t NLL -- pending rework)")
 
     # ---- Convert sims to raw sp_return units ------------------------
     sims_raw = sims_z * y_sd + y_mu
@@ -336,7 +379,7 @@ def main():
     title = (f"GARCH(1,1) {spec_tag.upper()} -- fold {args.fold}  "
              f"(n_origin = {n_origins}, n_sim = {args.n_sim})\n"
              f"{'ARX(1) macro mean' if args.use_arx else 'ConstantMean'} + "
-             f"GARCH(1,1) + Gaussian")
+             f"GARCH(1,1) + {'Gaussian' if args.dist == 'normal' else 'Student-t'}")
     plot_fanchart(actual_raw, sims_raw, title + "\nfan chart",
                   f"{prefix}_fanchart.png")
     plot_histogram(actual_flat, sim_flat,
@@ -350,7 +393,7 @@ def main():
     sim_mean_z = sims_z.mean(axis=1)
     sim_std_z  = sims_z.std(axis=1, ddof=1)
     for ii, origin_row in enumerate(test_origin_idx):
-        origin_date = str(date_col[origin_row - 1])  # last observed before origin
+        origin_date = str(date_col[origin_row])  # last-observed row (conditioning date)
         for tau in range(FUTURE_LEN):
             rows.append(dict(
                 origin_idx=int(origin_row), origin_date=origin_date,
@@ -372,7 +415,7 @@ def main():
         spec=spec_tag,
         mean_eqn=("ARX(1) + 7 macro" if args.use_arx else "ConstantMean"),
         variance_eqn="GARCH(p=1, q=1)",
-        distribution="Normal",
+        distribution=("Normal" if args.dist == "normal" else "Student-t"),
         n_train=int(n_train), n_test=int(n_test),
         n_test_origins=int(n_origins), n_sim_per_origin=int(args.n_sim),
         seed=int(args.seed),
