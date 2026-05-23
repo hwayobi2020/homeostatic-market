@@ -24,7 +24,7 @@ sys.path.insert(0, HERE)
 import train_mamba_flow_ar as T            # noqa: E402
 from train_mamba_flow_ar import (          # noqa: E402
     MambaFlowAR, cached_load_windows_seq, compute_valid_mask)
-from best_specs import FOLDS, BEST_SPECS   # noqa: E402
+from best_specs import FOLDS as BASE_FOLDS, BEST_SPECS   # noqa: E402
 
 ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
 FOLDS_DIR = os.path.join(ROOT, "data", "folds_v33_vix_expanding")
@@ -32,7 +32,8 @@ RESULT_DIR = os.path.join(HERE, "result")
 CH6 = ["sp_return", "tbill_wr", "ads_lag", "sp_std_13w", "wti_wr", "sp_log_std_13w"]
 PAST, FUT = 52, 13
 SEED = 2026
-BP_THRESH = 0.25   # 25bp in percentage points
+BP_THRESH = 0.25   # 25bp = 0.25 연율 percentage point
+FOLDS = list(BASE_FOLDS) + ["F_gfc"]   # 기존 3 fold + GFC 위기 fold
 
 
 def set_cond_cols(cols):
@@ -83,16 +84,6 @@ def per_origin_nll(tag, fold, mask_tbill, dev):
     return (-lp.cpu().numpy() / FUT)                 # per-origin per-week NLL
 
 
-def find_rate_col(df):
-    """raw 3M T-bill rate level 컬럼 추정 (없으면 tbill_wr fallback)."""
-    for c in df.columns:
-        cl = c.lower()
-        if c != "tbill_wr" and any(k in cl for k in
-                                   ("dtb3", "tb3ms", "tbill_rate", "tbill3m", "t3m")):
-            return c
-    return "tbill_wr"
-
-
 def main():
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     rows = []
@@ -117,14 +108,15 @@ def main():
         df = pd.read_csv(os.path.join(FOLDS_DIR, f"{fold}_test.csv"))
         if i == 0:
             print("[csv cols]", list(df.columns))
-        rc = find_rate_col(df)
-        rate = pd.to_numeric(df[rc], errors="coerce").values
-        scale = 1.0 if np.nanmax(np.abs(rate)) > 1.5 else 100.0  # %→1, decimal→×100
-        chg = np.array([abs(rate[t + PAST + FUT - 1] - rate[t + PAST - 1]) * scale
+        # tbill_wr = DTB3 연율%를 주간복리수익률로 변환한 레벨 (extend_to_1971 L305).
+        # 25bp(연율 %p) 비교 위해 연율 %p 로 환산: ((1+wr)^52 - 1)*100  (0.000938 → 5.00).
+        rate_w = pd.to_numeric(df["tbill_wr"], errors="coerce").values
+        rate_pp = ((1.0 + rate_w) ** 52 - 1.0) * 100.0
+        chg = np.array([abs(rate_pp[t + PAST + FUT - 1] - rate_pp[t + PAST - 1])
                         for t in vt])
         date = (df["date"].values[vt + PAST - 1] if "date" in df.columns
                 else np.array([f"{fold}_{t}" for t in vt]))
-        print(f"[{fold}] rate_col={rc}  origins={len(vt)}  "
+        print(f"[{fold}] rate=tbill_wr→연율%p  origins={len(vt)}  "
               f"|Δrate|pp min/med/max = {np.nanmin(chg):.3f}/{np.nanmedian(chg):.3f}"
               f"/{np.nanmax(chg):.3f}  (>=25bp: {int((chg >= BP_THRESH).sum())})")
         for j in range(len(vt)):
