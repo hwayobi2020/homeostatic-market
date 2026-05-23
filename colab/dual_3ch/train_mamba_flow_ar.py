@@ -473,12 +473,14 @@ class MambaFlowAR(nn.Module):
                  flow_tail_bound=FLOW_TAIL_BOUND, dropout=0.0,
                  extra_context_dim=0, encoder_type="mamba",
                  transformer_n_heads=4, mlp_num_layers=2,
+                 direct_prev_return=False,
                  past_len=PAST_LEN, future_len=FUTURE_LEN):
         super().__init__()
         self.d_input           = d_input
         self.d_model           = d_model
         self.extra_context_dim = extra_context_dim
-        self.flow_context_dim  = d_model + extra_context_dim
+        self.direct_prev_dim   = 1 if direct_prev_return else 0
+        self.flow_context_dim  = d_model + extra_context_dim + self.direct_prev_dim
         self.past_len          = past_len
         self.future_len        = future_len
         self.L                 = past_len + future_len
@@ -561,14 +563,18 @@ class MambaFlowAR(nn.Module):
         T = target_path.shape[1]
         h = self.encode(x_input)                                # (B, L, d_model)
         h_future = h[:, self.past_len:, :]                      # (B, T, d_model)
+        ctx_parts = [h_future]
+        if self.direct_prev_dim > 0:
+            # teacher-forced previous return at each future step (shifted SP channel)
+            prev_ret = x_input[:, self.past_len:, SP_CH:SP_CH + 1]   # (B, T, 1)
+            ctx_parts.append(prev_ret)
         if self.extra_context_dim > 0:
             if extra_context is None:
                 raise ValueError("extra_context required when "
                                  "extra_context_dim > 0")
             extra_expanded = extra_context.unsqueeze(1).expand(-1, T, -1)
-            ctx_seq = torch.cat([h_future, extra_expanded], dim=-1)    # (B, T, flow_ctx)
-        else:
-            ctx_seq = h_future
+            ctx_parts.append(extra_expanded)
+        ctx_seq = torch.cat(ctx_parts, dim=-1) if len(ctx_parts) > 1 else h_future
         y_flat   = target_path.reshape(B * T, 1)
         ctx_flat = ctx_seq.reshape(B * T, self.flow_context_dim)
         log_p_flat = self.flow.log_prob(inputs=y_flat, context=ctx_flat)
@@ -623,10 +629,12 @@ class MambaFlowAR(nn.Module):
             seq = torch.cat([seq, next_input], dim=1)            # (BN, L_cur, 8)
             h_seq = self.encode(seq)                              # (BN, L_cur, d_model)
             h_tau = h_seq[:, -1, :]                               # (BN, d_model)
+            ctx_parts = [h_tau]
+            if self.direct_prev_dim > 0:
+                ctx_parts.append(last_sp.unsqueeze(-1))           # (BN, 1) prev return
             if self.extra_context_dim > 0:
-                ctx_tau = torch.cat([h_tau, extra_rep], dim=-1)   # (BN, flow_ctx)
-            else:
-                ctx_tau = h_tau
+                ctx_parts.append(extra_rep)
+            ctx_tau = torch.cat(ctx_parts, dim=-1) if len(ctx_parts) > 1 else h_tau
             # Flow.sample(num_samples=1, context=ctx) -> (ctx_batch, 1, 1).
             sp_z = self.flow.sample(1, context=ctx_tau).squeeze(-1).squeeze(-1)
             sampled.append(sp_z)
@@ -741,6 +749,7 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
           weight_decay=0.01, dropout=0.0,
           extra_cond_cols=None, encoder_type="mamba",
           transformer_n_heads=4, mlp_num_layers=2,
+          direct_prev_return=False,
           max_epoch=MAX_EPOCH, patience=PATIENCE, batch=BATCH, lr=LR,
           device="cuda", seed=2026):
     torch.manual_seed(seed); np.random.seed(seed)
@@ -780,6 +789,7 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
         encoder_type=encoder_type,
         transformer_n_heads=transformer_n_heads,
         mlp_num_layers=mlp_num_layers,
+        direct_prev_return=direct_prev_return,
     ).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"    model params  = {n_params:,}  "
@@ -1094,6 +1104,7 @@ def main_worker(args):
             extra_context_channels="",
             encoder_type="mamba",
             transformer_n_heads=4, mlp_num_layers=2,
+            direct_prev_return=False,
         )
         merged = {**defaults, **args}
         if "fold" not in merged:
@@ -1145,6 +1156,7 @@ def main_worker(args):
         encoder_type=getattr(args, "encoder_type", "mamba"),
         transformer_n_heads=getattr(args, "transformer_n_heads", 4),
         mlp_num_layers=getattr(args, "mlp_num_layers", 2),
+        direct_prev_return=getattr(args, "direct_prev_return", False),
         max_epoch=args.max_epoch, patience=args.patience,
         batch=args.batch, lr=args.lr, device=device, seed=args.seed,
     )
