@@ -96,5 +96,17 @@ for vt, col in [("m13", "metab_13w"), ("m26", "metab_26w")]:
             return te.get(k) or 0
         print(f"{'':<6}{fold:<16}{g('per_week_nll_z'):>9.4f}{g('crps_pooled'):>9.5f}"
               f"{g('coverage_95'):>8.3f}{g('std_ratio'):>11.3f}{g('cvar_5pct_diff'):>10.5f}")
-print("\n해석: 같은 fold 에서 m26 이 m13 보다 std_ratio→1.0, cov95→0.95, NLL/CRPS 낮으면 "
-      "26w 가 더 나음 (네 '13주가 짧았다' 가설 확인).")
+# GARCH floor (gap29 fold 로 재실행해야 동일 fold 비교) — metab 무관, 과거 sp_return 만
+print(f"\n[GARCH-N]   {'fold':<16}{'NLL':>9}{'CRPS':>9}{'cov95':>8}{'std_ratio':>11}{'CVaR5Δ':>10}")
+for fold in FOLDS:
+    p = os.path.join(RESULT_DIR, f"garch_pure_{fold}_summary.json")
+    if not os.path.exists(p):
+        print(f"{'':<6}{fold:<16}  (없음 — train_garch_ar.py --fold {fold} --use-arx 0 --dist normal)")
+        continue
+    g = json.load(open(p))
+    nll = g.get("per_week_nll_z")
+    print(f"{'':<6}{fold:<16}{(nll if nll is not None else 0):>9.4f}"
+          f"{g.get('crps_pooled', 0):>9.5f}{g.get('coverage_95', 0):>8.3f}"
+          f"{g.get('std_ratio', 0):>11.3f}{g.get('cvar_5pct_diff', 0):>10.5f}")
+print("\n해석: 같은 gap29 fold 에서 self-stat(m26) vs GARCH 비교. NLL 은 class 달라 비교불가(참고). "
+      "CRPS/cov95/std_ratio 로 — m26 이 GARCH 에 붙거나 넘으면 좋음.")
