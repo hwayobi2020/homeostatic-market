@@ -38,6 +38,7 @@ FOLDS_DIR = os.path.join(ROOT, "data", "folds_v33_vix_expanding")
 FOLDS = ["F_gfc", "F_long_A", "F_long_B_origin", "F_long"]
 FOLD = FOLDS[0]   # __main__ 루프에서 fold 별로 재할당
 SEEDS = [2026, 2027, 2028, 2029, 2030]
+SELF_VARIANT = "macroenc"   # "selfstat"(encoder 가 sp_return 봄) | "macroenc"(무시)
 PAST, FUT = 52, 13
 BP = 0.25   # 25bp = 0.25 연율 %p
 
@@ -63,7 +64,7 @@ def _nd(arr):
 
 def selfstat_per_origin(seed, dev):
     """self-stat per-origin per-week CRPS npy 로드 (없으면 ckpt 로 evaluate_test 재계산)."""
-    tag = f"selfstat_mask_mlp_s{seed}"
+    tag = f"{SELF_VARIANT}_mask_mlp_s{seed}"
     prefix = os.path.join(RESULT_DIR, f"mamba_flow_ar_{tag}_{FOLD}")
     crps_npy, dates_npy = f"{prefix}_crps_per_origin.npy", f"{prefix}_origin_dates.npy"
     if os.path.exists(crps_npy) and os.path.exists(dates_npy):
@@ -74,7 +75,8 @@ def selfstat_per_origin(seed, dev):
     ck = torch.load(ckpt, map_location=dev)
     meta = ck["meta"]
     set_cond_cols(meta["cond_cols"])
-    T.MASK_FUTURE_TBILL = True               # self-stat 은 마스크 학습
+    T.MASK_FUTURE_TBILL = True               # 마스크 학습
+    T.ENCODER_MASK_SP = (SELF_VARIANT == "macroenc")   # macroenc 면 encoder 가 sp_return 무시
     model = MambaFlowAR(
         d_input=len(meta["cond_cols"]), d_model=meta["d_model"],
         n_flow_layers=meta["n_flow_layers"], n_flow_hidden=meta["n_flow_hidden"],
@@ -155,7 +157,7 @@ def main():
                   np.where(R.chg >= BP, "인상", "평탄"))
 
     print("\n" + "=" * 92)
-    print(f"F_gfc — 금리 변화 구간별 CRPS (per-origin=13주 단위)  self-stat(MLP-Flow) vs GARCH")
+    print(f"{FOLD} — 금리 변화 구간별 CRPS (per-origin=13주, Flow={SELF_VARIANT}) vs GARCH")
     print("  CRPS 낮을수록 좋음 | diff = self − garch  ( <0 = Flow 우위 )")
     print("=" * 92)
     print(f"{'구간':<14}{'n':>5}{'self CRPS':>14}{'GARCH CRPS':>14}{'diff(self−garch)':>20}")
@@ -170,7 +172,7 @@ def main():
         s, g = sub["self"].mean(), sub["garch"].mean()
         win = "  ← Flow 우위" if s < g else ""
         print(f"{lab:<14}{len(sub):>5}{s:>14.5f}{g:>14.5f}{s - g:>+20.5f}{win}")
-    out = os.path.join(RESULT_DIR, "gfc_crps_stratify.csv")
+    out = os.path.join(RESULT_DIR, f"crps_stratify_{SELF_VARIANT}_{FOLD}.csv")
     R.to_csv(out, index=False)
     print(f"\nsaved: {out}")
 

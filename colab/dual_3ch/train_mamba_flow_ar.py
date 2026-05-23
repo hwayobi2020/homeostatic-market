@@ -134,6 +134,8 @@ _DATA_CACHE = {}
 # future short-rate path conditioning.  Default False = current behaviour
 # ("short-rate path conditional" thesis: future tbill unmasked).
 MASK_FUTURE_TBILL = False
+ENCODER_MASK_SP = False   # True 면 encoder 가 sp_return 채널을 무시 (Flow head 의 prevret/teacher
+                          #   forcing 은 그대로 유지). 거시만 encoder 로 보내는 ablation 용.
 
 
 def _cache_key(csv_path, cond_stats, target_stats):
@@ -556,6 +558,9 @@ class MambaFlowAR(nn.Module):
         same trained position-conditioned representation.
         """
         L_cur = x.shape[1]
+        if ENCODER_MASK_SP:
+            x = x.clone()
+            x[:, :, SP_CH] = 0.0   # encoder 만 sp_return 무시 (prevret/teacher forcing 은 별도 경로라 유지)
         h = self.input_proj(x) + self.pos_emb[:L_cur].unsqueeze(0)
         h = self.mamba(h)
         return h
