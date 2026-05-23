@@ -98,7 +98,7 @@ def main():
             continue
         meta = torch.load(on_ck, map_location="cpu")["meta"]
         set_cond_cols(meta["cond_cols"])
-        vmask, _ = compute_valid_mask(
+        vmask, _, _ = compute_valid_mask(
             os.path.join(FOLDS_DIR, f"{fold}_test.csv"), meta["cond_stats"])
         vt = np.where(vmask)[0]
         try:
