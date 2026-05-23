@@ -129,13 +129,19 @@ GRAD_CLIP = 1.0
 # (csv_path, fingerprint of cond_stats, fingerprint of target_stats).
 _DATA_CACHE = {}
 
+# Ablation toggle (runner monkey-patch): if True, the future 13w portion of the
+# tbill channel is ALSO zero-masked in load_windows_seq -- the model gets NO
+# future short-rate path conditioning.  Default False = current behaviour
+# ("short-rate path conditional" thesis: future tbill unmasked).
+MASK_FUTURE_TBILL = False
+
 
 def _cache_key(csv_path, cond_stats, target_stats):
     cs_key = None if cond_stats is None else (
         tuple(cond_stats["mean"]), tuple(cond_stats["std"]))
     ts_key = None if target_stats is None else (
         float(target_stats["mean"]), float(target_stats["std"]))
-    return (csv_path, cs_key, ts_key)
+    return (csv_path, cs_key, ts_key, bool(MASK_FUTURE_TBILL))
 
 
 def cached_load_windows_seq(csv_path, past_len=PAST_LEN, future_len=FUTURE_LEN,
@@ -262,6 +268,12 @@ def load_windows_seq(csv_path, past_len=PAST_LEN, future_len=FUTURE_LEN,
         # Zero-mask macro channels in the future portion [PAST_LEN, L).
         for ch in MACRO_CH:
             x[past_len:, ch] = 0.0
+        # Ablation: optionally mask the future tbill path too (remove the
+        # short-rate path conditioning) -- tests whether the future rate
+        # scenario helps at all.  Propagates to AR inference because
+        # evaluate_test reads future_tbill from this masked Xte.
+        if MASK_FUTURE_TBILL:
+            x[past_len:, TBILL_CH] = 0.0
         # NOTE: For training, x[past_len:, SP_CH] currently holds shifted
         # real sp values (teacher forcing).  At inference these positions
         # are overwritten with sampled values (see MambaFlowAR.ar_sample).
