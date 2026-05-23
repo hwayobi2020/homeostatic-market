@@ -29,8 +29,8 @@ RESULT_DIR = os.path.join(HERE, "result")
 FOLDS_DIR = os.path.join(ROOT, "data", "folds_v33_vix_expanding")
 FOLDS = ["F_gfc", "F_long_A", "F_long_B_origin", "F_long"]
 ALL_SEEDS = [2026, 2027, 2028, 2029, 2030]
-SEEDS = ALL_SEEDS
-ENC_COLS = ["sp_return", "tbill_wr", "ads_lag", "wti_wr", "metab_13w"]
+SEEDS = [2026]   # 1 seed quick check (metab_26w 전환 후 directional)
+ENC_COLS = ["sp_return", "tbill_wr", "ads_lag", "wti_wr", "metab_26w"]  # metab 13w→26w
 DC_COLS = "sp_std_13w,sp_log_std_13w"
 
 
@@ -59,7 +59,7 @@ for fold in FOLDS:
         print(f"[skip {fold}] fold CSV 없음")
         continue
     for seed in SEEDS:
-        tag = f"selfstat_mask_mlp_s{seed}"
+        tag = f"selfstat_m26_mlp_s{seed}"   # metab_26w + gap29 fold (기존 m13 과 구분)
         p = os.path.join(RESULT_DIR, f"mamba_flow_ar_{tag}_{fold}_summary.json")
         if os.path.exists(p):
             print(f"[skip] {os.path.basename(p)}")

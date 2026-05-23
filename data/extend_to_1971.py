@@ -105,25 +105,25 @@ FOLD_SPLITS = {
     #   F_long_B        test 2015-2019: Fed 금리 정상화 / 무역전쟁 (COVID 회피)
     #   F_long          test 2021-2025: post-COVID + 인플레 / Fed hike
     #   F_long_B_origin test 2016-2020: 기존 F_long_B 정의 (COVID 포함), supplementary
-    "F_long_A":        {"train_start": "1971-01-01", "train_end": "2004-03-31",
-                        "val_start":   "2004-07-15", "val_end":   "2010-12-31",
+    "F_long_A":        {"train_start": "1971-01-01", "train_end": "2003-12-25",
+                        "val_start":   "2004-07-15", "val_end":   "2010-09-24",
                         "test_start":  "2011-04-15", "test_end":  "2015-12-31"},
     "F_long_B":        {"train_start": "1971-01-01", "train_end": "2008-03-31",
                         "val_start":   "2008-07-15", "val_end":   "2014-12-31",
                         "test_start":  "2015-04-15", "test_end":  "2019-12-31"},
-    "F_long":          {"train_start": "1971-01-01", "train_end": "2014-03-31",
-                        "val_start":   "2014-07-15", "val_end":   "2020-12-31",
+    "F_long":          {"train_start": "1971-01-01", "train_end": "2013-12-24",
+                        "val_start":   "2014-07-15", "val_end":   "2020-09-24",
                         "test_start":  "2021-04-15", "test_end":  "2025-12-31"},
     # F_long_B_origin : 기존 F_long_B 정의 보존 (COVID 영향 supplementary 분석용).
-    "F_long_B_origin": {"train_start": "1971-01-01", "train_end": "2009-03-31",
-                        "val_start":   "2009-07-15", "val_end":   "2015-12-31",
+    "F_long_B_origin": {"train_start": "1971-01-01", "train_end": "2008-12-24",
+                        "val_start":   "2009-07-15", "val_end":   "2015-09-25",
                         "test_start":  "2016-04-15", "test_end":  "2020-12-31"},
     # F_gfc : 리만(GFC) 위기 fold = 2번째 stress regime (사용자 4-fold 위기/회복 스킴,
     #   2026-05-23). test 2006-2010 = Lehman/GFC. 간격 규칙은 F_long_* 와 동일.
     #   ⚠️ 외과적 추가 정책: 평소엔 data/build_gfc_fold.py 로 이 fold 만 슬라이스하고
     #   기존 fold CSV 는 보존한다. 이 entry 는 canonical 기록용 (full rebuild 시 정합).
-    "F_gfc":           {"train_start": "1971-01-01", "train_end": "1999-03-31",
-                        "val_start":   "1999-07-15", "val_end":   "2005-12-31",
+    "F_gfc":           {"train_start": "1971-01-01", "train_end": "1998-12-24",
+                        "val_start":   "1999-07-15", "val_end":   "2005-09-24",
                         "test_start":  "2006-04-15", "test_end":  "2010-12-31"},
 }
 
