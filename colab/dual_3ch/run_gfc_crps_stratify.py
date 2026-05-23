@@ -54,6 +54,12 @@ def set_cond_cols(cols):
         pass
 
 
+def _nd(arr):
+    """날짜 배열을 'YYYY-MM-DD' 로 정규화 (Timestamp str '..00:00:00' vs '..' 차이 흡수)."""
+    return (pd.to_datetime(pd.Series(np.asarray(arr).astype(str)))
+            .dt.strftime("%Y-%m-%d").values)
+
+
 def selfstat_per_origin(seed, dev):
     """self-stat per-origin per-week CRPS npy 로드 (없으면 ckpt 로 evaluate_test 재계산)."""
     tag = f"selfstat_mask_mlp_s{seed}"
@@ -94,9 +100,10 @@ def main():
         if c is None:
             print(f"[skip seed {seed}] ckpt/npy 없음")
             continue
+        d = _nd(d)
         if base_dates is None:
-            base_dates = np.asarray(d).astype(str)
-        if not np.array_equal(np.asarray(d).astype(str), base_dates):
+            base_dates = d
+        if not np.array_equal(d, base_dates):
             sys.exit(f"[FATAL] seed {seed} origin date 순서 불일치")
         crps_list.append(c)
     if not crps_list:
@@ -111,13 +118,13 @@ def main():
         sys.exit(f"[FATAL] {gpref}_crps_per_origin.npy 없음 — 먼저:\n"
                  f"  !python colab/dual_3ch/train_garch_ar.py --fold {FOLD} --use-arx 0 --dist normal")
     g_crps = np.load(f"{gpref}_crps_per_origin.npy").mean(axis=1)   # (n_origin,)
-    g_dates = np.load(f"{gpref}_origin_dates.npy", allow_pickle=True).astype(str)
+    g_dates = _nd(np.load(f"{gpref}_origin_dates.npy", allow_pickle=True))
     g_map = {d: i for i, d in enumerate(g_dates)}
 
     # ── 3) origin 별 horizon 13주 금리 변화 (부호, 연율 %p) ──
     test_csv = os.path.join(FOLDS_DIR, f"{FOLD}_test.csv")
     dft = pd.read_csv(test_csv)
-    dft_dates = dft["date"].astype(str).values
+    dft_dates = _nd(dft["date"])
     didx = {d: i for i, d in enumerate(dft_dates)}
     rate_pp = (((1.0 + pd.to_numeric(dft["tbill_wr"], errors="coerce")) ** 52 - 1.0)
                * 100.0).values
@@ -135,6 +142,12 @@ def main():
                          self=float(self_crps[i]), garch=float(g_crps[g_map[cd]])))
 
     R = pd.DataFrame(rows)
+    if len(R) == 0:
+        print("[FATAL] 매칭된 origin 0개 — date 정규화 후에도 불일치")
+        print("  self_dates[:3] :", list(self_dates[:3]))
+        print("  g_dates[:3]    :", list(g_dates[:3]))
+        print("  csv dates[:3]  :", list(dft_dates[:3]))
+        return
     R["regime"] = np.where(R.chg <= -BP, "인하",
                   np.where(R.chg >= BP, "인상", "평탄"))
 
