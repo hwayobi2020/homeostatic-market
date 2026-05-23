@@ -54,6 +54,8 @@ PAST_DIM = PAST_LEN * len(COND_COLS)            # 260
 DC_DIM = len(VOLDC_COLS) + FUT_LEN + FUT_LEN    # 28
 COND_DIM = PAST_DIM + DC_DIM                     # 288 (build 출력)
 TARGET_DIM = FUT_LEN                             # 13
+MT_START = PAST_DIM + len(VOLDC_COLS) + FUT_LEN  # 미래 metab DC 시작 idx (275)
+MT_END = MT_START + FUT_LEN                       # 288 (미래 metab 끝)
 
 D_MODEL = 128
 HIDDEN = 256
@@ -222,6 +224,27 @@ def run_fold(fold, device):
     print(f"  CRPS={crps_m:.5f}  std a/s/ratio={std_a:.5f}/{std_s:.5f}/{std_s/std_a:.3f}  "
           f"cov 50/80/95={cov[50]:.3f}/{cov[80]:.3f}/{cov[95]:.3f}")
 
+    # ── metab-only 셔플 테스트: 미래 metab DC만 origin 간 permute (나머지 전부 동일) ──
+    rng = np.random.RandomState(SEED)
+    Cte_shuf = Cte.copy()
+    Cte_shuf[:, MT_START:MT_END] = Cte[rng.permutation(n_org)][:, MT_START:MT_END]
+    sim_z_sh = np.empty((n_org, N_SIM, TARGET_DIM), dtype=np.float32)
+    with torch.no_grad():
+        nll_shuf = (-model.log_prob(Yte_d, torch.from_numpy(Cte_shuf).to(device)).mean()
+                    / FUT_LEN).item()
+        for s in range(0, n_org, chunk):
+            e = min(n_org, s + chunk)
+            sim_z_sh[s:e] = model.sample(N_SIM, torch.from_numpy(Cte_shuf[s:e]).to(device)).cpu().numpy()
+    sim_raw_sh = sim_z_sh * tsd + tmu
+    crps_sh, _ = crps_pooled(sim_raw_sh, act_raw)
+    std_real_o = sim_raw.std(axis=1).mean(axis=1)        # (n_org,) per-origin 예측 vol
+    std_shuf_o = sim_raw_sh.std(axis=1).mean(axis=1)
+    vol_sens = float(np.mean(np.abs(std_real_o - std_shuf_o)) / (np.mean(std_real_o) + 1e-12))
+    d_nll = nll_shuf - test_nll
+    d_crps = crps_sh - crps_m
+    print(f"  [metab shuffle] ΔNLL={d_nll:+.4f}  ΔCRPS={d_crps:+.5f}  vol_sens={vol_sens:.2%}  "
+          f"(>0/큰값 = 모델이 metab 사용)")
+
     summary = dict(
         fold=fold, model="Joint Flow (MLP enc + DC, 13-dim conditional NSF)",
         cond_dim=COND_DIM, target_dim=TARGET_DIM,
@@ -234,6 +257,9 @@ def run_fold(fold, device):
             coverage_50=cov[50], coverage_80=cov[80], coverage_95=cov[95],
             var_1pct_diff=var1_s - var1_a, cvar_1pct_diff=cvar1_s - cvar1_a,
             cvar_5pct_diff=cvar5_s - cvar5_a),
+        metab_shuffle=dict(nll_real=test_nll, nll_shuffle=nll_shuf, d_nll=d_nll,
+                           crps_real=crps_m, crps_shuffle=crps_sh, d_crps=d_crps,
+                           vol_sensitivity=vol_sens),
     )
     os.makedirs(RESULT_DIR, exist_ok=True)
     with open(summary_path, "w") as f:
@@ -283,6 +309,20 @@ def main():
                   f"{g('coverage_95'):>8.3f}{g('std_ratio'):>11.3f}{g('cvar_5pct_diff'):>10.5f}")
     print("\n해석: flow-joint 의 NLL/CRPS/std_ratio 가 flow-AR 보다 좋으면 → 'AR 희석'이 원인이었던 것. "
           "비슷하면 → AR 무관, 신호/모델 한계. (NLL 은 flow-joint vs flow-AR 만 같은 class 비교)")
+
+    print("\n" + "=" * 80)
+    print("metab-only 셔플 — 모델이 미래 metab 을 쓰나 (ΔNLL>0·ΔCRPS>0·vol_sens 클수록 사용)")
+    print("=" * 80)
+    print(f"{'fold':<18}{'ΔNLL':>10}{'ΔCRPS':>10}{'vol_sens':>10}")
+    for fold in FOLDS:
+        p = os.path.join(RESULT_DIR, f"flow_joint_{fold}_summary.json")
+        if not os.path.exists(p):
+            print(f"{fold:<18}  (없음)"); continue
+        ms = json.load(open(p)).get("metab_shuffle", {})
+        print(f"{fold:<18}{ms.get('d_nll', 0):>10.4f}{ms.get('d_crps', 0):>10.5f}"
+              f"{ms.get('vol_sensitivity', 0):>10.2%}")
+    print("\n해석: ΔNLL≈0 & vol_sens≈0 → 모델이 metab 무시 = 반사실 hollow. "
+          "ΔNLL>0(실제 metab가 더 잘 맞음)·vol_sens 유의미 → metab 반사실 가능(moderate).")
 
 
 if __name__ == "__main__":
