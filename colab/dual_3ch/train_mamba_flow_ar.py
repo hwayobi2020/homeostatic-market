@@ -136,6 +136,9 @@ _DATA_CACHE = {}
 MASK_FUTURE_TBILL = False
 ENCODER_MASK_SP = False   # True 면 encoder 가 sp_return 채널을 무시 (Flow head 의 prevret/teacher
                           #   forcing 은 그대로 유지). 거시만 encoder 로 보내는 ablation 용.
+FUTURE_UNMASK_MACRO_COLS = []   # 미래 구간에 실제값을 유지(unmask)할 MACRO 채널명 리스트.
+                                #   조건부 시나리오 입력용 (예 ["metab_26w"] → tbill 외 metab 도 미래 조건).
+                                #   기본 [] = 기존(미래 macro 전부 마스킹) 동작.
 
 
 def _cache_key(csv_path, cond_stats, target_stats):
@@ -143,7 +146,8 @@ def _cache_key(csv_path, cond_stats, target_stats):
         tuple(cond_stats["mean"]), tuple(cond_stats["std"]))
     ts_key = None if target_stats is None else (
         float(target_stats["mean"]), float(target_stats["std"]))
-    return (csv_path, cs_key, ts_key, bool(MASK_FUTURE_TBILL), tuple(COND_COLS))
+    return (csv_path, cs_key, ts_key, bool(MASK_FUTURE_TBILL), tuple(COND_COLS),
+            tuple(FUTURE_UNMASK_MACRO_COLS))
 
 
 def cached_load_windows_seq(csv_path, past_len=PAST_LEN, future_len=FUTURE_LEN,
@@ -267,8 +271,12 @@ def load_windows_seq(csv_path, past_len=PAST_LEN, future_len=FUTURE_LEN,
         sp_col = x[:, SP_CH].copy()
         x[1:, SP_CH] = sp_col[:-1]
         x[0,  SP_CH] = 0.0       # BOS padding (loss masks tau < PAST_LEN)
-        # Zero-mask macro channels in the future portion [PAST_LEN, L).
+        # Zero-mask macro channels in the future portion [PAST_LEN, L),
+        # 단 FUTURE_UNMASK_MACRO_COLS 채널은 미래 실제값 유지 (조건부 시나리오 입력).
+        _keep = {COND_COLS.index(c) for c in FUTURE_UNMASK_MACRO_COLS if c in COND_COLS}
         for ch in MACRO_CH:
+            if ch in _keep:
+                continue
             x[past_len:, ch] = 0.0
         # Ablation: optionally mask the future tbill path too (remove the
         # short-rate path conditioning) -- tests whether the future rate
@@ -600,7 +608,7 @@ class MambaFlowAR(nn.Module):
 
     @torch.no_grad()
     def ar_sample(self, x_past, future_tbill_z, last_past_sp_z, n_sim,
-                  extra_context=None):
+                  extra_context=None, future_macro_z=None):
         """AR rollout sampling.
 
         x_past        : (B, PAST_LEN, N_CHANNELS) -- input past portion
@@ -635,13 +643,25 @@ class MambaFlowAR(nn.Module):
         else:
             extra_rep = None
 
+        # 미래 unmask macro (조건부 시나리오 입력) — next_input 에 채울 채널 인덱스/값
+        _unmask_idx = [COND_COLS.index(c) for c in FUTURE_UNMASK_MACRO_COLS
+                       if c in COND_COLS]
+        if _unmask_idx and future_macro_z is not None:
+            fm = future_macro_z.unsqueeze(1).expand(B, n_sim, -1, -1).contiguous()
+            fm = fm.view(B * n_sim, FUTURE_LEN, len(_unmask_idx))
+        else:
+            fm = None
+
         sampled = []
         for tau in range(FUTURE_LEN):
             next_input = torch.zeros(B * n_sim, 1, N_CHANNELS,
                                      device=device, dtype=seq.dtype)
             next_input[:, 0, SP_CH]    = last_sp                # shifted sp
             next_input[:, 0, TBILL_CH] = tbill_fut[:, tau]      # future tbill scenario
-            # Macro 6 channels remain 0 (future mask) by zero-init.
+            # 미래 unmask macro 시나리오(예: metab) 채움; 나머지 macro 는 0(마스크) 유지
+            if fm is not None:
+                for _j, _ch in enumerate(_unmask_idx):
+                    next_input[:, 0, _ch] = fm[:, tau, _j]
 
             seq = torch.cat([seq, next_input], dim=1)            # (BN, L_cur, 8)
             h_seq = self.encode(seq)                              # (BN, L_cur, d_model)
@@ -987,9 +1007,12 @@ def evaluate_test(model, best_state, test_csv, cond_stats, target_stats,
         future_tbill_chunk = Xte_dev[s:e, PAST_LEN:, TBILL_CH]     # (k, FUTURE_LEN)
         last_sp_chunk = last_sp_dev[s:e]
         extra_chunk = Xte_extra_dev[s:e] if Xte_extra_dev is not None else None
+        # 미래 unmask macro(조건부 시나리오) — Xte 미래 구간에서 추출 (load 가 unmask 유지)
+        _um_idx = [COND_COLS.index(c) for c in FUTURE_UNMASK_MACRO_COLS if c in COND_COLS]
+        fmac_chunk = Xte_dev[s:e, PAST_LEN:, _um_idx] if _um_idx else None
         sim_chunk = model.ar_sample(
             x_past_chunk, future_tbill_chunk, last_sp_chunk, n_sim,
-            extra_context=extra_chunk,
+            extra_context=extra_chunk, future_macro_z=fmac_chunk,
         )                                                           # (k, n_sim, T)
         sim_paths_z_chunks.append(sim_chunk.cpu())
     sim_paths_z = torch.cat(sim_paths_z_chunks, dim=0).numpy()      # (n_v, n_sim, T)
