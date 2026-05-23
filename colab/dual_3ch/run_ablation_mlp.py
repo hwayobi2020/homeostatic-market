@@ -29,7 +29,7 @@ from best_specs import BEST_SPECS, FOLDS    # noqa: E402
 
 RESULT_DIR = os.path.join(HERE, "result")
 ALL_SEEDS = [2026, 2027, 2028, 2029, 2030]
-SEEDS = [2026]   # quick directional pass; ALL_SEEDS 로 바꾸면 5 seed 통계
+SEEDS = ALL_SEEDS   # 5 seed 통계 (re-entrant: seed 2026 은 이미 있어 skip)
 
 CH6 = ["sp_return", "tbill_wr", "ads_lag", "sp_std_13w", "wti_wr", "sp_log_std_13w"]
 M, B, S = "metab_13w", "bondpp_13w_lag", "stockpp_13w_lag"
