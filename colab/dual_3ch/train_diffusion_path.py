@@ -168,15 +168,23 @@ class Diffusion:
         return self.sqrt_acp[t][:, None] * x0 + self.sqrt_1macp[t][:, None] * noise
 
     @torch.no_grad()
-    def p_sample_loop(self, model, c, n):
+    def p_sample_loop(self, model, c, n, clip=10.0):
+        """clip_denoised DDPM: eps→x0 변환 후 z-범위 clip → posterior mean 재계산.
+        clip 없으면 약한 denoiser + 1/√α 증폭이 누적돼 발산(샘플 std 폭발)."""
         x = torch.randn(n, TARGET_DIM, device=self.device)
         for ti in reversed(range(self.T)):
             t = torch.full((n,), ti, device=self.device, dtype=torch.long)
             eps = model(x, t, c)
-            alpha = self.alphas[ti]; acp = self.acp[ti]
-            mean = (x - (1 - alpha) / torch.sqrt(1 - acp) * eps) / torch.sqrt(alpha)
+            acp = self.acp[ti]; acp_prev = self.acp_prev[ti]
+            alpha = self.alphas[ti]; beta = self.betas[ti]
+            # eps → 예측 x0, clip (clip_denoised) — 발산 방지
+            x0 = (x - torch.sqrt(1 - acp) * eps) / torch.sqrt(acp)
+            x0 = torch.clamp(x0, -clip, clip)
+            # posterior q(x_{t-1}|x_t,x0) mean (Ho et al. 2020 eq.7)
+            mean = (torch.sqrt(acp_prev) * beta / (1 - acp) * x0
+                    + torch.sqrt(alpha) * (1 - acp_prev) / (1 - acp) * x)
             if ti > 0:
-                var = self.betas[ti] * (1 - self.acp_prev[ti]) / (1 - acp)
+                var = beta * (1 - acp_prev) / (1 - acp)
                 x = mean + torch.sqrt(var) * torch.randn_like(x)
             else:
                 x = mean
