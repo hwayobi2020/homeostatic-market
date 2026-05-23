@@ -112,13 +112,17 @@ def main():
         # 25bp(연율 %p) 비교 위해 연율 %p 로 환산: ((1+wr)^52 - 1)*100  (0.000938 → 5.00).
         rate_w = pd.to_numeric(df["tbill_wr"], errors="coerce").values
         rate_pp = ((1.0 + rate_w) ** 52 - 1.0) * 100.0
-        chg = np.array([abs(rate_pp[t + PAST + FUT - 1] - rate_pp[t + PAST - 1])
+        # 부호 있는 horizon 금리 변화(연율 %p): + 인상 / − 인하
+        chg = np.array([rate_pp[t + PAST + FUT - 1] - rate_pp[t + PAST - 1]
                         for t in vt])
+        absd = np.abs(chg)
         date = (df["date"].values[vt + PAST - 1] if "date" in df.columns
                 else np.array([f"{fold}_{t}" for t in vt]))
         print(f"[{fold}] rate=tbill_wr→연율%p  origins={len(vt)}  "
-              f"|Δrate|pp min/med/max = {np.nanmin(chg):.3f}/{np.nanmedian(chg):.3f}"
-              f"/{np.nanmax(chg):.3f}  (>=25bp: {int((chg >= BP_THRESH).sum())})")
+              f"|Δ|med/max={np.nanmedian(absd):.3f}/{np.nanmax(absd):.3f}  "
+              f"인하≤−25bp:{int((chg <= -BP_THRESH).sum())} "
+              f"인상≥+25bp:{int((chg >= BP_THRESH).sum())} "
+              f"평탄:{int((absd < BP_THRESH).sum())}")
         for j in range(len(vt)):
             rows.append(dict(fold=fold, date=str(date[j]), chg_pp=float(chg[j]),
                              nll_on=float(nll_on[j]), nll_off=float(nll_off[j])))
@@ -127,25 +131,29 @@ def main():
         print("[FATAL] no rows (ckpt 누락?)")
         return
     R = pd.DataFrame(rows)
-    R["changing"] = R["chg_pp"] >= BP_THRESH
+    # 부호 3분할: 인하(≤−25bp) / 인상(≥+25bp) / 평탄(|Δ|<25bp)
+    R["regime"] = np.where(R["chg_pp"] <= -BP_THRESH, "인하",
+                  np.where(R["chg_pp"] >= BP_THRESH, "인상", "평탄"))
     R["d"] = R["nll_off"] - R["nll_on"]   # >0 => ON(rate) better = 금리 도움
+    REGIMES = ["평탄", "인하", "인상"]
 
     print("\n" + "=" * 82)
-    print("금리 변동(≥25bp) vs 평탄 — per-origin teacher-forced NLL")
+    print("금리 변화 방향별 — per-origin teacher-forced NLL")
     print("  d = NLL_off − NLL_on   ( >0 = 금리 ON 이 더 좋음 = 금리 도움 )")
     print("=" * 82)
-    for lab, sub in [("평탄 (<25bp)", R[~R.changing]), ("변동 (≥25bp)", R[R.changing])]:
+    for lab in REGIMES:
+        sub = R[R.regime == lab]
         if len(sub) == 0:
-            print(f"{lab:<14} n=0")
+            print(f"{lab:<6} n=0")
             continue
-        print(f"{lab:<14} n={len(sub):>4}  NLL_on={sub.nll_on.mean():+.4f}  "
+        print(f"{lab:<6} n={len(sub):>4}  NLL_on={sub.nll_on.mean():+.4f}  "
               f"NLL_off={sub.nll_off.mean():+.4f}  d={sub.d.mean():+.4f}")
     print("\n[fold × regime]  (d>0 = 금리 도움)")
     for fold in FOLDS:
-        for lab, mask in [("flat", ~R.changing), ("chg ", R.changing)]:
-            sub = R[(R.fold == fold) & mask]
+        for lab in REGIMES:
+            sub = R[(R.fold == fold) & (R.regime == lab)]
             if len(sub):
-                print(f"  {fold:<16}{lab} n={len(sub):>4}  d={sub.d.mean():+.4f}")
+                print(f"  {fold:<16}{lab:<5} n={len(sub):>4}  d={sub.d.mean():+.4f}")
     out = os.path.join(RESULT_DIR, "rate_stratify_mlp.csv")
     R.to_csv(out, index=False)
     print(f"\nsaved: {out}")
