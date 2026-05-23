@@ -35,7 +35,8 @@ from best_specs import BEST_SPECS          # noqa: E402
 
 RESULT_DIR = os.path.join(HERE, "result")
 FOLDS_DIR = os.path.join(ROOT, "data", "folds_v33_vix_expanding")
-FOLD = "F_gfc"
+FOLDS = ["F_gfc", "F_long_A", "F_long_B_origin", "F_long"]
+FOLD = FOLDS[0]   # __main__ 루프에서 fold 별로 재할당
 SEEDS = [2026, 2027, 2028, 2029, 2030]
 PAST, FUT = 52, 13
 BP = 0.25   # 25bp = 0.25 연율 %p
@@ -107,7 +108,8 @@ def main():
             sys.exit(f"[FATAL] seed {seed} origin date 순서 불일치")
         crps_list.append(c)
     if not crps_list:
-        sys.exit("[FATAL] self-stat per-origin CRPS 없음 (ckpt 누락?)")
+        print(f"[skip {FOLD}] self-stat per-origin CRPS 없음 (ckpt 누락?)")
+        return
     self_crps = np.mean(crps_list, axis=0).mean(axis=1)   # (n_origin,) 13주 평균
     self_dates = base_dates
     print(f"[self-stat] {len(crps_list)} seed 평균, n_origin={len(self_crps)}")
@@ -115,8 +117,9 @@ def main():
     # ── 2) GARCH per-origin CRPS ──
     gpref = os.path.join(RESULT_DIR, f"garch_pure_{FOLD}")
     if not os.path.exists(f"{gpref}_crps_per_origin.npy"):
-        sys.exit(f"[FATAL] {gpref}_crps_per_origin.npy 없음 — 먼저:\n"
-                 f"  !python colab/dual_3ch/train_garch_ar.py --fold {FOLD} --use-arx 0 --dist normal")
+        print(f"[skip {FOLD}] GARCH npy 없음 — 먼저: !python colab/dual_3ch/"
+              f"train_garch_ar.py --fold {FOLD} --use-arx 0 --dist normal")
+        return
     g_crps = np.load(f"{gpref}_crps_per_origin.npy").mean(axis=1)   # (n_origin,)
     g_dates = _nd(np.load(f"{gpref}_origin_dates.npy", allow_pickle=True))
     g_map = {d: i for i, d in enumerate(g_dates)}
@@ -173,4 +176,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    for _f in FOLDS:
+        FOLD = _f
+        print(f"\n{'#' * 34} {FOLD} {'#' * 34}")
+        main()
