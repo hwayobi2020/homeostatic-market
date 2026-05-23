@@ -22,13 +22,20 @@
 NLL 주의: Flow=teacher-forced joint, GARCH=multi-step marginal → 직접 비교 불가
 (참고용). 의미축: CRPS / cov95 / CVaR5Δ / std_ratio.
 
+⚠️ GARCH 는 이 스크립트가 직접 안 띄운다 (메모리 겹침 방지). 부모(torch + 학습된
+   Flow) 안에서 subprocess 로 train_garch_ar.py(=train_flow_seq import → torch+nflows
+   재로드)를 띄우면 메모리 2배 → Colab 런타임 OOM. GARCH 는 아래처럼 독립 셀로 먼저.
+
 Usage (Colab):
+    # ① GARCH (독립 셀 — 깨끗한 프로세스, 가벼움)
+    !python colab/dual_3ch/train_garch_ar.py --fold F_gfc --use-arx 0 --dist normal
+    !python colab/dual_3ch/train_garch_ar.py --fold F_gfc --use-arx 0 --dist t
+    # ② Flow 학습(이미 있으면 skip) + 비교표
     !python colab/dual_3ch/run_gfc_compare.py
 """
 import json
 import os
 import statistics as st
-import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -86,21 +93,15 @@ for seed in SEEDS:
     except Exception as e:
         print(f"[FLOW FAIL] {tag} {FOLD}: {e!r}")
 
-# ── 2) GARCH pure (normal + t) 학습 (subprocess, 출력 직접 print) ──
-#     GARCH 는 애초에 미래 macro 없음 = floor (마스크 개념 무관).
+# ── 2) GARCH 는 독립 셀로 (메모리 겹침 방지) — 여기선 존재만 점검 ──
+#     없으면 아래 명령을 별도 셀에서 먼저 돌릴 것 (subprocess 로 안 띄움).
 for dist in ("normal", "t"):
     gtag = "pure" if dist == "normal" else "pure_t"
     p = os.path.join(RESULT_DIR, f"garch_{gtag}_{FOLD}_summary.json")
-    if os.path.exists(p):
-        print(f"[skip garch] {os.path.basename(p)}")
-        continue
-    cmd = [sys.executable, os.path.join(HERE, "train_garch_ar.py"),
-           "--fold", FOLD, "--use-arx", "0", "--dist", dist]
-    print(f"\n[garch] {' '.join(cmd[1:])}")
-    r = subprocess.run(cmd, capture_output=True, text=True)
-    print(r.stdout[-2500:])
-    if r.returncode != 0:
-        print(f"[GARCH FAIL dist={dist}]\n{r.stderr[-2000:]}")
+    if not os.path.exists(p):
+        print(f"[GARCH 없음] {os.path.basename(p)} — 먼저 독립 셀로 실행:")
+        print(f"  !python colab/dual_3ch/train_garch_ar.py "
+              f"--fold {FOLD} --use-arx 0 --dist {dist}")
 
 
 # ── 3) 비교표 ──
