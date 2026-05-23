@@ -5,9 +5,10 @@
   그 출력 + DC(미래 tbill 13주 + 미래 metab26w 13주) 를 조건으로
   디퓨전(DDPM)이 미래 13주 sp_return 경로를 **AR 없이 한번에** 생성.
   ※ DC = volDC(sp_std_13w, sp_log_std_13w) + 미래 tbill + 미래 metab26w.
-  ※ vol-adjustment(GARCH식): target = (return − drift)/최근변동성(sp_std_13w) 로 표준화.
-    디퓨전은 표준화 혁신 분포만 학습, scale 은 최근변동성이 잡음 → vol-clustering 수입
-    (GARCH 가 이기던 무기). 생성 후 다시 최근변동성을 곱해 raw return 복원.
+  ※ vol-adjustment: target = clip((return − drift)/σ_EWMA, ±5) 로 표준화.
+    σ_EWMA = RiskMetrics EWMA 변동성(λ=0.94, 무누출) — trailing std 와 달리 calm 에 안 꺼짐.
+    디퓨전은 표준화 혁신만 학습, scale 은 EWMA vol 이 잡음 → vol-clustering 수입
+    (GARCH 가 이기던 무기). 생성 후 σ_EWMA 를 곱해 raw return 복원.
 
 동기: flow-AR 은 스텝별 재귀라 거시 신호가 prev_ret·per-step 에 희석돼 못 살았다.
       한번에(joint) 생성하면 거시가 13주 결합분포를 직접 빚을 수 있나?  데이터로 확인.
@@ -60,6 +61,9 @@ BATCH = 64
 LR = 1e-4
 WEIGHT_DECAY = 1e-4
 EMA_DECAY = 0.999
+EWMA_LAM = 0.94          # RiskMetrics EWMA 변동성 감쇠 (조건부 vol scale)
+SIGMA_FLOOR = 0.005      # σ 바닥(주간) — tiny-vol 폭발 방지
+INNOV_CLIP = 5.0         # 표준화 혁신 clip(±) — 극단값이 학습분포 부풀리는 것 차단
 N_SIM = 1000
 
 
@@ -74,12 +78,29 @@ def col_stats(df, cols):
     return out
 
 
+def ewma_sigma(returns, mu, lam=EWMA_LAM, floor=SIGMA_FLOOR):
+    """RiskMetrics EWMA 변동성: σ²_t = λσ²_{t-1} + (1-λ)r²_{t-1}.
+    σ_t 는 t-1 까지의 수익률만 사용(무누출). trailing std 와 달리 calm 에 0 으로 안 꺼짐."""
+    r = np.asarray(returns, dtype=np.float64) - mu
+    n = len(r)
+    sig = np.empty(n, dtype=np.float64)
+    valid = r[~np.isnan(r)]
+    v = float(np.var(valid[:52])) if valid.size >= 2 else floor ** 2
+    fl2 = floor ** 2
+    for i in range(n):
+        sig[i] = np.sqrt(v if v > fl2 else fl2)   # σ_i = info up to i-1
+        ri = r[i]
+        if not np.isnan(ri):
+            v = lam * v + (1.0 - lam) * ri * ri
+    return sig
+
+
 def build(df, stats):
     Z = {c: (pd.to_numeric(df[c], errors="coerce").values - stats[c][0]) / stats[c][1]
          for c in COND_COLS + VOLDC_COLS}
     sp_raw = pd.to_numeric(df["sp_return"], errors="coerce").values
-    vol_raw = pd.to_numeric(df["sp_std_13w"], errors="coerce").values   # 최근 실현변동성(scale)
     mu = stats["sp_return"][0]                                          # drift(상수 평균)
+    ewma = ewma_sigma(sp_raw, mu)                                       # 안정적 조건부 vol(EWMA)
     n = len(df)
     conds, targs, sigmas = [], [], []
     for t in range(n - PAST_LEN - FUT_LEN + 1):
@@ -89,9 +110,9 @@ def build(df, stats):
         voldc = np.array([Z[c][t + PAST_LEN - 1] for c in VOLDC_COLS])  # origin-frozen
         fut_tb = Z[FUT_TBILL][fs]
         fut_mt = Z[FUT_METAB][fs]
-        sigma = vol_raw[t + PAST_LEN - 1]                        # origin 시점 최근변동성
-        # vol-adjustment(GARCH식): target = (return − drift)/최근변동성 = 표준화 혁신
-        tgt = (sp_raw[fs] - mu) / (sigma + 1e-8)
+        sigma = ewma[t + PAST_LEN - 1]                           # origin 시점 EWMA vol
+        # vol-adjustment: target = clip((return − drift)/σ, ±C) = 표준화 혁신
+        tgt = np.clip((sp_raw[fs] - mu) / sigma, -INNOV_CLIP, INNOV_CLIP)
         cvec = np.concatenate([past.reshape(-1), voldc, fut_tb, fut_mt])  # 260+2+13+13
         if (np.any(np.isnan(cvec)) or np.any(np.isnan(tgt))
                 or np.isnan(sigma) or sigma <= 0):
