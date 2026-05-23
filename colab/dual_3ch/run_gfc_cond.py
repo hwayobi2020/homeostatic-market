@@ -57,31 +57,34 @@ for sp in ("train", "val", "test"):
         sys.exit("[FATAL] F_gfc fold 없음 — extend_to_1971 재빌드(gap29) 먼저")
 
 set_cond_cols(ENC_COLS)
-T.MASK_FUTURE_TBILL = False                  # tbill 미래 unmask (조건 1)
-T.FUTURE_UNMASK_MACRO_COLS = ["metab_26w"]   # metab 미래 unmask (조건 2)
 spec_base = dict(BEST_SPECS["mlp"])
-print(f"[cond] self-stat + 미래 unmask = tbill + metab_26w (조건 2개)  "
-      f"{len(FOLDS)} fold x {len(SEEDS)} seed")
+# cond = 미래 tbill+metab unmask(조건) / mask = 미래 다 마스킹(대조). 차이 = 미래 거시 조건의 가치.
+VARIANTS = [("cond", False, ["metab_26w"]), ("mask", True, [])]
+print(f"[cond vs mask] self-stat metab_26w  {len(FOLDS)} fold x {len(SEEDS)} seed x 2 variant")
 
-for fold in FOLDS:
-    if not all(os.path.exists(os.path.join(FOLDS_DIR, f"{fold}_{s}.csv"))
-               for s in ("train", "val", "test")):
-        print(f"[skip {fold}] fold CSV 없음")
-        continue
-    for seed in SEEDS:
-        tag = f"selfstat_cond_m26_mlp_s{seed}"
-        p = os.path.join(RESULT_DIR, f"mamba_flow_ar_{tag}_{fold}_summary.json")
-        if os.path.exists(p):
-            print(f"[skip] {os.path.basename(p)}")
+for variant, mask_tbill, future_unmask in VARIANTS:
+    T.MASK_FUTURE_TBILL = mask_tbill
+    T.FUTURE_UNMASK_MACRO_COLS = future_unmask
+    for fold in FOLDS:
+        if not all(os.path.exists(os.path.join(FOLDS_DIR, f"{fold}_{s}.csv"))
+                   for s in ("train", "val", "test")):
+            print(f"[skip {fold}] fold CSV 없음")
             continue
-        spec = dict(spec_base)
-        spec.update(fold=fold, seed=seed, tag=tag,
-                    extra_context_channels=DC_COLS, direct_prev_return=True)
-        print(f"\n[flow] {tag} fold={fold}  (미래 tbill+metab 조건)")
-        try:
-            main_worker(spec)
-        except Exception as e:
-            print(f"[FAIL] {tag} {fold}: {e!r}")
+        for seed in SEEDS:
+            tag = f"selfstat_{variant}_m26_mlp_s{seed}"
+            p = os.path.join(RESULT_DIR, f"mamba_flow_ar_{tag}_{fold}_summary.json")
+            if os.path.exists(p):
+                print(f"[skip] {os.path.basename(p)}")
+                continue
+            spec = dict(spec_base)
+            spec.update(fold=fold, seed=seed, tag=tag,
+                        extra_context_channels=DC_COLS, direct_prev_return=True)
+            print(f"\n[flow] {tag} fold={fold}  "
+                  f"(MASK_TBILL={mask_tbill}, future_unmask={future_unmask})")
+            try:
+                main_worker(spec)
+            except Exception as e:
+                print(f"[FAIL] {tag} {fold}: {e!r}")
 
 print("\n[done] 조건부(cond) 학습 완료.")
 
@@ -104,7 +107,7 @@ def gar_row(fold):
 
 for label, getter in [
     ("cond (tbill+metab)", lambda f: flow_row("selfstat_cond_m26_mlp_s2026", f)),
-    ("mask (selfstat_m26)", lambda f: flow_row("selfstat_m26_mlp_s2026", f)),
+    ("mask (미래 마스킹)", lambda f: flow_row("selfstat_mask_m26_mlp_s2026", f)),
     ("GARCH-N",             lambda f: gar_row(f)),
 ]:
     print(f"\n[{label}]   {'fold':<16}{'NLL':>9}{'CRPS':>9}{'cov95':>8}{'std_ratio':>11}{'CVaR5Δ':>10}")
