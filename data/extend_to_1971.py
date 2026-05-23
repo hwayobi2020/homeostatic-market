@@ -118,6 +118,13 @@ FOLD_SPLITS = {
     "F_long_B_origin": {"train_start": "1971-01-01", "train_end": "2009-03-31",
                         "val_start":   "2009-07-15", "val_end":   "2015-12-31",
                         "test_start":  "2016-04-15", "test_end":  "2020-12-31"},
+    # F_gfc : 리만(GFC) 위기 fold = 2번째 stress regime (사용자 4-fold 위기/회복 스킴,
+    #   2026-05-23). test 2006-2010 = Lehman/GFC. 간격 규칙은 F_long_* 와 동일.
+    #   ⚠️ 외과적 추가 정책: 평소엔 data/build_gfc_fold.py 로 이 fold 만 슬라이스하고
+    #   기존 fold CSV 는 보존한다. 이 entry 는 canonical 기록용 (full rebuild 시 정합).
+    "F_gfc":           {"train_start": "1971-01-01", "train_end": "1999-03-31",
+                        "val_start":   "1999-07-15", "val_end":   "2005-12-31",
+                        "test_start":  "2006-04-15", "test_end":  "2010-12-31"},
 }
 
 
