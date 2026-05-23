@@ -4,7 +4,10 @@
   MLP 인코더로 과거 윈도우(52주 × 5채널: sp,tbill,ads,wti,metab) 를 인코딩 →
   그 출력 + DC(미래 tbill 13주 + 미래 metab26w 13주) 를 조건으로
   디퓨전(DDPM)이 미래 13주 sp_return 경로를 **AR 없이 한번에** 생성.
-  ※ DC = volDC(sp_std_13w, sp_log_std_13w; scale 앵커) + 미래 tbill + 미래 metab26w.
+  ※ DC = volDC(sp_std_13w, sp_log_std_13w) + 미래 tbill + 미래 metab26w.
+  ※ vol-adjustment(GARCH식): target = (return − drift)/최근변동성(sp_std_13w) 로 표준화.
+    디퓨전은 표준화 혁신 분포만 학습, scale 은 최근변동성이 잡음 → vol-clustering 수입
+    (GARCH 가 이기던 무기). 생성 후 다시 최근변동성을 곱해 raw return 복원.
 
 동기: flow-AR 은 스텝별 재귀라 거시 신호가 prev_ret·per-step 에 희석돼 못 살았다.
       한번에(joint) 생성하면 거시가 13주 결합분포를 직접 빚을 수 있나?  데이터로 확인.
@@ -74,9 +77,11 @@ def col_stats(df, cols):
 def build(df, stats):
     Z = {c: (pd.to_numeric(df[c], errors="coerce").values - stats[c][0]) / stats[c][1]
          for c in COND_COLS + VOLDC_COLS}
-    spz = Z["sp_return"]
+    sp_raw = pd.to_numeric(df["sp_return"], errors="coerce").values
+    vol_raw = pd.to_numeric(df["sp_std_13w"], errors="coerce").values   # 최근 실현변동성(scale)
+    mu = stats["sp_return"][0]                                          # drift(상수 평균)
     n = len(df)
-    conds, targs = [], []
+    conds, targs, sigmas = [], [], []
     for t in range(n - PAST_LEN - FUT_LEN + 1):
         ps = slice(t, t + PAST_LEN)
         fs = slice(t + PAST_LEN, t + PAST_LEN + FUT_LEN)
@@ -84,14 +89,19 @@ def build(df, stats):
         voldc = np.array([Z[c][t + PAST_LEN - 1] for c in VOLDC_COLS])  # origin-frozen
         fut_tb = Z[FUT_TBILL][fs]
         fut_mt = Z[FUT_METAB][fs]
-        tgt = spz[fs]
+        sigma = vol_raw[t + PAST_LEN - 1]                        # origin 시점 최근변동성
+        # vol-adjustment(GARCH식): target = (return − drift)/최근변동성 = 표준화 혁신
+        tgt = (sp_raw[fs] - mu) / (sigma + 1e-8)
         cvec = np.concatenate([past.reshape(-1), voldc, fut_tb, fut_mt])  # 260+2+13+13
-        if np.any(np.isnan(cvec)) or np.any(np.isnan(tgt)):
+        if (np.any(np.isnan(cvec)) or np.any(np.isnan(tgt))
+                or np.isnan(sigma) or sigma <= 0):
             continue
         conds.append(cvec)
         targs.append(tgt)
+        sigmas.append(sigma)
     return (np.asarray(conds, dtype=np.float32),
-            np.asarray(targs, dtype=np.float32))
+            np.asarray(targs, dtype=np.float32),
+            np.asarray(sigmas, dtype=np.float32))
 
 
 # ===================================================================== #
@@ -220,7 +230,7 @@ def run_fold(fold, device):
     va = pd.read_csv(os.path.join(FOLDS_DIR, f"{fold}_val.csv"))
     te = pd.read_csv(os.path.join(FOLDS_DIR, f"{fold}_test.csv"))
     stats = col_stats(tr, COND_COLS + VOLDC_COLS)
-    Ctr, Ytr = build(tr, stats); Cva, Yva = build(va, stats); Cte, Yte = build(te, stats)
+    Ctr, Ytr, _ = build(tr, stats); Cva, Yva, _ = build(va, stats); Cte, Yte, Ste = build(te, stats)
     print(f"\n{'='*70}\n fold={fold}  cond_dim={COND_DIM}(MLP enc {PAST_DIM}+DC {DC_DIM})  "
           f"target={TARGET_DIM}")
     print(f"  windows train/val/test = {len(Ctr)}/{len(Cva)}/{len(Cte)}")
@@ -275,7 +285,7 @@ def run_fold(fold, device):
 
     print(f"  [sample] n_sim={N_SIM}")
     model.eval()
-    tmu, tsd = stats["sp_return"]
+    mu = stats["sp_return"][0]
     n_org = len(Cte)
     sim_z = np.empty((n_org, N_SIM, TARGET_DIM), dtype=np.float32)
     chunk = 16
@@ -287,8 +297,8 @@ def run_fold(fold, device):
             x = diff.p_sample_loop(model, c_rep, k * N_SIM)
             sim_z[s:e] = x.reshape(k, N_SIM, TARGET_DIM).cpu().numpy()
 
-    sim_raw = sim_z * tsd + tmu
-    act_raw = Yte * tsd + tmu
+    sim_raw = mu + sim_z * Ste[:, None, None]    # vol-adjustment 역변환 (μ + z·σ_origin)
+    act_raw = mu + Yte * Ste[:, None]
     crps_m, crps_s = crps_pooled(sim_raw, act_raw)
     af = act_raw.ravel(); sf = sim_raw.ravel()
     std_a = float(af.std(ddof=1)); std_s = float(sf.std(ddof=1))
@@ -304,7 +314,7 @@ def run_fold(fold, device):
           f"cov 50/80/95={cov[50]:.3f}/{cov[80]:.3f}/{cov[95]:.3f}")
 
     summary = dict(
-        fold=fold, model="Conditional Path Diffusion (MLP enc + DC tbill/metab26w, DDPM)",
+        fold=fold, model="Conditional Path Diffusion (MLP enc + DC, vol-adjusted target, DDPM)",
         cond_dim=COND_DIM, target_dim=TARGET_DIM, diff_steps=DIFF_STEPS,
         n_train=len(Ctr), n_val=len(Cva), n_test=len(Cte),
         best_epoch=best_ep, best_val_eps_mse=best_val, seed=SEED,
