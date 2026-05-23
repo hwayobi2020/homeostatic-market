@@ -30,8 +30,10 @@ RESULT_DIR = os.path.join(HERE, "result")
 FOLDS_DIR = os.path.join(ROOT, "data", "folds_v33_vix_expanding")
 FOLDS = ["F_gfc", "F_long_A", "F_long_B_origin", "F_long"]
 ALL_SEEDS = [2026, 2027, 2028, 2029, 2030]
-SEEDS = [2026]   # 1 seed quick check (metab_26w 전환 후 directional)
-ENC_COLS = ["sp_return", "tbill_wr", "ads_lag", "wti_wr", "metab_26w"]  # metab 13w→26w
+SEEDS = [2026]   # 1 seed quick check
+METAB = "metab_13w"   # 이번 학습 horizon. m26 은 이미 완료 → m13 직접 대조 (같은 gap29 fold)
+VTAG = "m13" if METAB == "metab_13w" else "m26"
+ENC_COLS = ["sp_return", "tbill_wr", "ads_lag", "wti_wr", METAB]
 DC_COLS = "sp_std_13w,sp_log_std_13w"
 
 
@@ -60,7 +62,7 @@ for fold in FOLDS:
         print(f"[skip {fold}] fold CSV 없음")
         continue
     for seed in SEEDS:
-        tag = f"selfstat_m26_mlp_s{seed}"   # metab_26w + gap29 fold (기존 m13 과 구분)
+        tag = f"selfstat_{VTAG}_mlp_s{seed}"   # metab horizon 별 (m13/m26), gap29 fold
         p = os.path.join(RESULT_DIR, f"mamba_flow_ar_{tag}_{fold}_summary.json")
         if os.path.exists(p):
             print(f"[skip] {os.path.basename(p)}")
@@ -74,27 +76,25 @@ for fold in FOLDS:
         except Exception as e:
             print(f"[FAIL] {tag} {fold}: {e!r}")
 
-print("\n[done] self-stat(metab_26w) 학습 완료.")
+print(f"\n[done] self-stat({METAB}) 학습 완료.")
 
-# ── fold별 test_eval 요약 ──
-print("\n" + "=" * 96)
-print("self-stat metab_26w (1 seed) — fold별 test_eval  "
-      "(CRPS/EMD/NLL 낮을수록 | cov95 0.95 | std_ratio 1.0 근접)")
-print("=" * 96)
-print(f"{'fold':<18}{'n_orig':>7}{'NLL':>10}{'CRPS':>10}{'EMD':>10}"
-      f"{'cov95':>9}{'std_ratio':>11}{'CVaR5Δ':>11}")
-for fold in FOLDS:
-    p = os.path.join(RESULT_DIR, f"mamba_flow_ar_selfstat_m26_mlp_s2026_{fold}_summary.json")
-    if not os.path.exists(p):
-        print(f"{fold:<18} (summary 없음)")
-        continue
-    te = json.load(open(p)).get("test_eval", {})
+# ── m13 vs m26 직접 비교 (같은 gap29 fold, 1 seed) ──
+print("\n" + "=" * 92)
+print("self-stat metab horizon 직접 비교 (gap29 fold, 1 seed) — fold별 test_eval")
+print("  CRPS/NLL 낮을수록 | cov95 0.95 | std_ratio 1.0 근접")
+print("=" * 92)
+for vt, col in [("m13", "metab_13w"), ("m26", "metab_26w")]:
+    print(f"\n[{col}]   {'fold':<16}{'NLL':>9}{'CRPS':>9}{'cov95':>8}{'std_ratio':>11}{'CVaR5Δ':>10}")
+    for fold in FOLDS:
+        p = os.path.join(RESULT_DIR, f"mamba_flow_ar_selfstat_{vt}_mlp_s2026_{fold}_summary.json")
+        if not os.path.exists(p):
+            print(f"{'':<6}{fold:<16}  (없음)")
+            continue
+        te = json.load(open(p)).get("test_eval", {})
 
-    def g(k):
-        return te.get(k)
-    print(f"{fold:<18}{g('n_test_origins') or 0:>7}"
-          f"{(g('per_week_nll_z') or 0):>10.4f}{(g('crps_pooled') or 0):>10.5f}"
-          f"{(g('emd') or 0):>10.5f}{(g('coverage_95') or 0):>9.3f}"
-          f"{(g('std_ratio') or 0):>11.3f}{(g('cvar_5pct_diff') or 0):>11.5f}")
-print("\n비교: metab_13w 때보다 std_ratio/cov95 가 1.0/0.95 쪽으로, NLL/CRPS 가 낮아지면 "
-      "26w 전환이 metab 효과를 살린 것.")
+        def g(k):
+            return te.get(k) or 0
+        print(f"{'':<6}{fold:<16}{g('per_week_nll_z'):>9.4f}{g('crps_pooled'):>9.5f}"
+              f"{g('coverage_95'):>8.3f}{g('std_ratio'):>11.3f}{g('cvar_5pct_diff'):>10.5f}")
+print("\n해석: 같은 fold 에서 m26 이 m13 보다 std_ratio→1.0, cov95→0.95, NLL/CRPS 낮으면 "
+      "26w 가 더 나음 (네 '13주가 짧았다' 가설 확인).")
