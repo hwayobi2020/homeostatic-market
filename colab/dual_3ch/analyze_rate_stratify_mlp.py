@@ -24,7 +24,7 @@ sys.path.insert(0, HERE)
 import train_mamba_flow_ar as T            # noqa: E402
 from train_mamba_flow_ar import (          # noqa: E402
     MambaFlowAR, cached_load_windows_seq, compute_valid_mask)
-from best_specs import FOLDS               # noqa: E402
+from best_specs import FOLDS, BEST_SPECS   # noqa: E402
 
 ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
 FOLDS_DIR = os.path.join(ROOT, "data", "folds_v33_vix_expanding")
@@ -49,14 +49,19 @@ def set_cond_cols(cols):
 
 
 def build_mlp_model(meta):
-    # meta 에 encoder_type/mlp_num_layers 가 없으므로 MLP 고정값으로 재구성
+    # meta 에 encoder_type/mlp_num_layers/dropout 가 없으므로 학습 spec(BEST_SPECS["mlp"])
+    # 으로 재구성. ⚠️ dropout 은 반드시 학습값(0.2)과 같아야 함: MLPEncoder 는 dropout>0
+    # 일 때만 nn.Dropout 을 net Sequential 에 끼우므로, dropout=0 으로 만들면 인덱스가
+    # 통째로 밀려 state_dict key 가 어긋난다 (net.4 ↔ net.3, Linear ↔ LayerNorm).
+    mlp = BEST_SPECS["mlp"]
     return MambaFlowAR(
         d_input=len(meta["cond_cols"]), d_model=meta["d_model"],
         n_flow_layers=meta["n_flow_layers"], n_flow_hidden=meta["n_flow_hidden"],
         n_flow_blocks=meta["n_flow_blocks"], n_flow_bins=meta["n_flow_bins"],
-        flow_tail_bound=meta["flow_tail_bound"], dropout=0.0,
+        flow_tail_bound=meta["flow_tail_bound"], dropout=mlp["dropout"],
         extra_context_dim=meta.get("extra_context_dim", 0),
-        encoder_type="mlp", mlp_num_layers=4, direct_prev_return=False)
+        encoder_type="mlp", mlp_num_layers=mlp["mlp_num_layers"],
+        direct_prev_return=False)
 
 
 def per_origin_nll(tag, fold, mask_tbill, dev):
