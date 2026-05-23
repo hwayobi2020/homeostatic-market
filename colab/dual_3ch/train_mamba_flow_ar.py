@@ -1061,6 +1061,18 @@ def evaluate_test(model, best_state, test_csv, cond_stats, target_stats,
     pd.DataFrame(rows).to_csv(pred_path, index=False)
     print(f"    saved predictions: {pred_path}")
 
+    # regime stratification 용: per-origin per-week CRPS + conditioning date
+    per_oc = np.array([[crps_ensemble_sample(sim_paths_raw[ii, :, tau],
+                                             actual_raw[ii, tau])
+                        for tau in range(FUTURE_LEN)]
+                       for ii in range(n_origins)])
+    cond_dates = (np.array([str(date_col[int(orig_idx_array[ii]) + PAST_LEN - 1])
+                            for ii in range(n_origins)])
+                  if date_col is not None else orig_idx_array.astype(str))
+    np.save(f"{result_prefix}_crps_per_origin.npy", per_oc)
+    np.save(f"{result_prefix}_origin_dates.npy", cond_dates)
+    print(f"    saved per-origin CRPS: {result_prefix}_crps_per_origin.npy")
+
     eval_metrics = dict(
         n_test_origins   = int(n_origins),
         n_sim_per_origin = int(n_sim),

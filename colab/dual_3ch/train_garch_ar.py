@@ -408,6 +408,14 @@ def main():
     pd.DataFrame(rows).to_csv(pred_path, index=False)
     print(f"    saved predictions: {pred_path}")
 
+    # regime stratification 용: per-origin per-week CRPS + conditioning date
+    per_oc = np.array([[crps_ensemble_sample(sims_raw[t, :, w], actual_raw[t, w])
+                        for w in range(FUTURE_LEN)] for t in range(n_origins)])
+    cond_dates = np.array([str(date_col[r]) for r in test_origin_idx])
+    np.save(f"{prefix}_crps_per_origin.npy", per_oc)
+    np.save(f"{prefix}_origin_dates.npy", cond_dates)
+    print(f"    saved per-origin CRPS: {prefix}_crps_per_origin.npy")
+
     # ---- Summary JSON -----------------------------------------------
     summary = dict(
         model=f"GARCH(1,1) {spec_tag.upper()}",
