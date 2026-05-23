@@ -401,6 +401,16 @@ def add_derived(df, fred_dict, ads_daily):
     df["metab_13w"] = (
         df["m2_13w_cum_lag"] - df["indpro_13w_pct_lag"] - df["cpi_13w_cum_lag"]
     )
+    # metab 다중 horizon (13w 는 위에서 계산됨) — 화폐가치절하 시간척도 비교용.
+    # 화폐가치절하는 느린 거시(m2/cpi/indpro 월별)라 더 긴 누적이 신호가 셀 수 있음
+    # (13w model-free 신호가 약해 13/26/39/52w 비교). 산식 동일, 구성요소만 W 로 재누적.
+    # NEED 에는 안 넣어 기존 fold origin 보존 (컬럼만 추가; 시작 W주는 NaN → 분석서 제외).
+    for W in (26, 39, 52):
+        df[f"m2_{W}w_cum_lag"]     = df["m2_growth_lag"].rolling(W).sum()
+        df[f"cpi_{W}w_cum_lag"]    = df["cpi_wr_lag"].rolling(W).sum()
+        df[f"indpro_{W}w_pct_lag"] = (df["log_indpro"].diff(W)).shift(INDPRO_LAG)
+        df[f"metab_{W}w"] = (df[f"m2_{W}w_cum_lag"]
+                             - df[f"indpro_{W}w_pct_lag"] - df[f"cpi_{W}w_cum_lag"])
     df["bondpp_13w_lag"]  = np.log((1.0 + df["tbill_13w_cum"]) / (1.0 + df["metab_13w"]))
     df["stockpp_13w_lag"] = np.log((1.0 + df["sp_13w_cum"])    / (1.0 + df["metab_13w"]))
 
