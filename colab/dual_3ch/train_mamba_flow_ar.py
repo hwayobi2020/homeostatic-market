@@ -139,6 +139,13 @@ ENCODER_MASK_SP = False   # True 면 encoder 가 sp_return 채널을 무시 (Flo
 FUTURE_UNMASK_MACRO_COLS = []   # 미래 구간에 실제값을 유지(unmask)할 MACRO 채널명 리스트.
                                 #   조건부 시나리오 입력용 (예 ["metab_26w"] → tbill 외 metab 도 미래 조건).
                                 #   기본 [] = 기존(미래 macro 전부 마스킹) 동작.
+# 미래 조건을 인코더(per-step MLP, 희석) 우회해 Flow head context 로 per-step 직접 투입할
+# 채널명 리스트.  direct_prev_return(sp) 의 거시 일반화 — 각 미래 주 τ 의 실제 tbill/metab 를
+# conditional spline 에 직접 concat.  origin-frozen 인 extra_context/DC 와 달리 미래 경로 유지.
+# 값은 입력 텐서 미래 위치에서 읽으므로, 각 채널이 미래에 unmask 되어 있어야 함:
+#   tbill_wr -> MASK_FUTURE_TBILL=False / 그 외 macro -> FUTURE_UNMASK_MACRO_COLS 에도 포함.
+# 데이터 텐서 자체는 안 바뀌므로 _cache_key 와 무관.  기본 [] = 직접 경로 없음(기존 동작).
+DIRECT_FUTURE_COLS = []
 
 
 def _cache_key(csv_path, cond_stats, target_stats):
@@ -495,14 +502,16 @@ class MambaFlowAR(nn.Module):
                  flow_tail_bound=FLOW_TAIL_BOUND, dropout=0.0,
                  extra_context_dim=0, encoder_type="mamba",
                  transformer_n_heads=4, mlp_num_layers=2,
-                 direct_prev_return=False,
+                 direct_prev_return=False, direct_future_dim=0,
                  past_len=PAST_LEN, future_len=FUTURE_LEN):
         super().__init__()
         self.d_input           = d_input
         self.d_model           = d_model
         self.extra_context_dim = extra_context_dim
         self.direct_prev_dim   = 1 if direct_prev_return else 0
-        self.flow_context_dim  = d_model + extra_context_dim + self.direct_prev_dim
+        self.direct_future_dim = direct_future_dim
+        self.flow_context_dim  = (d_model + extra_context_dim
+                                  + self.direct_prev_dim + direct_future_dim)
         self.past_len          = past_len
         self.future_len        = future_len
         self.L                 = past_len + future_len
@@ -593,6 +602,12 @@ class MambaFlowAR(nn.Module):
             # teacher-forced previous return at each future step (shifted SP channel)
             prev_ret = x_input[:, self.past_len:, SP_CH:SP_CH + 1]   # (B, T, 1)
             ctx_parts.append(prev_ret)
+        if self.direct_future_dim > 0:
+            # 미래 조건(tbill/metab)을 인코더 우회해 per-step 직접 (B, T, k).
+            # 값은 입력 미래 위치에 unmask 되어 있음 (load_windows_seq).
+            _dir_idx = [COND_COLS.index(c) for c in DIRECT_FUTURE_COLS
+                        if c in COND_COLS]
+            ctx_parts.append(x_input[:, self.past_len:, _dir_idx])   # (B, T, k)
         if self.extra_context_dim > 0:
             if extra_context is None:
                 raise ValueError("extra_context required when "
@@ -669,6 +684,12 @@ class MambaFlowAR(nn.Module):
             ctx_parts = [h_tau]
             if self.direct_prev_dim > 0:
                 ctx_parts.append(last_sp.unsqueeze(-1))           # (BN, 1) prev return
+            if self.direct_future_dim > 0:
+                # 방금 채운 미래 조건(seq 마지막 행)을 per-step 직접 (BN, k).
+                # next_input 에 tbill_fut[tau]/fm[tau] 로 채워졌으므로 인코더 입력과 동일 값.
+                _dir_idx = [COND_COLS.index(c) for c in DIRECT_FUTURE_COLS
+                            if c in COND_COLS]
+                ctx_parts.append(seq[:, -1, _dir_idx])           # (BN, k)
             if self.extra_context_dim > 0:
                 ctx_parts.append(extra_rep)
             ctx_tau = torch.cat(ctx_parts, dim=-1) if len(ctx_parts) > 1 else h_tau
@@ -786,7 +807,7 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
           weight_decay=0.01, dropout=0.0,
           extra_cond_cols=None, encoder_type="mamba",
           transformer_n_heads=4, mlp_num_layers=2,
-          direct_prev_return=False,
+          direct_prev_return=False, direct_future_dim=0,
           max_epoch=MAX_EPOCH, patience=PATIENCE, batch=BATCH, lr=LR,
           device="cuda", seed=2026):
     torch.manual_seed(seed); np.random.seed(seed)
@@ -827,6 +848,7 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
         transformer_n_heads=transformer_n_heads,
         mlp_num_layers=mlp_num_layers,
         direct_prev_return=direct_prev_return,
+        direct_future_dim=direct_future_dim,
     ).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"    model params  = {n_params:,}  "
@@ -910,6 +932,7 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
             extra_cond_cols=(list(extra_cond_cols) if extra_cond_cols else []),
             extra_context_dim=int(extra_context_dim),
             extra_stats=extra_stats,
+            direct_future_cols=list(DIRECT_FUTURE_COLS),
             best_epoch=best_epoch, best_val_nll=best_val_nll,
             n_train=int(n_tr), n_val=int(n_v),
             n_params=int(n_params), seed=seed,
@@ -937,6 +960,7 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
         extra_cond_cols=(list(extra_cond_cols) if extra_cond_cols else []),
         extra_context_dim=int(extra_context_dim),
         extra_stats=extra_stats,
+        direct_future_cols=list(DIRECT_FUTURE_COLS),
     )
     with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2, default=str)
@@ -1199,6 +1223,23 @@ def main_worker(args):
         if getattr(args, "extra_context_channels", "") else None
     )
 
+    # 미래 조건 직접 경로(direct_future) — 인코더 우회 per-step.  값이 입력에 unmask 되어
+    # 있어야 0 이 아니므로 검증한다 (silent-zero 버그 방지).
+    _dfc = [c for c in DIRECT_FUTURE_COLS if c in COND_COLS]
+    for c in DIRECT_FUTURE_COLS:
+        if c not in COND_COLS:
+            sys.exit(f"[FATAL] DIRECT_FUTURE_COLS {c!r} not in COND_COLS={COND_COLS}")
+        if c == "tbill_wr":
+            if MASK_FUTURE_TBILL:
+                sys.exit("[FATAL] tbill_wr in DIRECT_FUTURE_COLS 인데 "
+                         "MASK_FUTURE_TBILL=True → 직접경로가 0 을 읽음")
+        elif c not in FUTURE_UNMASK_MACRO_COLS:
+            sys.exit(f"[FATAL] {c!r} in DIRECT_FUTURE_COLS 인데 FUTURE_UNMASK_MACRO_COLS"
+                     f"={FUTURE_UNMASK_MACRO_COLS} 에 없음 → 직접경로가 0 을 읽음")
+    direct_future_dim = len(_dfc)
+    if direct_future_dim:
+        print(f"  direct future  : {_dfc} (per-step, 인코더 우회 Flow context)")
+
     model, best_state, cond_stats, target_stats, extra_stats = train(
         args.fold, train_csv, val_csv, save_path, log_path, summary_path,
         d_model=args.d_model, n_mamba_layers=args.n_mamba_layers,
@@ -1209,6 +1250,7 @@ def main_worker(args):
         transformer_n_heads=getattr(args, "transformer_n_heads", 4),
         mlp_num_layers=getattr(args, "mlp_num_layers", 2),
         direct_prev_return=getattr(args, "direct_prev_return", False),
+        direct_future_dim=direct_future_dim,
         max_epoch=args.max_epoch, patience=args.patience,
         batch=args.batch, lr=args.lr, device=device, seed=args.seed,
     )
