@@ -143,7 +143,7 @@ def _cache_key(csv_path, cond_stats, target_stats):
         tuple(cond_stats["mean"]), tuple(cond_stats["std"]))
     ts_key = None if target_stats is None else (
         float(target_stats["mean"]), float(target_stats["std"]))
-    return (csv_path, cs_key, ts_key, bool(MASK_FUTURE_TBILL))
+    return (csv_path, cs_key, ts_key, bool(MASK_FUTURE_TBILL), tuple(COND_COLS))
 
 
 def cached_load_windows_seq(csv_path, past_len=PAST_LEN, future_len=FUTURE_LEN,
