@@ -15,6 +15,7 @@ Usage (Colab):
     !python colab/dual_3ch/run_gfc_selfstat.py
 이후 fold 별 GARCH + run_gfc_crps_stratify.py 로 구간별 비교.
 """
+import json
 import os
 import sys
 
@@ -73,6 +74,27 @@ for fold in FOLDS:
         except Exception as e:
             print(f"[FAIL] {tag} {fold}: {e!r}")
 
-print("\n[done] self-stat 학습 완료. 다음:")
-print("  GARCH(fold별): !python colab/dual_3ch/train_garch_ar.py --fold <FOLD> --use-arx 0 --dist normal")
-print("  구간별 비교  : !python colab/dual_3ch/run_gfc_crps_stratify.py")
+print("\n[done] self-stat(metab_26w) 학습 완료.")
+
+# ── fold별 test_eval 요약 ──
+print("\n" + "=" * 96)
+print("self-stat metab_26w (1 seed) — fold별 test_eval  "
+      "(CRPS/EMD/NLL 낮을수록 | cov95 0.95 | std_ratio 1.0 근접)")
+print("=" * 96)
+print(f"{'fold':<18}{'n_orig':>7}{'NLL':>10}{'CRPS':>10}{'EMD':>10}"
+      f"{'cov95':>9}{'std_ratio':>11}{'CVaR5Δ':>11}")
+for fold in FOLDS:
+    p = os.path.join(RESULT_DIR, f"mamba_flow_ar_selfstat_m26_mlp_s2026_{fold}_summary.json")
+    if not os.path.exists(p):
+        print(f"{fold:<18} (summary 없음)")
+        continue
+    te = json.load(open(p)).get("test_eval", {})
+
+    def g(k):
+        return te.get(k)
+    print(f"{fold:<18}{g('n_test_origins') or 0:>7}"
+          f"{(g('per_week_nll_z') or 0):>10.4f}{(g('crps_pooled') or 0):>10.5f}"
+          f"{(g('emd') or 0):>10.5f}{(g('coverage_95') or 0):>9.3f}"
+          f"{(g('std_ratio') or 0):>11.3f}{(g('cvar_5pct_diff') or 0):>11.5f}")
+print("\n비교: metab_13w 때보다 std_ratio/cov95 가 1.0/0.95 쪽으로, NLL/CRPS 가 낮아지면 "
+      "26w 전환이 metab 효과를 살린 것.")
