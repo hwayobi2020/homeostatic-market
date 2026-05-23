@@ -47,15 +47,16 @@ COND_DIM = PAST_DIM + DC_DIM                 # 288  (build 출력)
 TARGET_DIM = FUT_LEN                         # 13
 
 D_MODEL = 128       # MLP 인코더 출력
-HIDDEN = 256
-N_BLOCKS = 3
+HIDDEN = 384
+N_BLOCKS = 4
 TEMB_DIM = 64
 DIFF_STEPS = 200
 MAX_EPOCH = 200
-PATIENCE = 30
+PATIENCE = 50
 BATCH = 64
-LR = 2e-4
+LR = 1e-4
 WEIGHT_DECAY = 1e-4
+EMA_DECAY = 0.999
 N_SIM = 1000
 
 
@@ -168,7 +169,7 @@ class Diffusion:
         return self.sqrt_acp[t][:, None] * x0 + self.sqrt_1macp[t][:, None] * noise
 
     @torch.no_grad()
-    def p_sample_loop(self, model, c, n, clip=10.0):
+    def p_sample_loop(self, model, c, n, clip=8.0):
         """clip_denoised DDPM: eps→x0 변환 후 z-범위 clip → posterior mean 재계산.
         clip 없으면 약한 denoiser + 1/√α 증폭이 누적돼 발산(샘플 std 폭발)."""
         x = torch.randn(n, TARGET_DIM, device=self.device)
@@ -192,6 +193,23 @@ class Diffusion:
 
 
 # ===================================================================== #
+# EMA — 가중치 지수이동평균 (디퓨전 샘플 품질 안정화)
+# ===================================================================== #
+class EMA:
+    def __init__(self, model, decay):
+        self.decay = decay
+        self.shadow = {k: v.detach().clone() for k, v in model.state_dict().items()}
+
+    @torch.no_grad()
+    def update(self, model):
+        for k, v in model.state_dict().items():
+            if v.dtype.is_floating_point:
+                self.shadow[k].mul_(self.decay).add_(v.detach(), alpha=1 - self.decay)
+            else:
+                self.shadow[k].copy_(v.detach())
+
+
+# ===================================================================== #
 # Train + evaluate one fold
 # ===================================================================== #
 def run_fold(fold, device):
@@ -212,12 +230,20 @@ def run_fold(fold, device):
     torch.manual_seed(SEED); np.random.seed(SEED)
     model = PathDiffusionNet().to(device)
     diff = Diffusion(device=device)
+    ema = EMA(model, EMA_DECAY)
     opt = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
-    print(f"  params = {sum(p.numel() for p in model.parameters()):,}  DDPM steps={DIFF_STEPS}")
+    print(f"  params = {sum(p.numel() for p in model.parameters()):,}  "
+          f"DDPM steps={DIFF_STEPS}  EMA={EMA_DECAY}")
 
     tr_dl = DataLoader(TensorDataset(torch.from_numpy(Ctr), torch.from_numpy(Ytr)),
                        batch_size=BATCH, shuffle=True)
     Cva_d = torch.from_numpy(Cva).to(device); Yva_d = torch.from_numpy(Yva).to(device)
+    # 고정 val grid: t 균등분포 + 고정 noise → 노이즈 없는 안정적 early stop
+    torch.manual_seed(SEED + 1)
+    n_vw = Yva_d.shape[0]
+    val_t = ((torch.arange(n_vw, device=device).float() * diff.T) / n_vw).long().clamp_(0, diff.T - 1)
+    val_noise = torch.randn_like(Yva_d)
+    val_xt = diff.q_sample(Yva_d, val_t, val_noise)
 
     best_val = float("inf"); best_state = None; best_ep = 0; bad = 0
     for ep in range(1, MAX_EPOCH + 1):
@@ -228,21 +254,20 @@ def run_fold(fold, device):
             noise = torch.randn_like(yb)
             loss = ((model(diff.q_sample(yb, t, noise), t, cb) - noise) ** 2).mean()
             opt.zero_grad(); loss.backward(); opt.step()
-        model.eval()
+            ema.update(model)
+        # val: EMA 가중치로 고정 grid 평가 (training 가중치는 백업 후 복원)
+        backup = {k: v.detach().clone() for k, v in model.state_dict().items()}
+        model.load_state_dict(ema.shadow); model.eval()
         with torch.no_grad():
-            vloss = 0.0
-            for _ in range(4):
-                t = torch.randint(0, diff.T, (Yva_d.shape[0],), device=device)
-                noise = torch.randn_like(Yva_d)
-                vloss += ((model(diff.q_sample(Yva_d, t, noise), t, Cva_d) - noise) ** 2).mean().item()
-            vloss /= 4
+            vloss = ((model(val_xt, val_t, Cva_d) - val_noise) ** 2).mean().item()
         if vloss < best_val - 1e-5:
             best_val = vloss; best_ep = ep; bad = 0
-            best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
+            best_state = {k: v.detach().clone() for k, v in ema.shadow.items()}
         else:
             bad += 1
+        model.load_state_dict(backup); model.train()
         if ep <= 5 or ep % 20 == 0:
-            print(f"    ep{ep:3d}: train_eps_mse={loss.item():.4f}  val={vloss:.4f}  "
+            print(f"    ep{ep:3d}: train_eps_mse={loss.item():.4f}  val(ema)={vloss:.4f}  "
                   f"(best {best_val:.4f}@{best_ep})")
         if bad >= PATIENCE:
             print(f"    [early stop] ep{ep} (from {best_ep})"); break
