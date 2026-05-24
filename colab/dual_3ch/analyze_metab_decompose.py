@@ -154,6 +154,27 @@ def main():
             print(f"{lb:<14}{res.params[i+1]:>+14.3f}{res.pvalues[i+1]:>12.3f}{stars(res.pvalues[i+1])}")
         print(f"  R²={res.rsquared:.3f}")
 
+        # (3) |Δ| 다변량 — m2 난기류가 indpro/cpi 난기류 통제 후 살아남나 (통화신호 독립성)
+        print("\n" + "=" * 92)
+        print(f"(3) 다변량 H={H}w:  std ~ 표준화 |Δm2|+|Δindpro|+|Δcpi|  [HAC maxlag={W+H}]")
+        print("  |Δm2| 가 통제 후에도 유의 → 통화 난기류는 불황과 별개의 독립 신호(thesis 핵심).")
+        print("=" * 92)
+        Am, Ai, Ac, ya = [], [], [], []
+        for t in range(n - H):
+            fut = sp[t + 1: t + 1 + H]
+            ds = {nm: comp[nm][t + H] - comp[nm][t] for nm in ["m2", "indpro", "cpi"]}
+            if np.any(np.isnan(fut)) or any(np.isnan(v) for v in ds.values()):
+                continue
+            Am.append(abs(ds["m2"])); Ai.append(abs(ds["indpro"])); Ac.append(abs(ds["cpi"]))
+            ya.append(float(np.std(fut, ddof=1)))
+        Xa = np.column_stack([z(Am), z(Ai), z(Ac)])
+        resa = sm.OLS(z(ya), sm.add_constant(Xa)).fit(cov_type="HAC",
+                                                      cov_kwds={"maxlags": W + H})
+        print(f"{'성분':<14}{'표준화계수':>14}{'HAC p':>12}")
+        for i, lb in enumerate(["|Δm2|", "|Δindpro|", "|Δcpi|"]):
+            print(f"{lb:<14}{resa.params[i+1]:>+14.3f}{resa.pvalues[i+1]:>12.3f}{stars(resa.pvalues[i+1])}")
+        print(f"  R²={resa.rsquared:.3f}")
+
     print("\n해석:")
     print("  indpro(|Δ|·Lvl) 가 metab 만큼 강하고 m2 약하면 → '경기침체(산업생산)' 스토리 = 통화 아님(제목 재고).")
     print("  m2 가 강하면 → 진짜 통화/유동성 스토리(제목 유지).  cpi 는 보조.")
