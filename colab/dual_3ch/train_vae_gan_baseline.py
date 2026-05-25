@@ -1,0 +1,319 @@
+"""Conditional VAE / GAN baselines on the SAME setup as train_garch_flow.py.
+
+Fair generative-head comparison: identical GARCH filtering (NF-GARCH z_t target),
+identical macro conditioning channels, identical gap29 folds, identical eval
+metrics + raw rescale.  Only the generative model differs (flow -> VAE / GAN).
+This deliberately *gives VAE/GAN the same GARCH boost* (harder test for us than
+plain raw-return VAE/GAN, and avoids the "you handicapped the baselines" critique).
+
+Conditioning: an MLP encoder maps the (PAST_LEN+FUTURE_LEN) x N_CH input window
+(past 9 channels + future tbill unmasked, future macro masked -- exactly the
+flow's input X) to a context vector c.  The VAE/GAN generate the 13-week target
+path Y (= constant-z-scored GARCH residual z_t) conditioned on c.  At eval the
+generated Y is rescaled to raw returns by  z_t = Y*tsd+tmu ; r = z_t*sigma_t+mu_t
+-- identical to train_garch_flow.evaluate_test.
+
+Usage (Colab):
+  !python colab/dual_3ch/train_vae_gan_baseline.py --model vae --fold F_gfc --n-sim 1000
+  !python colab/dual_3ch/train_vae_gan_baseline.py --model gan --fold F_gfc --n-sim 1000
+"""
+import argparse
+import json
+import os
+import sys
+
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+from torch.utils.data import TensorDataset, DataLoader
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+
+# Reuse the EXACT GARCH preprocessing, data loader, alignment, and metrics that
+# train_garch_flow uses -- guarantees an apples-to-apples comparison.
+from train_garch_flow import (  # noqa: E402
+    garch_preprocess_fold, compute_valid_mask, cached_load_windows_seq,
+    COND_COLS, TBILL_CH, PAST_LEN, FUTURE_LEN, SP_CH,
+    crps_pooled, crps_ensemble_sample, compute_var, compute_cvar, compute_emd_1d,
+)
+
+N_CH = len(COND_COLS)
+L = PAST_LEN + FUTURE_LEN
+
+# ---- compact baseline hyperparameters (small, fast) ----
+D_CTX   = 128
+LATENT  = 16
+HID     = 128
+EPOCHS  = 250
+LR_VAE  = 1e-3
+LR_GAN  = 1e-4
+BATCH   = 64
+N_CRITIC = 5          # WGAN-GP critic steps per generator step
+GP_LAMBDA = 10.0
+KL_ANNEAL = 60        # epochs to ramp beta 0 -> 1
+
+
+# =====================================================================
+# Context encoder (shared) -- maps input window X (B,L,N_CH) -> c (B,D_CTX)
+# =====================================================================
+class CtxEncoder(nn.Module):
+    def __init__(self, dropout=0.1):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(L * N_CH, 256), nn.ReLU(), nn.Dropout(dropout),
+            nn.Linear(256, D_CTX), nn.ReLU(),
+        )
+
+    def forward(self, x):                      # x: (B, L, N_CH)
+        return self.net(x)
+
+
+# =====================================================================
+# Conditional VAE  (decoder outputs per-step mean + log-var => proper spread)
+# =====================================================================
+class CondVAE(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.enc_ctx = CtxEncoder()
+        self.q = nn.Sequential(
+            nn.Linear(FUTURE_LEN + D_CTX, HID), nn.ReLU(),
+            nn.Linear(HID, 2 * LATENT),
+        )
+        self.dec = nn.Sequential(
+            nn.Linear(LATENT + D_CTX, HID), nn.ReLU(),
+            nn.Linear(HID, 2 * FUTURE_LEN),    # (mean_13, logvar_13)
+        )
+
+    def forward(self, x, y):
+        c = self.enc_ctx(x)
+        h = self.q(torch.cat([y, c], dim=-1))
+        mu, logvar = h[:, :LATENT], h[:, LATENT:].clamp(-8, 8)
+        z = mu + torch.randn_like(mu) * torch.exp(0.5 * logvar)
+        out = self.dec(torch.cat([z, c], dim=-1))
+        ymean, ylogvar = out[:, :FUTURE_LEN], out[:, FUTURE_LEN:].clamp(-8, 8)
+        return ymean, ylogvar, mu, logvar
+
+    @torch.no_grad()
+    def generate(self, x, n_sim):
+        c = self.enc_ctx(x)                              # (B, D_CTX)
+        B = c.shape[0]
+        c_rep = c.repeat_interleave(n_sim, 0)            # (B*n_sim, D_CTX)
+        z = torch.randn(B * n_sim, LATENT, device=c.device)
+        out = self.dec(torch.cat([z, c_rep], dim=-1))
+        ymean = out[:, :FUTURE_LEN]
+        ylogvar = out[:, FUTURE_LEN:].clamp(-8, 8)
+        y = ymean + torch.randn_like(ymean) * torch.exp(0.5 * ylogvar)
+        return y.view(B, n_sim, FUTURE_LEN)
+
+
+def vae_loss(ymean, ylogvar, y, mu, logvar, beta):
+    # Gaussian NLL recon (summed over 13 steps), KL to N(0,I)
+    recon = 0.5 * (ylogvar + (y - ymean) ** 2 / torch.exp(ylogvar)).sum(dim=1)
+    kl = -0.5 * (1 + logvar - mu ** 2 - torch.exp(logvar)).sum(dim=1)
+    return (recon + beta * kl).mean(), recon.mean().item(), kl.mean().item()
+
+
+# =====================================================================
+# Conditional GAN  (WGAN-GP for stability)
+# =====================================================================
+class Generator(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.enc_ctx = CtxEncoder(dropout=0.0)
+        self.net = nn.Sequential(
+            nn.Linear(LATENT + D_CTX, HID), nn.ReLU(),
+            nn.Linear(HID, HID), nn.ReLU(),
+            nn.Linear(HID, FUTURE_LEN),
+        )
+
+    def forward(self, x, noise):
+        c = self.enc_ctx(x)
+        return self.net(torch.cat([noise, c], dim=-1)), c
+
+    @torch.no_grad()
+    def generate(self, x, n_sim):
+        c = self.enc_ctx(x)
+        B = c.shape[0]
+        c_rep = c.repeat_interleave(n_sim, 0)
+        noise = torch.randn(B * n_sim, LATENT, device=c.device)
+        y = self.net(torch.cat([noise, c_rep], dim=-1))
+        return y.view(B, n_sim, FUTURE_LEN)
+
+
+class Critic(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(FUTURE_LEN + D_CTX, HID), nn.LeakyReLU(0.2),
+            nn.Linear(HID, HID), nn.LeakyReLU(0.2),
+            nn.Linear(HID, 1),
+        )
+
+    def forward(self, y, c):
+        return self.net(torch.cat([y, c], dim=-1))
+
+
+def gradient_penalty(critic, y_real, y_fake, c, device):
+    eps = torch.rand(y_real.shape[0], 1, device=device)
+    inter = (eps * y_real + (1 - eps) * y_fake).requires_grad_(True)
+    score = critic(inter, c)
+    grad = torch.autograd.grad(score, inter,
+                               grad_outputs=torch.ones_like(score),
+                               create_graph=True, retain_graph=True)[0]
+    return ((grad.norm(2, dim=1) - 1) ** 2).mean()
+
+
+# =====================================================================
+# Train + eval for one fold
+# =====================================================================
+def run_fold(model_kind, fold, args, device):
+    gp = garch_preprocess_fold(args.folds_dir, fold, args.out_dir)
+    train_csv, val_csv, test_csv = gp["train"], gp["val"], gp["test"]
+
+    Xtr, Ytr, cond_stats, target_stats, n_tr = cached_load_windows_seq(train_csv)
+    print(f"  train windows = {n_tr}, X={tuple(Xtr.shape)}")
+    torch.manual_seed(args.seed); np.random.seed(args.seed)
+
+    dl = DataLoader(TensorDataset(Xtr, Ytr), batch_size=BATCH, shuffle=True,
+                    drop_last=True)
+
+    if model_kind == "vae":
+        model = CondVAE().to(device)
+        opt = torch.optim.Adam(model.parameters(), lr=LR_VAE)
+        for ep in range(1, EPOCHS + 1):
+            model.train(); beta = min(1.0, ep / KL_ANNEAL)
+            losses = []
+            for xb, yb in dl:
+                xb, yb = xb.to(device), yb.to(device)
+                ymean, ylogvar, mu, lv = model(xb, yb)
+                loss, rec, kl = vae_loss(ymean, ylogvar, yb, mu, lv, beta)
+                opt.zero_grad(); loss.backward()
+                nn.utils.clip_grad_norm_(model.parameters(), 5.0); opt.step()
+                losses.append(loss.item())
+            if ep == 1 or ep % 50 == 0 or ep == EPOCHS:
+                print(f"    ep{ep:>3d}  loss={np.mean(losses):+.3f} "
+                      f"(recon~{rec:+.3f} kl~{kl:.3f} beta={beta:.2f})")
+        gen = model
+
+    else:  # gan (WGAN-GP)
+        G, Dc = Generator().to(device), Critic().to(device)
+        optG = torch.optim.Adam(G.parameters(), lr=LR_GAN, betas=(0.0, 0.9))
+        optD = torch.optim.Adam(Dc.parameters(), lr=LR_GAN, betas=(0.0, 0.9))
+        it = 0
+        for ep in range(1, EPOCHS + 1):
+            G.train(); Dc.train(); dl_loss = []
+            for xb, yb in dl:
+                xb, yb = xb.to(device), yb.to(device)
+                # ---- critic ----
+                noise = torch.randn(xb.shape[0], LATENT, device=device)
+                with torch.no_grad():
+                    y_fake, _ = G(xb, noise)
+                c = G.enc_ctx(xb).detach()
+                gp_term = gradient_penalty(Dc, yb, y_fake, c, device)
+                d_loss = (Dc(y_fake, c).mean() - Dc(yb, c).mean()
+                          + GP_LAMBDA * gp_term)
+                optD.zero_grad(); d_loss.backward(); optD.step()
+                it += 1
+                # ---- generator every N_CRITIC ----
+                if it % N_CRITIC == 0:
+                    noise = torch.randn(xb.shape[0], LATENT, device=device)
+                    y_fake, c2 = G(xb, noise)
+                    g_loss = -Dc(y_fake, c2).mean()
+                    optG.zero_grad(); g_loss.backward(); optG.step()
+                    dl_loss.append((float(d_loss), float(g_loss)))
+            if (ep == 1 or ep % 50 == 0 or ep == EPOCHS) and dl_loss:
+                dl_, gl_ = np.mean(dl_loss, axis=0)
+                print(f"    ep{ep:>3d}  D={dl_:+.3f}  G={gl_:+.3f}")
+        gen = G
+
+    # ---------- evaluate (mirror train_garch_flow.evaluate_test) ----------
+    gen.eval()
+    Xte, Yte, _, _, n_te = cached_load_windows_seq(
+        test_csv, cond_stats=cond_stats, target_stats=target_stats)
+    valid_mask, _, df_te = compute_valid_mask(test_csv, cond_stats)
+    n_orig = Xte.shape[0]
+
+    # generate in chunks
+    sims = []
+    for s in range(0, n_orig, 16):
+        xb = Xte[s:s + 16].to(device)
+        sims.append(gen.generate(xb, args.n_sim).cpu().numpy())
+    sim_paths_z = np.concatenate(sims, axis=0)                 # (n_orig, n_sim, T)
+    actual_z = Yte.numpy()
+
+    tmu = float(target_stats["mean"]); tsd = float(target_stats["std"])
+    sim_zt = sim_paths_z * tsd + tmu
+    actual_zt = actual_z * tsd + tmu
+
+    # raw rescale via per-(origin,step) GARCH sigma_t / mu_t (same as garch_flow)
+    gsig = df_te["garch_sigma"].to_numpy(float)
+    gmu = df_te["garch_mu"].to_numpy(float)
+    oidx = np.where(valid_mask)[0]
+    sig = np.array([[gsig[int(oidx[i]) + PAST_LEN + t] for t in range(FUTURE_LEN)]
+                    for i in range(n_orig)])
+    mu = np.array([[gmu[int(oidx[i]) + PAST_LEN + t] for t in range(FUTURE_LEN)]
+                   for i in range(n_orig)])
+    sim_paths_raw = sim_zt * sig[:, None, :] + mu[:, None, :]
+    actual_raw = actual_zt * sig + mu
+
+    af = actual_raw.ravel(); sf = sim_paths_raw.ravel()
+    crps_m, _ = crps_pooled(sim_paths_raw, actual_raw)
+    emd = compute_emd_1d(af, sf, n_bins=200)
+    std_a, std_s = float(af.std(ddof=1)), float(sf.std(ddof=1))
+
+    def _sk(a):
+        a = np.asarray(a, float); m = a.mean(); s = a.std() + 1e-12
+        return float(np.mean(((a - m) / s) ** 3))
+
+    def _ek(a):
+        a = np.asarray(a, float); m = a.mean(); s = a.std() + 1e-12
+        return float(np.mean(((a - m) / s) ** 4) - 3.0)
+
+    cov = {}
+    for lvl, lo, hi in [(50, 25, 75), (80, 10, 90), (95, 2.5, 97.5)]:
+        L_, H_ = np.percentile(sim_paths_raw, lo, axis=1), np.percentile(sim_paths_raw, hi, axis=1)
+        cov[lvl] = float(((actual_raw >= L_) & (actual_raw <= H_)).mean())
+    cv1a, cv1s = compute_cvar(af, 0.01), compute_cvar(sf, 0.01)
+
+    print(f"\n[{model_kind.upper()}]  fold={fold}  (n_sim={args.n_sim})")
+    print(f"    CRPS pooled       = {crps_m:.5f}")
+    print(f"    EMD               = {emd:.6f}")
+    print(f"    std act/sim/ratio = {std_a:.5f} / {std_s:.5f} / {std_s / std_a:.3f}")
+    print(f"    skew act/sim      = {_sk(af):+.4f} / {_sk(sf):+.4f}")
+    print(f"    exkurt act/sim    = {_ek(af):+.4f} / {_ek(sf):+.4f}")
+    print(f"    CVaR1 act/sim/D   = {cv1a:+.5f} / {cv1s:+.5f} / {cv1s - cv1a:+.5f}")
+    print(f"    cov 50/80/95      = {cov[50]:.3f} / {cov[80]:.3f} / {cov[95]:.3f}")
+
+    summ = dict(model=f"cond-{model_kind}", fold=fold, n_sim=args.n_sim,
+                test_eval=dict(crps_pooled=crps_m, emd=emd, std_ratio=std_s / std_a,
+                               coverage_50=cov[50], coverage_80=cov[80],
+                               coverage_95=cov[95], cvar_1pct_diff=cv1s - cv1a,
+                               skew_actual=_sk(af), skew_sim=_sk(sf),
+                               exkurt_actual=_ek(af), exkurt_sim=_ek(sf)))
+    os.makedirs(args.out_dir, exist_ok=True)
+    sp = os.path.join(args.out_dir, f"{model_kind}_baseline_{fold}_summary.json")
+    json.dump(summ, open(sp, "w"), indent=2, default=str)
+    print(f"    saved {os.path.basename(sp)}")
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--model", required=True, choices=["vae", "gan"])
+    ap.add_argument("--fold", required=True)
+    ap.add_argument("--folds-dir",
+                    default=os.path.join(os.path.normpath(os.path.join(HERE, "..", "..")),
+                                         "data", "folds_v33_vix_expanding"))
+    ap.add_argument("--out-dir", default=os.path.join(HERE, "result"))
+    ap.add_argument("--n-sim", type=int, default=1000)
+    ap.add_argument("--seed", type=int, default=2026)
+    args = ap.parse_args()
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"[{args.model}-baseline] fold={args.fold} device={device}")
+    run_fold(args.model, args.fold, args, device)
+
+
+if __name__ == "__main__":
+    main()
