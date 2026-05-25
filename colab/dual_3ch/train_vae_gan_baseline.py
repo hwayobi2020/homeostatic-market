@@ -117,11 +117,14 @@ class CondVAE(nn.Module):
         return y.view(B, n_sim, FUTURE_LEN)
 
 
-def vae_loss(ymean, ylogvar, y, mu, logvar, beta):
-    # Gaussian NLL recon (summed over 13 steps), KL to N(0,I)
+def vae_loss(ymean, ylogvar, y, mu, logvar, beta, free_bits=0.5):
+    # Gaussian NLL recon (summed over 13 steps), KL to N(0,I) with FREE-BITS
+    # anti-collapse: each latent dim keeps >= free_bits nats so the latent is
+    # not driven to 0 (posterior collapse made the decoder over-narrow before).
     recon = 0.5 * (ylogvar + (y - ymean) ** 2 / torch.exp(ylogvar)).sum(dim=1)
-    kl = -0.5 * (1 + logvar - mu ** 2 - torch.exp(logvar)).sum(dim=1)
-    return (recon + beta * kl).mean(), recon.mean().item(), kl.mean().item()
+    kl_dim = -0.5 * (1 + logvar - mu ** 2 - torch.exp(logvar))      # (B, LATENT)
+    kl = torch.clamp(kl_dim, min=free_bits).sum(dim=1)             # free-bits floor
+    return (recon + beta * kl).mean(), recon.mean().item(), float(kl_dim.sum(1).mean())
 
 
 # =====================================================================
