@@ -1080,6 +1080,14 @@ def evaluate_test(model, best_state, test_csv, cond_stats, target_stats,
     std_a = float(actual_raw.std(ddof=1))
     std_s = float(sim_paths_raw.std(ddof=1))
     std_ratio = std_s / std_a if std_a > 1e-12 else float("nan")
+    def _skew(a):
+        a = np.asarray(a, float); m = a.mean(); s = a.std() + 1e-12
+        return float(np.mean(((a - m) / s) ** 3))
+    def _exkurt(a):
+        a = np.asarray(a, float); m = a.mean(); s = a.std() + 1e-12
+        return float(np.mean(((a - m) / s) ** 4) - 3.0)
+    skew_a = _skew(actual_flat); skew_s = _skew(sim_flat)
+    kurt_a = _exkurt(actual_flat); kurt_s = _exkurt(sim_flat)
     lo95, hi95 = np.percentile(sim_flat, [2.5, 97.5])
     cov95 = float(((actual_flat >= lo95) & (actual_flat <= hi95)).mean())
     lo80, hi80 = np.percentile(sim_flat, [10.0, 90.0])
@@ -1090,6 +1098,9 @@ def evaluate_test(model, best_state, test_csv, cond_stats, target_stats,
     print(f"    CRPS pooled       = {crps_m:.5f}  (std {crps_s:.5f})")
     print(f"    EMD               = {emd:.6f}")
     print(f"    std act/sim/ratio = {std_a:.5f} / {std_s:.5f} / {std_ratio:.3f}")
+    print(f"    skew act/sim      = {skew_a:+.4f} / {skew_s:+.4f}   "
+          f"(GARCH ~ symmetric 0; flow should track actual left-skew)")
+    print(f"    exkurt act/sim    = {kurt_a:+.4f} / {kurt_s:+.4f}")
     print(f"    VaR1   act/sim/D  = {var1_a:+.5f} / {var1_s:+.5f} / "
           f"{var1_s - var1_a:+.5f}")
     print(f"    CVaR1  act/sim/D  = {cv1_a:+.5f} / {cv1_s:+.5f} / "

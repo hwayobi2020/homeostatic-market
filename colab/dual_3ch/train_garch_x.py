@@ -197,6 +197,12 @@ def run_fold(fold):
     crps_m, crps_s = crps_pooled(sim, act)
     af = act.ravel(); sf = sim.ravel()
     std_a = float(af.std(ddof=1)); std_s = float(sf.std(ddof=1))
+    def _sk(a):
+        a = np.asarray(a, float); return float(np.mean(((a - a.mean()) / (a.std() + 1e-12)) ** 3))
+    def _ek(a):
+        a = np.asarray(a, float); return float(np.mean(((a - a.mean()) / (a.std() + 1e-12)) ** 4) - 3.0)
+    skew_a, skew_s = _sk(af), _sk(sf)
+    kurt_a, kurt_s = _ek(af), _ek(sf)
     cv5a, cv5s = cvar(af, .05), cvar(sf, .05)
     cv1a, cv1s = cvar(af, .01), cvar(sf, .01)
     cov = {}
@@ -205,6 +211,8 @@ def run_fold(fold):
         cov[lvl] = float(((act >= L) & (act <= H)).mean())
     print(f"  CRPS={crps_m:.5f}  std a/s/ratio={std_a:.5f}/{std_s:.5f}/{std_s/std_a:.3f}  "
           f"cov 50/80/95={cov[50]:.3f}/{cov[80]:.3f}/{cov[95]:.3f}")
+    print(f"  skew a/s={skew_a:+.4f}/{skew_s:+.4f}  exkurt a/s={kurt_a:+.4f}/{kurt_s:+.4f}  "
+          f"(GARCH symmetric => sim skew ~ 0)")
 
     summ = dict(fold=fold, model="GARCH(1,1)-X-t (macro turbulence in variance)",
                 params=dict(mu=mu, omega=om, alpha=al, beta=be, gamma_tbill=g1,
@@ -215,7 +223,9 @@ def run_fold(fold):
                                std_ratio=std_s / std_a, coverage_50=cov[50],
                                coverage_80=cov[80], coverage_95=cov[95],
                                cvar_5pct_diff=cv5s - cv5a, cvar_1pct_diff=cv1s - cv1a,
-                               var_1pct_diff=var_q(sf, .01) - var_q(af, .01)))
+                               var_1pct_diff=var_q(sf, .01) - var_q(af, .01),
+                               skew_actual=skew_a, skew_sim=skew_s,
+                               exkurt_actual=kurt_a, exkurt_sim=kurt_s))
     os.makedirs(RESULT_DIR, exist_ok=True)
     json.dump(summ, open(sp, "w"), indent=2, default=str)
     print(f"  saved {os.path.basename(sp)}")
