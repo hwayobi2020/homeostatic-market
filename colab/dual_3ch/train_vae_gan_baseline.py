@@ -298,6 +298,13 @@ def run_fold(model_kind, fold, args, device):
     print(f"    CVaR1 act/sim/D   = {cv1a:+.5f} / {cv1s:+.5f} / {cv1s - cv1a:+.5f}")
     print(f"    cov 50/80/95      = {cov[50]:.3f} / {cov[80]:.3f} / {cov[95]:.3f}")
 
+    # per-(origin,step) CRPS for paired DM test vs garch-flow (same origins/order)
+    per_oc = np.array([[crps_ensemble_sample(sim_paths_raw[i, :, t], actual_raw[i, t])
+                        for t in range(FUTURE_LEN)] for i in range(n_orig)])
+    os.makedirs(args.out_dir, exist_ok=True)
+    np.save(os.path.join(args.out_dir,
+            f"{model_kind}_baseline_{fold}_crps_per_origin.npy"), per_oc)
+
     summ = dict(model=f"cond-{model_kind}", fold=fold, n_sim=args.n_sim,
                 test_eval=dict(crps_pooled=crps_m, emd=emd, std_ratio=std_s / std_a,
                                coverage_50=cov[50], coverage_80=cov[80],

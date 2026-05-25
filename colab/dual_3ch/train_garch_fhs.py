@@ -127,6 +127,9 @@ def run_fold(fold):
                                skew_actual=skew_a, skew_sim=skew_s,
                                exkurt_actual=kurt_a, exkurt_sim=kurt_s))
     os.makedirs(RESULT_DIR, exist_ok=True)
+    per_oc = np.array([[crps_ensemble(sim[i, :, t], act[i, t]) for t in range(FUT)]
+                       for i in range(len(origins))])
+    np.save(os.path.join(RESULT_DIR, f"garch_fhs_{fold}_crps_per_origin.npy"), per_oc)
     json.dump(summ, open(sp, "w"), indent=2, default=str)
     print(f"  saved {os.path.basename(sp)}")
 
