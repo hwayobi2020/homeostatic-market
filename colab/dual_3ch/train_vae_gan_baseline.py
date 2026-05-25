@@ -68,6 +68,14 @@ class CtxEncoder(nn.Module):
         )
 
     def forward(self, x):                      # x: (B, L, N_CH)
+        # NO-LEAK: the flow's sp channel is 1-step shifted, so future positions
+        # hold (shifted) future ACTUAL returns.  A non-causal MLP would read the
+        # target straight off the context.  Mask ALL future positions except the
+        # tbill scenario path (the only legitimate future conditioning).
+        x = x.clone()
+        keep_tbill = x[:, PAST_LEN:, TBILL_CH].clone()
+        x[:, PAST_LEN:, :] = 0.0
+        x[:, PAST_LEN:, TBILL_CH] = keep_tbill
         return self.net(x)
 
 
