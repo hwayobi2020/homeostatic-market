@@ -2,9 +2,10 @@
 
 5/23 macroenc(train_mamba_flow_ar + run_macroenc) 구조를 train_garch_flow(NF-GARCH)로
 이식.  사용자 확정(2026-05-25):
-  - encoder(MLP) 입력 = 거시만: tbill_wr, ads_lag, wti_wr, metab_13w
-      (sp_return 은 ENC_COLS 에 두되 ENCODER_MASK_SP=True 로 0 마스크 → encoder 는 안 봄.
-       채널을 정의해둬야 prevret/teacher-forcing 이 SP_CH 슬롯을 읽음 = "빼는 게 아니라 옮김".)
+  - encoder(MLP) 입력 = 과거 sp + 거시: sp_return(과거), tbill_wr, ads_lag, wti_wr, metab_13w
+      (ENCODER_MASK_SP=True 는 *미래 sp 만* 0 마스크한다.  과거 sp 시퀀스는 인코더가 봐야
+       좌측 skew(폭락 비대칭)를 학습 — 2026-05-25 진단: 과거까지 마스크 시 sim skew 부호가
+       뒤집힘(+1.11).  미래 sp 는 AR 의 prevret 으로 flow head 에 전달 = "미래는 거시 중심".)
   - flow head 직접 입력:
       prevret = direct_prev_return=True            (직전 주 표준화수익률 z_t, 1회)
       volDC   = extra_context "sp_std_13w"          (=GARCH σ 하나; log σ 는 같은 σ 의 단조변환
@@ -68,7 +69,7 @@ for _c in FUTURE_UNMASK_MACRO_COLS:
 spec_base = dict(BEST_SPECS["mlp"])
 
 print(f"[macroenc-garch] {len(FOLDS)} fold x {len(SEEDS)} seed")
-print(f"  encoder(거시): tbill, ads, wti, metab_13w   (sp_return 0-mask)")
+print(f"  encoder: 과거 sp + 거시(tbill,ads,wti,metab_13w);  미래 sp 만 0-mask")
 print(f"  flow head 직접: prevret(sp_return z_t) + volDC({DC_COLS}=GARCH σ)")
 print(f"  미래 unmask(조건): tbill(MASK_FUTURE_TBILL={MASK_FUTURE_TBILL}) + metab{FUTURE_UNMASK_MACRO_COLS}")
 print(f"  ENCODER_MASK_SP=True / NF-GARCH σ-leak fix: evaluate_test forward-σ 자동 적용")

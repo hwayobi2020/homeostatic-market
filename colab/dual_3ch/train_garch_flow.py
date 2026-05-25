@@ -694,7 +694,11 @@ class MambaFlowAR(nn.Module):
         L_cur = x.shape[1]
         if ENCODER_MASK_SP:
             x = x.clone()
-            x[:, :, SP_CH] = 0.0   # encoder 만 sp_return 무시 (prevret/teacher forcing 은 별도 경로라 유지)
+            # 미래 sp 만 0 마스크.  과거 sp 시퀀스는 인코더가 봐야 좌측 skew(폭락 비대칭)를
+            # 학습한다 (2026-05-25 진단: 과거까지 전체 마스크 시 macroenc sim skew 부호가
+            # 뒤집힘 +1.11).  미래 sp 는 AR rollout 의 prevret(flow head 직접)으로 전달되므로
+            # 마스크해도 무방 (인코더는 미래엔 거시 경로만 보게 됨 = macroenc 정신 유지).
+            x[:, self.past_len:, SP_CH] = 0.0
         h = self.input_proj(x) + self.pos_emb[:L_cur].unsqueeze(0)
         h = self.mamba(h)
         return h
