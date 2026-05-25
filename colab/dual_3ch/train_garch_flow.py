@@ -165,6 +165,78 @@ class StandardStudentT(Distribution):
         return torch.zeros(context.shape[0], *self._shape, device=context.device)
 
 
+class SkewStudentT(Distribution):
+    """Hansen (1994) standardized skewed Student-t flow base.
+
+    df fixed (= FLOW_BASE_DF); skewness lambda is LEARNABLE (in (-0.99, 0.99) via
+    tanh, init 0 = symmetric), so the flow learns the innovation asymmetry -- the
+    base *injects* the left-skew the spline failed to learn.  Density (mean 0,
+    var 1) and inverse-CDF sampler verified numerically (integral=1, sample
+    moments match density).  lambda<0 => left skew (crash asymmetry).
+    """
+
+    def __init__(self, shape, df=7.0):
+        super().__init__()
+        if df <= 2.0:
+            raise ValueError("skew-t base needs df > 2")
+        self._shape = torch.Size(shape)
+        self.df = float(df)
+        self._lam_raw = nn.Parameter(torch.zeros(()))      # lambda=0 init (symmetric)
+        self.register_buffer("_dev", torch.zeros(1))
+        e = self.df
+        self._logc = (math.lgamma((e + 1) / 2) - 0.5 * math.log(math.pi * (e - 2))
+                      - math.lgamma(e / 2))
+        self._cval = math.exp(self._logc)
+
+    def _lam(self):
+        return torch.tanh(self._lam_raw) * 0.99
+
+    def _ab(self, lam):
+        e = self.df
+        a = 4.0 * lam * self._cval * (e - 2.0) / (e - 1.0)
+        b = torch.sqrt(1.0 + 3.0 * lam ** 2 - a ** 2)
+        return a, b
+
+    def _log_prob(self, inputs, context=None):
+        e = self.df
+        lam = self._lam()
+        a, b = self._ab(lam)
+        z = inputs
+        denom = torch.where(z < (-a / b), 1.0 - lam, 1.0 + lam)
+        m = b * z + a
+        inner = 1.0 + (m / denom) ** 2 / (e - 2.0)
+        logg = torch.log(b) + self._logc - (e + 1.0) / 2.0 * torch.log(inner)
+        return logg.reshape(inputs.shape[0], -1).sum(dim=1)
+
+    def _inv_cdf(self, u):
+        from scipy.stats import t as _t
+        e = self.df
+        lam = float(self._lam())
+        a = 4.0 * lam * self._cval * (e - 2.0) / (e - 1.0)
+        b = math.sqrt(1.0 + 3.0 * lam ** 2 - a ** 2)
+        s = math.sqrt((e - 2.0) / e)
+        un = np.clip(u.detach().cpu().numpy(), 1e-6, 1.0 - 1e-6)
+        cond = un < (1.0 - lam) / 2.0
+        z1 = (1.0 / b) * ((1.0 - lam) * s * _t.ppf(un / (1.0 - lam), e) - a)
+        z2 = (1.0 / b) * ((1.0 + lam) * s
+                          * _t.ppf(0.5 + (un - (1.0 - lam) / 2.0) / (1.0 + lam), e) - a)
+        zn = np.where(cond, z1, z2)
+        return torch.as_tensor(zn, device=u.device, dtype=u.dtype)
+
+    def _sample(self, num_samples, context=None):
+        if context is None:
+            u = torch.rand(num_samples, *self._shape, device=self._dev.device)
+            return self._inv_cdf(u)
+        cs = context.shape[0]
+        u = torch.rand(cs * num_samples, *self._shape, device=context.device)
+        return self._inv_cdf(u).reshape(cs, num_samples, *self._shape)
+
+    def _mean(self, context=None):
+        if context is None:
+            return torch.zeros(1, *self._shape, device=self._dev.device)
+        return torch.zeros(context.shape[0], *self._shape, device=context.device)
+
+
 # =====================================================================
 # Data loader (z-score, shifted sp, masked future macro)
 # =====================================================================
@@ -593,7 +665,7 @@ class MambaFlowAR(nn.Module):
             raise ValueError(f"Unknown encoder_type: {self.encoder_type!r}")
 
         # 1D Conditional NSF (same spec as train_flow_seq.build_1d_cond_flow).
-        base = StandardStudentT(shape=[1], df=FLOW_BASE_DF)
+        base = SkewStudentT(shape=[1], df=FLOW_BASE_DF)
         transforms = []
         for _ in range(n_flow_layers):
             transforms.append(MaskedPiecewiseRationalQuadraticAutoregressiveTransform(
@@ -1146,6 +1218,11 @@ def evaluate_test(model, best_state, test_csv, cond_stats, target_stats,
     print(f"    skew act/sim      = {skew_a:+.4f} / {skew_s:+.4f}   "
           f"(GARCH ~ symmetric 0; flow should track actual left-skew)")
     print(f"    exkurt act/sim    = {kurt_a:+.4f} / {kurt_s:+.4f}")
+    try:
+        _lam = float(model.flow._distribution._lam())
+        print(f"    [skew-t base] learned lambda = {_lam:+.4f}  (lambda<0 = left skew)")
+    except Exception:
+        pass
     print(f"    VaR1   act/sim/D  = {var1_a:+.5f} / {var1_s:+.5f} / "
           f"{var1_s - var1_a:+.5f}")
     print(f"    CVaR1  act/sim/D  = {cv1_a:+.5f} / {cv1_s:+.5f} / "
