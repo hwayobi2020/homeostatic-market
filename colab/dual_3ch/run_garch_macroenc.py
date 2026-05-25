@@ -61,7 +61,8 @@ def set_cond_cols(cols):
 set_cond_cols(ENC_COLS)
 T.MASK_FUTURE_TBILL = MASK_FUTURE_TBILL
 T.FUTURE_UNMASK_MACRO_COLS = FUTURE_UNMASK_MACRO_COLS   # 미래 metab 경로 unmask (조건)
-T.ENCODER_MASK_SP = True          # encoder 가 sp_return 무시 (거시만 잠재맥락)
+T.ENCODER_MASK_SP = False         # sp 를 인코더가 다시 보게 (MLP 는 per-step 독립이라 sp 마스크
+                                  #   시 좌측 skew 신호인 직전 수익률을 잃음 → False 로 복원)
 # metab_13w 가 encoder 입력(ENC_COLS)에 있어야 미래 unmask 가 작동 (silent-zero 방지)
 for _c in FUTURE_UNMASK_MACRO_COLS:
     if _c not in ENC_COLS:
@@ -69,7 +70,7 @@ for _c in FUTURE_UNMASK_MACRO_COLS:
 spec_base = dict(BEST_SPECS["mlp"])
 
 print(f"[macroenc-garch] {len(FOLDS)} fold x {len(SEEDS)} seed")
-print(f"  encoder: 과거 sp + 거시(tbill,ads,wti,metab_13w);  미래 sp 만 0-mask")
+print(f"  encoder: sp + 거시(tbill,ads,wti,metab_13w)  (ENCODER_MASK_SP=False, sp 봄)")
 print(f"  flow head 직접: prevret(sp_return z_t) + volDC({DC_COLS}=GARCH σ)")
 print(f"  미래 unmask(조건): tbill(MASK_FUTURE_TBILL={MASK_FUTURE_TBILL}) + metab{FUTURE_UNMASK_MACRO_COLS}")
 print(f"  ENCODER_MASK_SP=True / NF-GARCH σ-leak fix: evaluate_test forward-σ 자동 적용")
