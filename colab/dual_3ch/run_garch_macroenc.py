@@ -88,7 +88,8 @@ for fold in FOLDS:
             continue
         spec = dict(spec_base)
         spec.update(fold=fold, seed=seed, tag=tag,
-                    extra_context_channels=DC_COLS, direct_prev_return=True)
+                    extra_context_channels=DC_COLS, direct_prev_return=True,
+                    use_past_summary=True)
         print(f"\n[garch-flow macroenc] {tag} fold={fold}")
         try:
             main_worker(spec)

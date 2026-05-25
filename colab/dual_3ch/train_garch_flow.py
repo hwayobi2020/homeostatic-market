@@ -620,6 +620,7 @@ class MambaFlowAR(nn.Module):
                  extra_context_dim=0, encoder_type="mamba",
                  transformer_n_heads=4, mlp_num_layers=2,
                  direct_prev_return=False, direct_future_dim=0,
+                 use_past_summary=False,
                  past_len=PAST_LEN, future_len=FUTURE_LEN):
         super().__init__()
         self.d_input           = d_input
@@ -627,8 +628,12 @@ class MambaFlowAR(nn.Module):
         self.extra_context_dim = extra_context_dim
         self.direct_prev_dim   = 1 if direct_prev_return else 0
         self.direct_future_dim = direct_future_dim
+        self.use_past_summary  = use_past_summary
+        # 과거 52주를 Mamba 로 누적 요약(origin-frozen) → flow context 에 추가하는 차원.
+        self.past_summary_dim  = d_model if use_past_summary else 0
         self.flow_context_dim  = (d_model + extra_context_dim
-                                  + self.direct_prev_dim + direct_future_dim)
+                                  + self.direct_prev_dim + direct_future_dim
+                                  + self.past_summary_dim)
         self.past_len          = past_len
         self.future_len        = future_len
         self.L                 = past_len + future_len
@@ -663,6 +668,20 @@ class MambaFlowAR(nn.Module):
             self.mamba = NoneEncoder(d_model=d_model)
         else:
             raise ValueError(f"Unknown encoder_type: {self.encoder_type!r}")
+
+        # 과거 시계열 요약기: MLP/flow 는 시점을 못 잇으므로(per-step), 과거 past_len 주를
+        # Mamba 로 누적해 origin 요약 벡터를 만들어 flow context 에 더한다.  AR rollout
+        # 동안 과거는 origin 고정이라 1회만 계산해 broadcast(frozen).  과거 sp 도 본다
+        # (ENCODER_MASK_SP 무관 — 좌측 skew 신호가 과거 수익률 패턴에 있음).
+        if use_past_summary:
+            self.past_input_proj = nn.Linear(d_input, d_model)
+            self.past_pos_emb = nn.Parameter(torch.zeros(past_len, d_model))
+            nn.init.normal_(self.past_pos_emb, std=0.02)
+            self.past_encoder = MambaEncoder(
+                d_model=d_model, n_layers=n_mamba_layers,
+                d_state=MAMBA_D_STATE, d_conv=MAMBA_D_CONV, expand=MAMBA_EXPAND,
+                dropout=dropout,
+            )
 
         # 1D Conditional NSF (same spec as train_flow_seq.build_1d_cond_flow).
         base = SkewStudentT(shape=[1], df=FLOW_BASE_DF)
@@ -703,6 +722,17 @@ class MambaFlowAR(nn.Module):
         h = self.mamba(h)
         return h
 
+    def encode_past(self, x):
+        """과거 past_len 주만 Mamba 로 누적 → origin 요약 (B, d_model).
+
+        과거 [0, past_len) 구간만 사용.  ENCODER_MASK_SP 적용 안 함 (과거 sp 패턴 =
+        좌측 skew 신호).  마지막 시점(누적 끝) 출력을 origin 요약으로 → AR 동안 frozen.
+        """
+        xp = x[:, :self.past_len, :]                             # (B, past_len, N_CH)
+        h = self.past_input_proj(xp) + self.past_pos_emb.unsqueeze(0)
+        h = self.past_encoder(h)                                 # (B, past_len, d_model)
+        return h[:, -1, :]                                       # (B, d_model) origin 요약
+
     def log_prob(self, x_input, target_path, extra_context=None):
         """Teacher-forced per-origin log probability summed over future steps.
 
@@ -719,6 +749,9 @@ class MambaFlowAR(nn.Module):
         h = self.encode(x_input)                                # (B, L, d_model)
         h_future = h[:, self.past_len:, :]                      # (B, T, d_model)
         ctx_parts = [h_future]
+        if self.use_past_summary:
+            past_sum = self.encode_past(x_input)               # (B, d_model)
+            ctx_parts.append(past_sum.unsqueeze(1).expand(-1, T, -1))
         if self.direct_prev_dim > 0:
             # teacher-forced previous return at each future step (shifted SP channel)
             prev_ret = x_input[:, self.past_len:, SP_CH:SP_CH + 1]   # (B, T, 1)
@@ -779,6 +812,14 @@ class MambaFlowAR(nn.Module):
         else:
             extra_rep = None
 
+        # 과거 요약(origin-frozen): 1회 계산 → 모든 sim path 로 broadcast (AR 동안 고정)
+        if self.use_past_summary:
+            past_sum = self.encode_past(x_past)                  # (B, d_model)
+            past_sum_rep = past_sum.unsqueeze(1).expand(
+                B, n_sim, -1).contiguous().view(B * n_sim, -1)
+        else:
+            past_sum_rep = None
+
         # 미래 unmask macro (조건부 시나리오 입력) — next_input 에 채울 채널 인덱스/값
         _unmask_idx = [COND_COLS.index(c) for c in FUTURE_UNMASK_MACRO_COLS
                        if c in COND_COLS]
@@ -803,6 +844,8 @@ class MambaFlowAR(nn.Module):
             h_seq = self.encode(seq)                              # (BN, L_cur, d_model)
             h_tau = h_seq[:, -1, :]                               # (BN, d_model)
             ctx_parts = [h_tau]
+            if self.use_past_summary:
+                ctx_parts.append(past_sum_rep)
             if self.direct_prev_dim > 0:
                 ctx_parts.append(last_sp.unsqueeze(-1))           # (BN, 1) prev return
             if self.direct_future_dim > 0:
@@ -929,6 +972,7 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
           extra_cond_cols=None, encoder_type="mamba",
           transformer_n_heads=4, mlp_num_layers=2,
           direct_prev_return=False, direct_future_dim=0,
+          use_past_summary=False,
           max_epoch=MAX_EPOCH, patience=PATIENCE, batch=BATCH, lr=LR,
           device="cuda", seed=2026):
     torch.manual_seed(seed); np.random.seed(seed)
@@ -970,6 +1014,7 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
         mlp_num_layers=mlp_num_layers,
         direct_prev_return=direct_prev_return,
         direct_future_dim=direct_future_dim,
+        use_past_summary=use_past_summary,
     ).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"    model params  = {n_params:,}  "
@@ -1477,6 +1522,7 @@ def main_worker(args):
             encoder_type="mamba",
             transformer_n_heads=4, mlp_num_layers=2,
             direct_prev_return=False,
+            use_past_summary=False,
         )
         merged = {**defaults, **args}
         if "fold" not in merged:
@@ -1554,6 +1600,7 @@ def main_worker(args):
         mlp_num_layers=getattr(args, "mlp_num_layers", 2),
         direct_prev_return=getattr(args, "direct_prev_return", False),
         direct_future_dim=direct_future_dim,
+        use_past_summary=getattr(args, "use_past_summary", False),
         max_epoch=args.max_epoch, patience=args.patience,
         batch=args.batch, lr=args.lr, device=device, seed=args.seed,
     )
