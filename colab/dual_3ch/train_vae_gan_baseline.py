@@ -37,6 +37,7 @@ from train_garch_flow import (  # noqa: E402
     garch_preprocess_fold, compute_valid_mask, cached_load_windows_seq,
     COND_COLS, TBILL_CH, PAST_LEN, FUTURE_LEN, SP_CH,
     crps_pooled, crps_ensemble_sample, compute_var, compute_cvar, compute_emd_1d,
+    forward_garch_rescale,
 )
 
 N_CH = len(COND_COLS)
@@ -259,16 +260,28 @@ def run_fold(model_kind, fold, args, device):
     sim_zt = sim_paths_z * tsd + tmu
     actual_zt = actual_z * tsd + tmu
 
-    # raw rescale via per-(origin,step) GARCH sigma_t / mu_t (same as garch_flow)
+    # raw rescale (same as garch_flow, look-ahead 제거):
+    #   actual = filtered σ (realized) 복원 = 실현 수익률 (정답 라벨, 누수 아님)
+    #   sim    = origin 부터 forward GARCH σ 예측 (미래 실현 σ 안 씀)
+    for _c in ("garch_omega", "garch_alpha", "garch_beta"):
+        if _c not in df_te.columns:
+            raise SystemExit(f"[FATAL] test csv lacks {_c} -> *_garch.csv 재생성 필요 "
+                             "(garch_preprocess_fold 최신 버전으로)")
     gsig = df_te["garch_sigma"].to_numpy(float)
     gmu = df_te["garch_mu"].to_numpy(float)
+    gz = df_te["sp_return"].to_numpy(float)              # = z_t (표준화 잔차)
     oidx = np.where(valid_mask)[0]
     sig = np.array([[gsig[int(oidx[i]) + PAST_LEN + t] for t in range(FUTURE_LEN)]
                     for i in range(n_orig)])
     mu = np.array([[gmu[int(oidx[i]) + PAST_LEN + t] for t in range(FUTURE_LEN)]
                    for i in range(n_orig)])
-    sim_paths_raw = sim_zt * sig[:, None, :] + mu[:, None, :]
-    actual_raw = actual_zt * sig + mu
+    actual_raw = actual_zt * sig + mu                    # 실현 수익률 복원
+    om = float(df_te["garch_omega"].iloc[0]); al = float(df_te["garch_alpha"].iloc[0])
+    be = float(df_te["garch_beta"].iloc[0]); mu_c = float(gmu[0])
+    orow = oidx + (PAST_LEN - 1)                         # origin (마지막 관측) 행
+    s2_orig = gsig[orow] ** 2
+    e2_orig = (gz[orow] * gsig[orow]) ** 2               # ε_origin = z_origin·σ_origin
+    sim_paths_raw = forward_garch_rescale(sim_zt, s2_orig, e2_orig, om, al, be, mu_c)
 
     af = actual_raw.ravel(); sf = sim_paths_raw.ravel()
     crps_m, _ = crps_pooled(sim_paths_raw, actual_raw)

@@ -1093,6 +1093,38 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
 # Evaluate on test (closed-form NLL + AR rollout scenario metrics)
 # =====================================================================
 
+def forward_garch_rescale(sim_zt, s2_orig, e2_orig, om, al, be, mu_c):
+    """표준화 잔차 z_t (sim) → raw return, **forward GARCH σ 예측**으로 복원.
+
+    look-ahead 제거: 미래 σ_h 를 실현 변동성(filtered)으로 읽지 않고, origin 상태
+    (σ²_origin, ε²_origin)에서 시작해 *생성된* 수익률로 한 주씩 분산을 recurse 한다
+    (FHS 의 simulate_fhs 와 동일 구조).  각 시나리오 path 마다 σ_h 가 달라진다.
+
+      σ²_h = ω + α·ε²_{h-1} + β·σ²_{h-1}   (h=0 의 prev = origin 상태)
+      r_h  = z_h · σ_h + μ ,  ε_h = z_h · σ_h
+
+    Args:
+      sim_zt   : (n_orig, n_sim, T)  표준화 잔차 z_t 레벨 (flow/VAE/GAN 출력 복원치)
+      s2_orig  : (n_orig,)  origin σ² (return²)
+      e2_orig  : (n_orig,)  origin ε² (return²)
+      om,al,be : GARCH(1,1) 파라미터 (return 단위 scalar)
+      mu_c     : 상수 평균 (return 단위 scalar)
+    Returns: (n_orig, n_sim, T)  raw return.
+    """
+    sim_zt = np.asarray(sim_zt, dtype=np.float64)
+    n_orig, n_sim, T = sim_zt.shape
+    out = np.empty_like(sim_zt)
+    for i in range(n_orig):
+        s2 = np.full(n_sim, float(s2_orig[i]))
+        e2 = np.full(n_sim, float(e2_orig[i]))
+        for h in range(T):
+            s2 = np.maximum(om + al * e2 + be * s2, 1e-18)   # σ²_h (forward, no look-ahead)
+            eps = sim_zt[i, :, h] * np.sqrt(s2)              # ε_h = z_h · σ_h
+            out[i, :, h] = eps + mu_c
+            e2 = eps ** 2                                    # ε²_{h} for next step
+    return out
+
+
 @torch.no_grad()
 def evaluate_test(model, best_state, test_csv, cond_stats, target_stats,
                   result_prefix, n_sim, seed, device, chunk_origins=8,
@@ -1163,22 +1195,37 @@ def evaluate_test(model, best_state, test_csv, cond_stats, target_stats,
     sim_paths_zt = sim_paths_z * tsd + tmu          # GARCH-std residual z_t level
     actual_zt    = actual_z   * tsd + tmu
 
-    # --- NF-GARCH: restore raw return units  r = z_t * sigma_t + mu_t ----------
-    # sigma_t / mu_t are per-date GARCH outputs carried in the *_garch.csv test
-    # df; align to each (origin ii, step tau) = df row index (t + PAST_LEN + tau).
+    # --- NF-GARCH: restore raw return units --------------------------------------
+    # actual: 실현 σ_t (filtered) 로 복원 → 실현 수익률 그대로 복원 (ground truth, 누수 아님).
+    # sim   : origin 부터 *forward* GARCH σ 예측으로 복원 (look-ahead 제거).  미래 실현 σ 안 씀.
     if "garch_sigma" not in df_te.columns:
         sys.exit("[FATAL] test csv lacks garch_sigma -> not GARCH-preprocessed")
+    for _c in ("garch_omega", "garch_alpha", "garch_beta"):
+        if _c not in df_te.columns:
+            sys.exit(f"[FATAL] test csv lacks {_c} -> regen *_garch.csv "
+                     "(garch_preprocess_fold 재실행 필요)")
     _gsig = df_te["garch_sigma"].to_numpy(dtype=float)
     _gmu  = df_te["garch_mu"].to_numpy(dtype=float)
+    _gz   = df_te["sp_return"].to_numpy(dtype=float)         # = z_t (표준화 잔차)
     _oidx = np.where(valid_mask)[0]
+    # actual: filtered σ (realized) — 미래 실현 수익률 복원용 (정답 라벨이므로 누수 아님)
     sigma_arr = np.array([[_gsig[int(_oidx[ii]) + PAST_LEN + tau]
                            for tau in range(FUTURE_LEN)]
                           for ii in range(n_origins)])                # (n_v, T)
     mu_arr    = np.array([[_gmu[int(_oidx[ii]) + PAST_LEN + tau]
                            for tau in range(FUTURE_LEN)]
                           for ii in range(n_origins)])
-    sim_paths_raw = sim_paths_zt * sigma_arr[:, None, :] + mu_arr[:, None, :]
     actual_raw    = actual_zt    * sigma_arr            + mu_arr
+    # sim: forward GARCH σ 예측 (FHS 와 동일).  origin 상태 = 마지막 관측행(t+PAST_LEN-1).
+    _om = float(df_te["garch_omega"].iloc[0])
+    _al = float(df_te["garch_alpha"].iloc[0])
+    _be = float(df_te["garch_beta"].iloc[0])
+    _mu = float(_gmu[0])
+    _orow = _oidx + (PAST_LEN - 1)                            # origin (마지막 관측) 행
+    _s2_orig = _gsig[_orow] ** 2
+    _e2_orig = (_gz[_orow] * _gsig[_orow]) ** 2               # ε_origin = z_origin·σ_origin
+    sim_paths_raw = forward_garch_rescale(sim_paths_zt, _s2_orig, _e2_orig,
+                                          _om, _al, _be, _mu)
 
     # reference: vol-removed residual CRPS (shape only, GARCH owns the scale)
     crps_zt = crps_pooled(sim_paths_zt, actual_zt)[0]
@@ -1354,6 +1401,12 @@ def garch_preprocess_fold(folds_dir, fold, out_dir, scale=100.0):
                        dist="t").fix(res.params)
     sigma_full = np.asarray(fixed.conditional_volatility) / scale        # (N,)
     mu_const = float(res.params["mu"]) / scale                          # constant
+    # GARCH(1,1) 파라미터를 RETURN 단위로 변환 (eval forward σ 예측용, look-ahead 제거).
+    #   fit 은 r*scale 에서: σ²_s = ω + α·ε²_s + β·σ²_s.  σ_s = σ_ret·scale 대입 →
+    #   σ²_ret = ω/scale² + α·ε²_ret + β·σ²_ret  ⇒  ω_ret=ω/scale², α_ret=α, β_ret=β.
+    om_ret = float(res.params["omega"]) / (scale ** 2)
+    al_ret = float(res.params["alpha[1]"])
+    be_ret = float(res.params["beta[1]"])
 
     eps = 1e-12
     sig_map = dict(zip(full["date"], sigma_full))
@@ -1368,6 +1421,9 @@ def garch_preprocess_fold(folds_dir, fold, out_dir, scale=100.0):
             sys.exit(f"[FATAL] garch sigma NaN in split {sp} (date align failed)")
         d["garch_mu"]       = mu_const
         d["garch_sigma"]    = s
+        d["garch_omega"]    = om_ret      # return-unit GARCH params (eval forward σ)
+        d["garch_alpha"]    = al_ret
+        d["garch_beta"]     = be_ret
         d["sp_return"]      = (r - mu_const) / (s + eps)               # z_t
         d["sp_std_13w"]     = s
         d["sp_log_std_13w"] = np.log(s + eps)
