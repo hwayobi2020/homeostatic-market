@@ -78,6 +78,7 @@ sys.path.insert(0, HERE)
 try:
     from nflows.flows.base import Flow
     from nflows.distributions.normal import StandardNormal
+    from nflows.distributions.base import Distribution
     from nflows.transforms import (
         CompositeTransform,
         MaskedPiecewiseRationalQuadraticAutoregressiveTransform,
@@ -111,6 +112,9 @@ N_FLOW_HIDDEN    = 64
 N_FLOW_BLOCKS    = 2
 N_FLOW_BINS      = 16
 FLOW_TAIL_BOUND  = 10.0
+FLOW_BASE_DF     = 7.0     # flow base = standardized Student-t(df).  Gaussian base +
+                          # bounded spline 가 꼬리에 bin 용량을 쓰게 만들어 모양(skew)을
+                          # 망친다는 가설 → t-base 로 꼬리를 base 에 맡기고 spline 은 shape 에.
 
 # Train recipe (matched to train_flow_seq.py)
 LR        = 1e-4
@@ -118,6 +122,47 @@ BATCH     = 32
 MAX_EPOCH = 60
 PATIENCE  = 30
 GRAD_CLIP = 1.0
+
+
+class StandardStudentT(Distribution):
+    """Standardized (unit-variance) Student-t flow base, fixed df.
+
+    T ~ StudentT(nu) has Var = nu/(nu-2); Z = T / a, a = sqrt(nu/(nu-2)), is
+    unit-variance.  Used as the flow base instead of StandardNormal so the spline
+    need not spend bin capacity manufacturing fat tails -- freeing capacity for
+    the conditional shape (skew).  Both Flow.log_prob and Flow.sample route noise
+    through this base, so it affects training AND AR sampling.
+    """
+
+    def __init__(self, shape, df=7.0):
+        super().__init__()
+        if df <= 2.0:
+            raise ValueError("StudentT base needs df > 2 for finite variance")
+        self._shape = torch.Size(shape)
+        self.df = float(df)
+        self._a = float((self.df / (self.df - 2.0)) ** 0.5)
+        self.register_buffer("_dev", torch.zeros(1))
+
+    def _tdist(self, device):
+        return torch.distributions.StudentT(
+            self.df, torch.zeros((), device=device), torch.ones((), device=device))
+
+    def _log_prob(self, inputs, context=None):
+        lp = self._tdist(inputs.device).log_prob(self._a * inputs) + math.log(self._a)
+        return lp.reshape(inputs.shape[0], -1).sum(dim=1)
+
+    def _sample(self, num_samples, context=None):
+        if context is None:
+            t = self._tdist(self._dev.device).sample((num_samples, *self._shape))
+            return t / self._a
+        cs = context.shape[0]
+        t = self._tdist(context.device).sample((cs * num_samples, *self._shape))
+        return (t / self._a).reshape(cs, num_samples, *self._shape)
+
+    def _mean(self, context=None):
+        if context is None:
+            return torch.zeros(1, *self._shape, device=self._dev.device)
+        return torch.zeros(context.shape[0], *self._shape, device=context.device)
 
 
 # =====================================================================
@@ -548,7 +593,7 @@ class MambaFlowAR(nn.Module):
             raise ValueError(f"Unknown encoder_type: {self.encoder_type!r}")
 
         # 1D Conditional NSF (same spec as train_flow_seq.build_1d_cond_flow).
-        base = StandardNormal(shape=[1])
+        base = StandardStudentT(shape=[1], df=FLOW_BASE_DF)
         transforms = []
         for _ in range(n_flow_layers):
             transforms.append(MaskedPiecewiseRationalQuadraticAutoregressiveTransform(
