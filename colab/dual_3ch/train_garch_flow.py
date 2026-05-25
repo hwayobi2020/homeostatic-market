@@ -629,8 +629,10 @@ class MambaFlowAR(nn.Module):
         self.direct_prev_dim   = 1 if direct_prev_return else 0
         self.direct_future_dim = direct_future_dim
         self.use_past_summary  = use_past_summary
-        # 과거 52주를 Mamba 로 누적 요약(origin-frozen) → flow context 에 추가하는 차원.
-        self.past_summary_dim  = d_model if use_past_summary else 0
+        # 과거 52주(주가+거시)를 가벼운 Mamba 로 누적 요약(origin-frozen) → flow context.
+        # d_model 통째(128)·3층은 851K 로 과적합 → 작은 요약 차원·1층으로 줄임.
+        PAST_SUMMARY_DIM = 64
+        self.past_summary_dim  = PAST_SUMMARY_DIM if use_past_summary else 0
         self.flow_context_dim  = (d_model + extra_context_dim
                                   + self.direct_prev_dim + direct_future_dim
                                   + self.past_summary_dim)
@@ -674,11 +676,12 @@ class MambaFlowAR(nn.Module):
         # 동안 과거는 origin 고정이라 1회만 계산해 broadcast(frozen).  과거 sp 도 본다
         # (ENCODER_MASK_SP 무관 — 좌측 skew 신호가 과거 수익률 패턴에 있음).
         if use_past_summary:
-            self.past_input_proj = nn.Linear(d_input, d_model)
-            self.past_pos_emb = nn.Parameter(torch.zeros(past_len, d_model))
+            self.past_input_proj = nn.Linear(d_input, self.past_summary_dim)
+            self.past_pos_emb = nn.Parameter(
+                torch.zeros(past_len, self.past_summary_dim))
             nn.init.normal_(self.past_pos_emb, std=0.02)
             self.past_encoder = MambaEncoder(
-                d_model=d_model, n_layers=n_mamba_layers,
+                d_model=self.past_summary_dim, n_layers=1,
                 d_state=MAMBA_D_STATE, d_conv=MAMBA_D_CONV, expand=MAMBA_EXPAND,
                 dropout=dropout,
             )
