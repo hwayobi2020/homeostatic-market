@@ -87,11 +87,10 @@ except ImportError:
     sys.exit("FATAL: nflows required.  pip install nflows")
 
 try:
-    from mamba_ssm import Mamba
+    from mambapy.mamba import MambaBlock, MambaConfig
 except ImportError:
-    sys.exit("FATAL: mamba-ssm required.  "
-             "pip install mamba-ssm causal-conv1d --no-build-isolation  "
-             "(GPU / CUDA only)")
+    sys.exit("FATAL: mambapy required.  pip install mambapy  "
+             "(pure PyTorch SSM, CPU/GPU 모두 작동)")
 
 # Reuse channel + window constants from train_flow_seq.py for full consistency
 from train_flow_seq import COND_COLS, TBILL_CH, PAST_LEN, FUTURE_LEN
@@ -1336,6 +1335,7 @@ def evaluate_test(model, best_state, test_csv, cond_stats, target_stats,
     print(f"    skew act/sim      = {skew_a:+.4f} / {skew_s:+.4f}   "
           f"(GARCH ~ symmetric 0; flow should track actual left-skew)")
     print(f"    exkurt act/sim    = {kurt_a:+.4f} / {kurt_s:+.4f}")
+    _lam = None
     try:
         _lam = float(model.flow._distribution._lam())
         print(f"    [skew-t base] learned lambda = {_lam:+.4f}  (lambda<0 = left skew)")
@@ -1419,6 +1419,9 @@ def evaluate_test(model, best_state, test_csv, cond_stats, target_stats,
         coverage_50      = cov50,
         coverage_80      = cov80,
         coverage_95      = cov95,
+        skew_actual      = skew_a, skew_sim   = skew_s,
+        exkurt_actual    = kurt_a, exkurt_sim = kurt_s,
+        skewt_lambda     = _lam,
     )
     return eval_metrics
 
