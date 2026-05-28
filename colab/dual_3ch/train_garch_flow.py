@@ -620,7 +620,7 @@ class MambaFlowAR(nn.Module):
                  extra_context_dim=0, encoder_type="mamba",
                  transformer_n_heads=4, mlp_num_layers=2,
                  direct_prev_return=False, direct_future_dim=0,
-                 use_past_summary=False,
+                 use_past_summary=False, past_encoder_type="mamba",
                  past_len=PAST_LEN, future_len=FUTURE_LEN):
         super().__init__()
         self.d_input           = d_input
@@ -680,11 +680,29 @@ class MambaFlowAR(nn.Module):
             self.past_pos_emb = nn.Parameter(
                 torch.zeros(past_len, self.past_summary_dim))
             nn.init.normal_(self.past_pos_emb, std=0.02)
-            self.past_encoder = MambaEncoder(
-                d_model=self.past_summary_dim, n_layers=1,
-                d_state=MAMBA_D_STATE, d_conv=MAMBA_D_CONV, expand=MAMBA_EXPAND,
-                dropout=dropout,
-            )
+            pet = past_encoder_type.lower()
+            self.past_encoder_type = pet
+            if pet == "mamba":
+                self.past_encoder = MambaEncoder(
+                    d_model=self.past_summary_dim, n_layers=1,
+                    d_state=MAMBA_D_STATE, d_conv=MAMBA_D_CONV, expand=MAMBA_EXPAND,
+                    dropout=dropout)
+            elif pet == "lstm":
+                self.past_encoder = LSTMEncoder(
+                    d_model=self.past_summary_dim, n_layers=1, dropout=dropout)
+            elif pet == "transformer":
+                # d=64 / 4heads = head_dim 16
+                self.past_encoder = TransformerEncoder(
+                    d_model=self.past_summary_dim, n_layers=1,
+                    n_heads=4, dropout=dropout)
+            elif pet == "mlp":
+                # per-step MLP, history 통로 사실상 없음 (floor baseline)
+                self.past_encoder = MLPEncoder(
+                    d_model=self.past_summary_dim, num_layers=1, dropout=dropout)
+            else:
+                raise ValueError(
+                    f"Unknown past_encoder_type: {past_encoder_type!r}; "
+                    f"choose from mamba/lstm/transformer/mlp")
 
         # 1D Conditional NSF (same spec as train_flow_seq.build_1d_cond_flow).
         base = SkewStudentT(shape=[1], df=FLOW_BASE_DF)
@@ -975,7 +993,7 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
           extra_cond_cols=None, encoder_type="mamba",
           transformer_n_heads=4, mlp_num_layers=2,
           direct_prev_return=False, direct_future_dim=0,
-          use_past_summary=False,
+          use_past_summary=False, past_encoder_type="mamba",
           max_epoch=MAX_EPOCH, patience=PATIENCE, batch=BATCH, lr=LR,
           device="cuda", seed=2026):
     torch.manual_seed(seed); np.random.seed(seed)
@@ -1018,6 +1036,7 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
         direct_prev_return=direct_prev_return,
         direct_future_dim=direct_future_dim,
         use_past_summary=use_past_summary,
+        past_encoder_type=past_encoder_type,
     ).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"    model params  = {n_params:,}  "
@@ -1526,6 +1545,7 @@ def main_worker(args):
             transformer_n_heads=4, mlp_num_layers=2,
             direct_prev_return=False,
             use_past_summary=False,
+            past_encoder_type="mamba",
         )
         merged = {**defaults, **args}
         if "fold" not in merged:
@@ -1604,6 +1624,7 @@ def main_worker(args):
         direct_prev_return=getattr(args, "direct_prev_return", False),
         direct_future_dim=direct_future_dim,
         use_past_summary=getattr(args, "use_past_summary", False),
+        past_encoder_type=getattr(args, "past_encoder_type", "mamba"),
         max_epoch=args.max_epoch, patience=args.patience,
         batch=args.batch, lr=args.lr, device=device, seed=args.seed,
     )

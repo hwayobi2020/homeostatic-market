@@ -33,8 +33,10 @@ from best_specs import BEST_SPECS         # noqa: E402
 
 RESULT_DIR = os.path.join(HERE, "result")
 FOLDS_DIR = os.path.join(ROOT, "data", "folds_v33_vix_expanding")
-FOLDS = ["F_gfc", "F_long_A", "F_long_B_origin", "F_long"]
+FOLDS = ["F_gfc"]         # past_encoder_type sweep 은 F_gfc 1 fold 만 (2026-05-28).
 SEEDS = [2026]            # garch-flow 패턴(fold별 single seed + per-origin DM).  늘리려면 추가.
+# 과거 시퀀스 요약 부품 비교: capacity (d=64, n=1) 동일, encoder 종류만 sweep.
+PAST_ENCODER_TYPES = ["mamba", "lstm", "transformer", "mlp"]
 
 # encoder 가 보는 채널(거시) + sp_return(마스크되어 prevret/teacher-forcing 용으로만 잔류)
 ENC_COLS = ["sp_return", "tbill_wr", "ads_lag", "wti_wr", "metab_13w"]
@@ -69,8 +71,9 @@ for _c in FUTURE_UNMASK_MACRO_COLS:
         raise SystemExit(f"[FATAL] FUTURE_UNMASK_MACRO_COLS {_c!r} 가 ENC_COLS 에 없음")
 spec_base = dict(BEST_SPECS["mlp"])
 
-print(f"[macroenc-garch] {len(FOLDS)} fold x {len(SEEDS)} seed")
-print(f"  encoder: sp + 거시(tbill,ads,wti,metab_13w)  (ENCODER_MASK_SP=False, sp 봄)")
+print(f"[macroenc-garch] {len(FOLDS)} fold x {len(PAST_ENCODER_TYPES)} past_enc x {len(SEEDS)} seed")
+print(f"  encoder(main): sp + 거시(tbill,ads,wti,metab_13w)  (ENCODER_MASK_SP=False, sp 봄)")
+print(f"  past summary : {PAST_ENCODER_TYPES} (capacity d=64, n=1 동일)")
 print(f"  flow head 직접: prevret(sp_return z_t) + volDC({DC_COLS}=GARCH σ)")
 print(f"  미래 unmask(조건): tbill(MASK_FUTURE_TBILL={MASK_FUTURE_TBILL}) + metab{FUTURE_UNMASK_MACRO_COLS}")
 print(f"  ENCODER_MASK_SP=True / NF-GARCH σ-leak fix: evaluate_test forward-σ 자동 적용")
@@ -80,21 +83,22 @@ for fold in FOLDS:
                for s in ("train", "val", "test")):
         print(f"[skip {fold}] fold CSV 없음")
         continue
-    for seed in SEEDS:
-        tag = f"macroenc_s{seed}"
-        sp = os.path.join(RESULT_DIR, f"garch_flow_ar_{tag}_{fold}_summary.json")
-        if os.path.exists(sp):
-            print(f"[skip] {os.path.basename(sp)}")
-            continue
-        spec = dict(spec_base)
-        spec.update(fold=fold, seed=seed, tag=tag,
-                    extra_context_channels=DC_COLS, direct_prev_return=True,
-                    use_past_summary=True)
-        print(f"\n[garch-flow macroenc] {tag} fold={fold}")
-        try:
-            main_worker(spec)
-        except Exception as e:
-            print(f"[FAIL] {tag} {fold}: {e!r}")
+    for past_enc in PAST_ENCODER_TYPES:
+        for seed in SEEDS:
+            tag = f"macroenc_past{past_enc.capitalize()}_s{seed}"
+            sp = os.path.join(RESULT_DIR, f"garch_flow_ar_{tag}_{fold}_summary.json")
+            if os.path.exists(sp):
+                print(f"[skip] {os.path.basename(sp)}")
+                continue
+            spec = dict(spec_base)
+            spec.update(fold=fold, seed=seed, tag=tag,
+                        extra_context_channels=DC_COLS, direct_prev_return=True,
+                        use_past_summary=True, past_encoder_type=past_enc)
+            print(f"\n[garch-flow macroenc] {tag} fold={fold} past_enc={past_enc}")
+            try:
+                main_worker(spec)
+            except Exception as e:
+                print(f"[FAIL] {tag} {fold}: {e!r}")
 
 print("\n[done] macroenc-garch 학습 완료.")
 print("  per-origin CRPS npy: garch_flow_ar_macroenc_s{seed}_{fold}_crps_per_origin.npy")
