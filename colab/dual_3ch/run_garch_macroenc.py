@@ -33,11 +33,12 @@ from best_specs import BEST_SPECS         # noqa: E402
 
 RESULT_DIR = os.path.join(HERE, "result")
 FOLDS_DIR = os.path.join(ROOT, "data", "folds_v33_vix_expanding")
-FOLDS = ["F_gfc", "F_long_A", "F_long_B_origin", "F_long"]   # MLP 과거요약 4 fold 전체 (2026-05-28).
+FOLDS = ["F_gfc"]         # Mamba 차원 절반(d=32) F_gfc 비교 (2026-05-28).
 SEEDS = [2026]            # garch-flow 패턴(fold별 single seed + per-origin DM).  늘리려면 추가.
-# 과거 시퀀스 요약 부품: F_gfc sweep 에서 MLP 가 calibration best + deterministic 좌측 skew
-#   (Mamba 는 mamba-ssm 커널 비결정성으로 skew 가 −0.55~−0.09 흔들림) → MLP 로 4 fold 검증.
-PAST_ENCODER_TYPES = ["mlp"]
+# Mamba 과거요약 차원 절반(64→32, Mamba params ~1/4) — 더 줄이면 나아지나 확인.
+#   tag 에 d{dim} 구분 → 기존 d=64 결과(pastMamba_s2026) 보존.
+PAST_ENCODER_TYPES = ["mamba"]
+PAST_SUMMARY_DIM = 32
 
 # encoder 가 보는 채널(거시) + sp_return(마스크되어 prevret/teacher-forcing 용으로만 잔류)
 ENC_COLS = ["sp_return", "tbill_wr", "ads_lag", "wti_wr", "metab_13w"]
@@ -74,7 +75,7 @@ spec_base = dict(BEST_SPECS["mlp"])
 
 print(f"[macroenc-garch] {len(FOLDS)} fold x {len(PAST_ENCODER_TYPES)} past_enc x {len(SEEDS)} seed")
 print(f"  encoder(main): sp + 거시(tbill,ads,wti,metab_13w)  (ENCODER_MASK_SP=False, sp 봄)")
-print(f"  past summary : {PAST_ENCODER_TYPES} (capacity d=64, n=1 동일)")
+print(f"  past summary : {PAST_ENCODER_TYPES} (dim={PAST_SUMMARY_DIM}, n=1)")
 print(f"  flow head 직접: prevret(sp_return z_t) + volDC({DC_COLS}=GARCH σ)")
 print(f"  미래 unmask(조건): tbill(MASK_FUTURE_TBILL={MASK_FUTURE_TBILL}) + metab{FUTURE_UNMASK_MACRO_COLS}")
 print(f"  ENCODER_MASK_SP=True / NF-GARCH σ-leak fix: evaluate_test forward-σ 자동 적용")
@@ -86,7 +87,7 @@ for fold in FOLDS:
         continue
     for past_enc in PAST_ENCODER_TYPES:
         for seed in SEEDS:
-            tag = f"macroenc_past{past_enc.capitalize()}_s{seed}"
+            tag = f"macroenc_past{past_enc.capitalize()}_d{PAST_SUMMARY_DIM}_s{seed}"
             sp = os.path.join(RESULT_DIR, f"garch_flow_ar_{tag}_{fold}_summary.json")
             if os.path.exists(sp):
                 print(f"[skip] {os.path.basename(sp)}")
@@ -94,7 +95,8 @@ for fold in FOLDS:
             spec = dict(spec_base)
             spec.update(fold=fold, seed=seed, tag=tag,
                         extra_context_channels=DC_COLS, direct_prev_return=True,
-                        use_past_summary=True, past_encoder_type=past_enc)
+                        use_past_summary=True, past_encoder_type=past_enc,
+                        past_summary_dim=PAST_SUMMARY_DIM)
             print(f"\n[garch-flow macroenc] {tag} fold={fold} past_enc={past_enc}")
             try:
                 main_worker(spec)

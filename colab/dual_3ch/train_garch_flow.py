@@ -621,6 +621,7 @@ class MambaFlowAR(nn.Module):
                  transformer_n_heads=4, mlp_num_layers=2,
                  direct_prev_return=False, direct_future_dim=0,
                  use_past_summary=False, past_encoder_type="mamba",
+                 past_summary_dim=64,
                  past_len=PAST_LEN, future_len=FUTURE_LEN):
         super().__init__()
         self.d_input           = d_input
@@ -629,10 +630,10 @@ class MambaFlowAR(nn.Module):
         self.direct_prev_dim   = 1 if direct_prev_return else 0
         self.direct_future_dim = direct_future_dim
         self.use_past_summary  = use_past_summary
-        # 과거 52주(주가+거시)를 가벼운 Mamba 로 누적 요약(origin-frozen) → flow context.
+        # 과거 52주(주가+거시)를 가벼운 요약기(origin-frozen) → flow context.
         # d_model 통째(128)·3층은 851K 로 과적합 → 작은 요약 차원·1층으로 줄임.
-        PAST_SUMMARY_DIM = 64
-        self.past_summary_dim  = PAST_SUMMARY_DIM if use_past_summary else 0
+        # past_summary_dim 으로 capacity sweep 가능 (Mamba params 는 차원² 비례).
+        self.past_summary_dim  = past_summary_dim if use_past_summary else 0
         self.flow_context_dim  = (d_model + extra_context_dim
                                   + self.direct_prev_dim + direct_future_dim
                                   + self.past_summary_dim)
@@ -993,7 +994,7 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
           extra_cond_cols=None, encoder_type="mamba",
           transformer_n_heads=4, mlp_num_layers=2,
           direct_prev_return=False, direct_future_dim=0,
-          use_past_summary=False, past_encoder_type="mamba",
+          use_past_summary=False, past_encoder_type="mamba", past_summary_dim=64,
           max_epoch=MAX_EPOCH, patience=PATIENCE, batch=BATCH, lr=LR,
           device="cuda", seed=2026):
     torch.manual_seed(seed); np.random.seed(seed)
@@ -1037,6 +1038,7 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
         direct_future_dim=direct_future_dim,
         use_past_summary=use_past_summary,
         past_encoder_type=past_encoder_type,
+        past_summary_dim=past_summary_dim,
     ).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"    model params  = {n_params:,}  "
@@ -1550,6 +1552,7 @@ def main_worker(args):
             direct_prev_return=False,
             use_past_summary=False,
             past_encoder_type="mamba",
+            past_summary_dim=64,
         )
         merged = {**defaults, **args}
         if "fold" not in merged:
@@ -1629,6 +1632,7 @@ def main_worker(args):
         direct_future_dim=direct_future_dim,
         use_past_summary=getattr(args, "use_past_summary", False),
         past_encoder_type=getattr(args, "past_encoder_type", "mamba"),
+        past_summary_dim=getattr(args, "past_summary_dim", 64),
         max_epoch=args.max_epoch, patience=args.patience,
         batch=args.batch, lr=args.lr, device=device, seed=args.seed,
     )
