@@ -33,10 +33,11 @@ from best_specs import BEST_SPECS         # noqa: E402
 
 RESULT_DIR = os.path.join(HERE, "result")
 FOLDS_DIR = os.path.join(ROOT, "data", "folds_v33_vix_expanding")
-FOLDS = ["F_gfc"]         # past_encoder_type sweep 은 F_gfc 1 fold 만 (2026-05-28).
+FOLDS = ["F_gfc", "F_long_A", "F_long_B_origin", "F_long"]   # MLP 과거요약 4 fold 전체 (2026-05-28).
 SEEDS = [2026]            # garch-flow 패턴(fold별 single seed + per-origin DM).  늘리려면 추가.
-# 과거 시퀀스 요약 부품 비교: capacity (d=64, n=1) 동일, encoder 종류만 sweep.
-PAST_ENCODER_TYPES = ["mamba", "lstm", "transformer", "mlp"]
+# 과거 시퀀스 요약 부품: F_gfc sweep 에서 MLP 가 calibration best + deterministic 좌측 skew
+#   (Mamba 는 mamba-ssm 커널 비결정성으로 skew 가 −0.55~−0.09 흔들림) → MLP 로 4 fold 검증.
+PAST_ENCODER_TYPES = ["mlp"]
 
 # encoder 가 보는 채널(거시) + sp_return(마스크되어 prevret/teacher-forcing 용으로만 잔류)
 ENC_COLS = ["sp_return", "tbill_wr", "ads_lag", "wti_wr", "metab_13w"]

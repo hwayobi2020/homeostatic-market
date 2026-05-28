@@ -19,8 +19,8 @@ except Exception:
 HERE = os.path.dirname(os.path.abspath(__file__))
 RESULT_DIR = os.path.join(HERE, "result")
 
-FOLD = "F_gfc"
 SEED = 2026
+FOLDS = ["F_gfc", "F_long_A", "F_long_B_origin", "F_long"]
 PAST_ENCODERS = ["Mamba", "Lstm", "Transformer", "Mlp"]
 
 
@@ -40,34 +40,35 @@ def _fmt(v, spec=".4f"):
 
 def main():
     rows = []
-    for pe in PAST_ENCODERS:
-        tag = f"macroenc_past{pe}_s{SEED}"
-        fp = os.path.join(RESULT_DIR, f"garch_flow_ar_{tag}_{FOLD}_summary.json")
-        if not os.path.exists(fp):
-            print(f"[missing] {os.path.basename(fp)}")
-            continue
-        with open(fp) as f:
-            s = json.load(f)
-        te = s.get("test_eval", {})
-        rows.append(dict(
-            past_enc = pe,
-            params   = s.get("n_params", "n/a"),
-            val_nll  = s.get("best_val_nll_per_week", "n/a"),
-            ep       = s.get("best_epoch", "n/a"),
-            nll      = _g(te, "per_week_nll_z"),
-            crps     = _g(te, "crps_pooled"),
-            emd      = _g(te, "emd"),
-            std_r    = _g(te, "std_ratio"),
-            skew_a   = _g(te, "skew_actual"),
-            skew_s   = _g(te, "skew_sim"),
-            exk_a    = _g(te, "exkurt_actual"),
-            exk_s    = _g(te, "exkurt_sim"),
-            cov50    = _g(te, "coverage_50"),
-            cov80    = _g(te, "coverage_80"),
-            cov95    = _g(te, "coverage_95"),
-            lam      = _g(te, "skewt_lambda"),
-            cvar1_d  = _g(te, "cvar_1pct_diff"),
-        ))
+    for fold in FOLDS:
+        for pe in PAST_ENCODERS:
+            tag = f"macroenc_past{pe}_s{SEED}"
+            fp = os.path.join(RESULT_DIR, f"garch_flow_ar_{tag}_{fold}_summary.json")
+            if not os.path.exists(fp):
+                continue
+            with open(fp) as f:
+                s = json.load(f)
+            te = s.get("test_eval", {})
+            rows.append(dict(
+                fold     = fold,
+                past_enc = pe,
+                params   = s.get("n_params", "n/a"),
+                val_nll  = s.get("best_val_nll_per_week", "n/a"),
+                ep       = s.get("best_epoch", "n/a"),
+                nll      = _g(te, "per_week_nll_z"),
+                crps     = _g(te, "crps_pooled"),
+                emd      = _g(te, "emd"),
+                std_r    = _g(te, "std_ratio"),
+                skew_a   = _g(te, "skew_actual"),
+                skew_s   = _g(te, "skew_sim"),
+                exk_a    = _g(te, "exkurt_actual"),
+                exk_s    = _g(te, "exkurt_sim"),
+                cov50    = _g(te, "coverage_50"),
+                cov80    = _g(te, "coverage_80"),
+                cov95    = _g(te, "coverage_95"),
+                lam      = _g(te, "skewt_lambda"),
+                cvar1_d  = _g(te, "cvar_1pct_diff"),
+            ))
 
     if not rows:
         print("[FATAL] no summary json found in", RESULT_DIR)
@@ -75,10 +76,10 @@ def main():
 
     has_skew = any(isinstance(r["skew_s"], (int, float)) for r in rows)
 
-    print(f"\n=== macroenc-garch past_encoder sweep ({FOLD}, seed={SEED}) ===")
-    print("과거 시퀀스 요약 부품 4종 비교 (capacity d=64, n=1 동일; 메인 인코더=MLP 고정)\n")
+    print(f"\n=== macroenc-garch past_encoder sweep (seed={SEED}) ===")
+    print("과거 시퀀스 요약 부품 비교 (capacity d=64, n=1 동일; 메인 인코더=MLP 고정)\n")
 
-    hdr = (f"{'past_enc':<12} {'params':>8} {'val_nll':>8} {'ep':>4} "
+    hdr = (f"{'fold':<16} {'past_enc':<12} {'params':>8} {'val_nll':>8} {'ep':>4} "
            f"{'test_nll':>9} {'CRPS':>8} {'EMD':>9} {'std_r':>7} "
            f"{'skew_a/s':>16} {'exkurt_a/s':>18} "
            f"{'cov50':>6} {'cov80':>6} {'cov95':>6} {'baseλ':>8} {'cvar1Δ':>9}")
@@ -87,7 +88,7 @@ def main():
     for r in rows:
         skew_pair  = f"{_fmt(r['skew_a'], '+.3f')}/{_fmt(r['skew_s'], '+.3f')}"
         exk_pair   = f"{_fmt(r['exk_a'], '+.2f')}/{_fmt(r['exk_s'], '+.2f')}"
-        print(f"{r['past_enc']:<12} {str(r['params']):>8} "
+        print(f"{r['fold']:<16} {r['past_enc']:<12} {str(r['params']):>8} "
               f"{_fmt(r['val_nll'], '+.4f'):>8} {str(r['ep']):>4} "
               f"{_fmt(r['nll'], '+.4f'):>9} {_fmt(r['crps'], '.5f'):>8} "
               f"{_fmt(r['emd'], '.6f'):>9} {_fmt(r['std_r'], '.3f'):>7} "
@@ -98,9 +99,9 @@ def main():
 
     if not has_skew:
         print("\n[note] skew/exkurt/baseλ 가 옛 summary 에는 없음 (eval_metrics 에 "
-              "방금 추가됨).  채우려면 summary 지우고 eval 재실행:")
-        print("       !rm colab/dual_3ch/result/garch_flow_ar_macroenc_past*_"
-              f"s{SEED}_{FOLD}_summary.json")
+              "추가됨).  채우려면 해당 summary 지우고 eval 재실행:")
+        print(f"       !rm colab/dual_3ch/result/garch_flow_ar_macroenc_past*_"
+              f"s{SEED}_*_summary.json")
         print("       !python colab/dual_3ch/run_garch_macroenc.py")
 
 
