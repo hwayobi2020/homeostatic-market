@@ -87,10 +87,11 @@ except ImportError:
     sys.exit("FATAL: nflows required.  pip install nflows")
 
 try:
-    from mambapy.mamba import MambaBlock, MambaConfig
+    from mamba_ssm import Mamba
 except ImportError:
-    sys.exit("FATAL: mambapy required.  pip install mambapy  "
-             "(pure PyTorch SSM, CPU/GPU 모두 작동)")
+    sys.exit("FATAL: mamba-ssm required.  "
+             "pip install mamba-ssm causal-conv1d --no-build-isolation  "
+             "(GPU / CUDA only)")
 
 # Reuse channel + window constants from train_flow_seq.py for full consistency
 from train_flow_seq import COND_COLS, TBILL_CH, PAST_LEN, FUTURE_LEN
