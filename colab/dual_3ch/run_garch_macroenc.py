@@ -33,8 +33,8 @@ from best_specs import BEST_SPECS         # noqa: E402
 
 RESULT_DIR = os.path.join(HERE, "result")
 FOLDS_DIR = os.path.join(ROOT, "data", "folds_v33_vix_expanding")
-FOLDS = ["F_gfc", "F_long_A", "F_long_B_origin", "F_long"]   # skew(base lambda 수정) 4 fold 검증.
-SEEDS = [2026]   # 압축기 4종 비교 (seed 1개) — 과거 보는 구조면 인코더 무관하게 위기 skew 잡히나.
+FOLDS = ["F_gfc"]   # 위기 fold 집중 — Mamba 위기 좌측 skew 의 seed 안정성 검증.
+SEEDS = [2026, 2027, 2028, 2029, 2030]   # 5 seed: 단일 run skew(-0.21)가 비결정인지 mean±std 로.
 # 과거요약 압축기 4종 비교: mamba/lstm/transformer 는 과거 시퀀스 누적, mlp 는 flatten 요약
 #   (전부 d=64, 과거 52주를 본다 — 이전 mlp per-step=과거 못 봄 으로 F_gfc skew 실패했던 것 교정).
 PAST_ENCODER_TYPES = ["mamba", "lstm", "transformer", "mlp"]
