@@ -20,7 +20,7 @@ except Exception:
 HERE = os.path.dirname(os.path.abspath(__file__))
 RESULT_DIR = os.path.join(HERE, "result")
 
-SEEDS = [2026, 2027, 2028, 2029, 2030]
+SEEDS = [2026]
 FOLDS = ["F_gfc", "F_long_A", "F_long_B_origin", "F_long"]
 PAST_ENCODERS = ["Mamba", "Lstm", "Transformer", "Mlp"]
 PAST_SUMMARY_DIM = 64           # run_garch_macroenc 의 tag(d{dim})와 일치

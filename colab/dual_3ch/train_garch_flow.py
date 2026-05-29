@@ -523,6 +523,28 @@ class MLPEncoder(nn.Module):
         return self.net(x)   # per-step independent
 
 
+class PastMLPSummary(nn.Module):
+    """과거 past_len 시퀀스를 flatten 후 bottleneck 으로 요약 (압축기 전용, 경량).
+
+    (B, past_len, d_model) -> (B, d_model).  per-step MLPEncoder 와 달리 과거 52주
+    전체를 한 번에 본다.  단 flatten 직결(past_len*d_model->d_model)은 ~213K 로
+    mamba/lstm 압축기(~50K)보다 과대 → 첫 Linear 출력을 작은 hidden 으로 눌러
+    ~54K 로 맞춘다 (공정 비교 + 과적합 억제).  메인 인코더용 MLPEncoder(per-step)
+    는 그대로 두고 압축기 past_encoder_type='mlp' 에만 쓴다 (2026-05-29).
+    """
+    def __init__(self, past_len, d_model, hidden=16, dropout=0.0):
+        super().__init__()
+        layers = [nn.Linear(past_len * d_model, hidden), nn.LayerNorm(hidden),
+                  nn.GELU()]
+        if dropout > 0:
+            layers.append(nn.Dropout(dropout))
+        layers += [nn.Linear(hidden, d_model), nn.LayerNorm(d_model)]
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, x):                            # (B, past_len, d_model)
+        return self.net(x.reshape(x.shape[0], -1))   # (B, d_model)
+
+
 class TransformerEncoder(nn.Module):
     """Causal Transformer encoder (PyTorch nn.TransformerEncoder with causal mask)."""
     def __init__(self, d_model, n_layers=3, n_heads=4, dropout=0.0):
@@ -699,9 +721,10 @@ class MambaFlowAR(nn.Module):
                     d_model=self.past_summary_dim, n_layers=1,
                     n_heads=4, dropout=dropout)
             elif pet == "mlp":
-                # per-step MLP, history 통로 사실상 없음 (floor baseline)
-                self.past_encoder = MLPEncoder(
-                    d_model=self.past_summary_dim, num_layers=1, dropout=dropout)
+                # 과거 past_len 전체를 flatten→bottleneck 으로 요약 (per-step 아님 — 과거를 본다, ~54K)
+                self.past_encoder = PastMLPSummary(
+                    past_len=past_len, d_model=self.past_summary_dim,
+                    hidden=16, dropout=dropout)
             else:
                 raise ValueError(
                     f"Unknown past_encoder_type: {past_encoder_type!r}; "
@@ -754,8 +777,10 @@ class MambaFlowAR(nn.Module):
         """
         xp = x[:, :self.past_len, :]                             # (B, past_len, N_CH)
         h = self.past_input_proj(xp) + self.past_pos_emb.unsqueeze(0)
-        h = self.past_encoder(h)                                 # (B, past_len, d_model)
-        return h[:, -1, :]                                       # (B, d_model) origin 요약
+        h = self.past_encoder(h)
+        if self.past_encoder_type == "mlp":
+            return h                                             # PastMLPSummary: 이미 (B, d_model) (과거 전체 flatten)
+        return h[:, -1, :]                                       # seq 인코더(mamba/lstm/transformer): 마지막(누적 끝) 시점
 
     def log_prob(self, x_input, target_path, extra_context=None):
         """Teacher-forced per-origin log probability summed over future steps.

@@ -34,10 +34,10 @@ from best_specs import BEST_SPECS         # noqa: E402
 RESULT_DIR = os.path.join(HERE, "result")
 FOLDS_DIR = os.path.join(ROOT, "data", "folds_v33_vix_expanding")
 FOLDS = ["F_gfc", "F_long_A", "F_long_B_origin", "F_long"]   # skew(base lambda 수정) 4 fold 검증.
-SEEDS = [2026, 2027, 2028, 2029, 2030]   # 비결정성(skew 흔들림) 평가 위해 5 seed 평균±std.
-# 과거요약 = MLP(deterministic, calibration best), d=64.  4 fold skew/calibration 검증.
-#   (base λ weight_decay 제외 수정은 학습을 흔들어 첫 MLP 보다 악화돼 철회함.)
-PAST_ENCODER_TYPES = ["mlp"]
+SEEDS = [2026]   # 압축기 4종 비교 (seed 1개) — 과거 보는 구조면 인코더 무관하게 위기 skew 잡히나.
+# 과거요약 압축기 4종 비교: mamba/lstm/transformer 는 과거 시퀀스 누적, mlp 는 flatten 요약
+#   (전부 d=64, 과거 52주를 본다 — 이전 mlp per-step=과거 못 봄 으로 F_gfc skew 실패했던 것 교정).
+PAST_ENCODER_TYPES = ["mamba", "lstm", "transformer", "mlp"]
 PAST_SUMMARY_DIM = 64
 
 # encoder 가 보는 채널(거시) + sp_return(마스크되어 prevret/teacher-forcing 용으로만 잔류)
