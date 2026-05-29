@@ -35,8 +35,8 @@ RESULT_DIR = os.path.join(HERE, "result")
 FOLDS_DIR = os.path.join(ROOT, "data", "folds_v33_vix_expanding")
 FOLDS = ["F_gfc", "F_long_A", "F_long_B_origin", "F_long"]   # skew(base lambda 수정) 4 fold 검증.
 SEEDS = [2026]            # garch-flow 패턴(fold별 single seed + per-origin DM).  늘리려면 추가.
-# 과거요약 = MLP(deterministic, calibration best), d=64.  skew-t base _lam_raw 를 weight_decay
-#   에서 제외(버그 수정) 후, 4 fold 에서 좌측 skew 가 안정적으로 잡히는지 확인.
+# 과거요약 = MLP(deterministic, calibration best), d=64.  4 fold skew/calibration 검증.
+#   (base λ weight_decay 제외 수정은 학습을 흔들어 첫 MLP 보다 악화돼 철회함.)
 PAST_ENCODER_TYPES = ["mlp"]
 PAST_SUMMARY_DIM = 64
 

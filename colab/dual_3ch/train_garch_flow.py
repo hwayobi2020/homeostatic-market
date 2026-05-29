@@ -1046,15 +1046,7 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
     print(f"    model params  = {n_params:,}  "
           f"(flow_context_dim={model.flow_context_dim})")
 
-    # skew-t base 의 skew 파라미터(_lam_raw)는 weight_decay 에서 제외한다.
-    # wd(=0.5)가 model.parameters() 전체에 걸려 _lam_raw 를 0 으로 눌러 좌측 skew
-    # 주입을 막던 버그 수정 (2026-05-28): base 가 비대칭을 학습하게 풀어줌.
-    _lam_p   = [p for n, p in model.named_parameters() if n.endswith("_lam_raw")]
-    _other_p = [p for n, p in model.named_parameters() if not n.endswith("_lam_raw")]
-    opt = torch.optim.AdamW(
-        [{"params": _other_p, "weight_decay": weight_decay},
-         {"params": _lam_p,   "weight_decay": 0.0}],
-        lr=lr)
+    opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     if Xtr_extra is not None:
         train_ds = TensorDataset(Xtr, Ytr, Xtr_extra)
     else:
@@ -1591,12 +1583,30 @@ def main_worker(args):
     summary_path = f"{result_prefix}_summary.json"
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    _enc = getattr(args, "encoder_type", "mamba").lower()
     print("=" * 78)
-    print(f" Mamba AR + Conditional Flow head  -  fold = {args.fold}")
-    print(f"  Mamba-SSM      : d_model = {args.d_model}, "
-          f"n_layers = {args.n_mamba_layers}, "
-          f"d_state = {MAMBA_D_STATE}, d_conv = {MAMBA_D_CONV}, "
-          f"expand = {MAMBA_EXPAND}")
+    print(f" AR + Conditional Flow head  -  fold = {args.fold}")
+    # 메인 인코더 — encoder_type 에 따라 실제 구성 출력 (cosmetic 일치).
+    if _enc == "mamba":
+        print(f"  encoder(main)  : Mamba-SSM d_model = {args.d_model}, "
+              f"n_layers = {args.n_mamba_layers}, d_state = {MAMBA_D_STATE}, "
+              f"d_conv = {MAMBA_D_CONV}, expand = {MAMBA_EXPAND}")
+    elif _enc == "mlp":
+        print(f"  encoder(main)  : MLP per-step d_model = {args.d_model}, "
+              f"num_layers = {getattr(args, 'mlp_num_layers', 2)}")
+    elif _enc == "lstm":
+        print(f"  encoder(main)  : LSTM d_model = {args.d_model}, "
+              f"n_layers = {args.n_mamba_layers}")
+    elif _enc == "transformer":
+        print(f"  encoder(main)  : Transformer d_model = {args.d_model}, "
+              f"n_heads = {getattr(args, 'transformer_n_heads', 4)}, "
+              f"n_layers = {args.n_mamba_layers}")
+    else:
+        print(f"  encoder(main)  : {_enc} d_model = {args.d_model}")
+    # 과거 시퀀스 요약 부품 (use_past_summary 시).
+    if getattr(args, "use_past_summary", False):
+        print(f"  past summary   : {getattr(args, 'past_encoder_type', 'mamba')} "
+              f"dim = {getattr(args, 'past_summary_dim', 64)}, n_layers = 1")
     print(f"  Flow head      : 1D Cond NSF features = 1, "
           f"layers = {args.n_flow_layers}, hidden = {args.n_flow_hidden}, "
           f"blocks = {N_FLOW_BLOCKS}, bins = {N_FLOW_BINS}")
