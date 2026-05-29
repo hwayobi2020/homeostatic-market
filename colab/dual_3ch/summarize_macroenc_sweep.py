@@ -22,6 +22,7 @@ RESULT_DIR = os.path.join(HERE, "result")
 SEED = 2026
 FOLDS = ["F_gfc", "F_long_A", "F_long_B_origin", "F_long"]
 PAST_ENCODERS = ["Mamba", "Lstm", "Transformer", "Mlp"]
+PAST_SUMMARY_DIM = 64           # run_garch_macroenc 의 tag(d{dim})와 일치해야 summary 를 찾음
 
 
 def _g(d, *keys, default="n/a"):
@@ -42,7 +43,7 @@ def main():
     rows = []
     for fold in FOLDS:
         for pe in PAST_ENCODERS:
-            tag = f"macroenc_past{pe}_s{SEED}"
+            tag = f"macroenc_past{pe}_d{PAST_SUMMARY_DIM}_s{SEED}"
             fp = os.path.join(RESULT_DIR, f"garch_flow_ar_{tag}_{fold}_summary.json")
             if not os.path.exists(fp):
                 continue
