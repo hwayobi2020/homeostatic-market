@@ -67,8 +67,10 @@ T.MASK_FUTURE_TBILL = False
 T.FUTURE_UNMASK_MACRO_COLS = ["metab_13w"]
 T.ENCODER_MASK_SP = False
 
-FOLDS = ["F_gfc", "F_long_A", "F_long_B_origin", "F_long"]
+FOLDS = ["full"]                     # 전 기간 통합 단일 모델 (시나리오 분석 전용)
 SEED = 2026
+PAST_SUMMARY_DIM = 64                # best.pt tag 의 d{dim}
+N_ORIGIN_MAX = 250                   # 전 기간 origin 균등 subsample (속도; paired 라 set 고정)
 PCTLS = [10, 50, 90]                 # 하락/보합/상승 (감소/보합/증가)
 PCTL_LABEL = {10: "lo", 50: "mid", 90: "hi"}
 N_SIM = 1000
@@ -128,7 +130,7 @@ def rollout_scenario(model, Xte_dev, Xte_extra_dev, last_sp_dev,
 
 def load_fold(fold, device):
     bp = os.path.join(RESULT_DIR,
-                      f"garch_flow_ar_macroenc_pastMlp_s{SEED}_{fold}_best.pt")
+                      f"garch_flow_ar_macroenc_pastMlp_d{PAST_SUMMARY_DIM}_s{SEED}_{fold}_best.pt")
     if not os.path.exists(bp):
         print(f"[missing best.pt] {os.path.basename(bp)}")
         return None
@@ -138,18 +140,20 @@ def load_fold(fold, device):
     extra_stats = meta.get("extra_stats")
     model = rebuild_model(ckpt, device)
 
+    # origin = 전 기간 train (시나리오는 OOS 아니므로 test 국한 불필요; full_train 이 GFC·
+    # COVID·평시 다 포함).  9-grid 는 paired 라 origin set 고정.
     gp = garch_preprocess_fold(FOLDS_DIR, fold, RESULT_DIR)
-    test_csv = gp["test"]
+    origin_csv = gp["train"]
     Xte, Yte, _, _, _ = cached_load_windows_seq(
-        test_csv, cond_stats=cond_stats, target_stats=target_stats)
+        origin_csv, cond_stats=cond_stats, target_stats=target_stats)
     Xte_dev = Xte.to(device)
     Xte_extra, _, n_ex, _ = load_extra_context(
-        test_csv, [DC_COLS], extra_stats=extra_stats)
+        origin_csv, [DC_COLS], extra_stats=extra_stats)
     if n_ex != Xte.shape[0]:
         sys.exit(f"[FATAL] extra valid {n_ex} != main {Xte.shape[0]} ({fold})")
     Xte_extra_dev = Xte_extra.to(device)
 
-    valid_mask, z_te, df_te = compute_valid_mask(test_csv, cond_stats)
+    valid_mask, z_te, df_te = compute_valid_mask(origin_csv, cond_stats)
     n_w = z_te.shape[0] - PAST_LEN - FUTURE_LEN + 1
     last_full = z_te[PAST_LEN - 1: PAST_LEN - 1 + n_w, T.SP_CH]
     last_valid = last_full[valid_mask].astype(np.float32)
@@ -183,6 +187,16 @@ def load_fold(fold, device):
     mu_arr = np.array([[_gmu[int(_oidx[ii]) + PAST_LEN + tau]
                         for tau in range(FUTURE_LEN)] for ii in range(n_orig)])
     actual_raw = (Yte.numpy() * tsd + tmu) * sig_arr + mu_arr
+
+    # 전 기간 origin 균등 subsample (속도; paired 9-grid 라 origin set 고정 유지)
+    if n_orig > N_ORIGIN_MAX:
+        idx = np.linspace(0, n_orig - 1, N_ORIGIN_MAX).astype(int)
+        Xte_dev = Xte_dev[idx]
+        Xte_extra_dev = Xte_extra_dev[idx]
+        last_sp_dev = last_sp_dev[idx]
+        actual_raw = actual_raw[idx]
+        _s2 = _s2[idx]; _e2 = _e2[idx]
+        n_orig = N_ORIGIN_MAX
 
     rescale = dict(tmu=tmu, tsd=tsd, s2=_s2, e2=_e2, om=_om, al=_al, be=_be, mu=_mu)
     return dict(model=model, Xte_dev=Xte_dev, Xte_extra_dev=Xte_extra_dev,
