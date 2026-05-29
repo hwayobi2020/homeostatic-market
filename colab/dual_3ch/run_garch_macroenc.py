@@ -34,7 +34,7 @@ from best_specs import BEST_SPECS         # noqa: E402
 RESULT_DIR = os.path.join(HERE, "result")
 FOLDS_DIR = os.path.join(ROOT, "data", "folds_v33_vix_expanding")
 FOLDS = ["F_gfc", "F_long_A", "F_long_B_origin", "F_long"]   # skew(base lambda 수정) 4 fold 검증.
-SEEDS = [2026]            # garch-flow 패턴(fold별 single seed + per-origin DM).  늘리려면 추가.
+SEEDS = [2026, 2027, 2028, 2029, 2030]   # 비결정성(skew 흔들림) 평가 위해 5 seed 평균±std.
 # 과거요약 = MLP(deterministic, calibration best), d=64.  4 fold skew/calibration 검증.
 #   (base λ weight_decay 제외 수정은 학습을 흔들어 첫 MLP 보다 악화돼 철회함.)
 PAST_ENCODER_TYPES = ["mlp"]
