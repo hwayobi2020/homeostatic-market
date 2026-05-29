@@ -33,12 +33,12 @@ from best_specs import BEST_SPECS         # noqa: E402
 
 RESULT_DIR = os.path.join(HERE, "result")
 FOLDS_DIR = os.path.join(ROOT, "data", "folds_v33_vix_expanding")
-FOLDS = ["F_gfc"]         # Mamba 차원 절반(d=32) F_gfc 비교 (2026-05-28).
+FOLDS = ["full"]          # 전 기간 통합 단일 모델 — 시나리오 분석 전용 (2026-05-28).
 SEEDS = [2026]            # garch-flow 패턴(fold별 single seed + per-origin DM).  늘리려면 추가.
-# Mamba 과거요약 차원 절반(64→32, Mamba params ~1/4) — 더 줄이면 나아지나 확인.
-#   tag 에 d{dim} 구분 → 기존 d=64 결과(pastMamba_s2026) 보존.
-PAST_ENCODER_TYPES = ["mamba"]
-PAST_SUMMARY_DIM = 32
+# 과거요약 = MLP(deterministic, calibration best), d=64.  통합 모델 1개로 9-grid 시나리오.
+#   (build_full_fold.py 가 full_train/val/test.csv 먼저 생성해야 함.)
+PAST_ENCODER_TYPES = ["mlp"]
+PAST_SUMMARY_DIM = 64
 
 # encoder 가 보는 채널(거시) + sp_return(마스크되어 prevret/teacher-forcing 용으로만 잔류)
 ENC_COLS = ["sp_return", "tbill_wr", "ads_lag", "wti_wr", "metab_13w"]
