@@ -86,12 +86,8 @@ try:
 except ImportError:
     sys.exit("FATAL: nflows required.  pip install nflows")
 
-try:
-    from mamba_ssm import Mamba
-except ImportError:
-    sys.exit("FATAL: mamba-ssm required.  "
-             "pip install mamba-ssm causal-conv1d --no-build-isolation  "
-             "(GPU / CUDA only)")
+# mamba-ssm 은 Mamba encoder 를 실제로 만들 때만 필요 → _MambaResBlock 에서 lazy import.
+# (encoder_type / past_encoder_type 가 mlp/lstm/transformer 면 mamba-ssm 없이 동작.)
 
 # Reuse channel + window constants from train_flow_seq.py for full consistency
 from train_flow_seq import COND_COLS, TBILL_CH, PAST_LEN, FUTURE_LEN
@@ -569,6 +565,12 @@ class _MambaResBlock(nn.Module):
     def __init__(self, d_model, d_state=MAMBA_D_STATE, d_conv=MAMBA_D_CONV,
                  expand=MAMBA_EXPAND, dropout=0.0):
         super().__init__()
+        try:
+            from mamba_ssm import Mamba
+        except ImportError:
+            sys.exit("FATAL: mamba-ssm required for Mamba encoder.  "
+                     "pip install mamba-ssm causal-conv1d --no-build-isolation "
+                     "(GPU/CUDA only).  MLP/LSTM/Transformer 는 mamba-ssm 불필요.")
         self.norm    = nn.LayerNorm(d_model)
         self.mamba   = Mamba(d_model=d_model, d_state=d_state,
                              d_conv=d_conv, expand=expand)
