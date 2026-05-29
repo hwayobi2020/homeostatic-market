@@ -33,10 +33,10 @@ from best_specs import BEST_SPECS         # noqa: E402
 
 RESULT_DIR = os.path.join(HERE, "result")
 FOLDS_DIR = os.path.join(ROOT, "data", "folds_v33_vix_expanding")
-FOLDS = ["full"]          # 전 기간 통합 단일 모델 — 시나리오 분석 전용 (2026-05-28).
+FOLDS = ["F_gfc", "F_long_A", "F_long_B_origin", "F_long"]   # skew(base lambda 수정) 4 fold 검증.
 SEEDS = [2026]            # garch-flow 패턴(fold별 single seed + per-origin DM).  늘리려면 추가.
-# 과거요약 = MLP(deterministic, calibration best), d=64.  통합 모델 1개로 9-grid 시나리오.
-#   (build_full_fold.py 가 full_train/val/test.csv 먼저 생성해야 함.)
+# 과거요약 = MLP(deterministic, calibration best), d=64.  skew-t base _lam_raw 를 weight_decay
+#   에서 제외(버그 수정) 후, 4 fold 에서 좌측 skew 가 안정적으로 잡히는지 확인.
 PAST_ENCODER_TYPES = ["mlp"]
 PAST_SUMMARY_DIM = 64
 

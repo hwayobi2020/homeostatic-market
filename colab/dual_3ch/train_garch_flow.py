@@ -1046,7 +1046,15 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
     print(f"    model params  = {n_params:,}  "
           f"(flow_context_dim={model.flow_context_dim})")
 
-    opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+    # skew-t base 의 skew 파라미터(_lam_raw)는 weight_decay 에서 제외한다.
+    # wd(=0.5)가 model.parameters() 전체에 걸려 _lam_raw 를 0 으로 눌러 좌측 skew
+    # 주입을 막던 버그 수정 (2026-05-28): base 가 비대칭을 학습하게 풀어줌.
+    _lam_p   = [p for n, p in model.named_parameters() if n.endswith("_lam_raw")]
+    _other_p = [p for n, p in model.named_parameters() if not n.endswith("_lam_raw")]
+    opt = torch.optim.AdamW(
+        [{"params": _other_p, "weight_decay": weight_decay},
+         {"params": _lam_p,   "weight_decay": 0.0}],
+        lr=lr)
     if Xtr_extra is not None:
         train_ds = TensorDataset(Xtr, Ytr, Xtr_extra)
     else:
