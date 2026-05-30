@@ -38,12 +38,14 @@ def rawstd_preprocess_fold(folds_dir, fold, out_dir, scale=100.0):
     # train sp_return 평균 (단순 constant mean, train 내부만 보므로 누수 없음).
     mu_train = float(dfs["train"]["sp_return"].astype(float).mean())
 
-    # 전체 series 합쳐서 13주 rolling skew 계산 (date 순, 과거 정보만 보므로 누수 없음).
-    # 시작부 NaN(처음 12개)은 0 으로 채움 — "정보 없음" 신호.
+    # 전체 series 합쳐서 13주 rolling skew 계산.  .shift(1) 로 시점 τ 값은
+    # [τ-13, τ-1] 의 skew (현재 sp(τ) 미포함) — sp_std_13w 의 .shift(1) 와 시간 정의
+    # 일관, 종가-직전 운영 정의에서도 leak 없음 (사용자 확정 2026-05-29).
     full = (pd.concat([dfs["train"], dfs["val"], dfs["test"]], ignore_index=True)
               .drop_duplicates("date").sort_values("date").reset_index(drop=True))
     full["sp_skew_13w"] = (full["sp_return"].astype(float)
-                                .rolling(window=13, min_periods=13).skew().fillna(0.0))
+                                .rolling(window=13, min_periods=13).skew()
+                                .shift(1).fillna(0.0))
     skew_map = dict(zip(full["date"], full["sp_skew_13w"].to_numpy(dtype=float)))
 
     eps = 1e-12
