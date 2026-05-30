@@ -1,0 +1,89 @@
+"""raw-vol Flow ablation: NF-GARCH 의 GARCH(1,1) 표준화 대신 raw 13w stdev 로 표준화.
+
+기존 train_garch_flow.py 의 garch_preprocess_fold / forward_garch_rescale 를
+monkey-patch 하여 GARCH 동학 없이 raw stdev 만으로 z 표준화 + origin-frozen σ
+복원으로 교체.  기존 코드 0 수정 — 되돌리려면 본 파일을 import 안 하면 된다.
+
+NF-GARCH 와의 차이:
+  - z = (r - μ_train) / sp_std_13w_raw         (GARCH σ_t 대신 raw 13w rolling std)
+  - μ_train  = train sp_return 의 단순 평균    (시변 mean 없음, 누수 없음)
+  - forward σ = origin frozen                  (13주 내내 origin 시점 raw 13w std 유지)
+
+Usage:
+    from rawvol_helpers import patch_rawvol
+    patch_rawvol()                              # GARCH 함수 → raw 버전 교체
+    from train_garch_flow import main_worker
+    main_worker(spec)
+"""
+import os
+import sys
+
+import numpy as np
+import pandas as pd
+
+
+def rawstd_preprocess_fold(folds_dir, fold, out_dir, scale=100.0):
+    """GARCH fit 없이 raw 13w stdev 로 z 표준화.  csv 컬럼은 garch_preprocess_fold
+    와 동일하게 채워 train_garch_flow 의 역변환 코드(garch_sigma/mu/omega/alpha/beta
+    참조)와 시그니처가 호환되게 한다.  raw 모드에선 omega/alpha/beta = 0 (forward
+    동학 없음 → origin-frozen σ 효과).
+    """
+    src = {sp: os.path.join(folds_dir, f"{fold}_{sp}.csv")
+           for sp in ("train", "val", "test")}
+    for p in src.values():
+        if not os.path.exists(p):
+            sys.exit(f"[FATAL] rawstd_preprocess: missing csv {p}")
+    dfs = {sp: pd.read_csv(p, parse_dates=["date"]) for sp, p in src.items()}
+
+    # train sp_return 평균 (단순 constant mean, train 내부만 보므로 누수 없음).
+    mu_train = float(dfs["train"]["sp_return"].astype(float).mean())
+
+    eps = 1e-12
+    out = {}
+    os.makedirs(out_dir, exist_ok=True)
+    s_med_last = s_min_last = s_max_last = None
+    for sp in ("train", "val", "test"):
+        d = dfs[sp].copy()
+        r = d["sp_return"].astype(float).to_numpy()
+        s_raw = d["sp_std_13w"].astype(float).to_numpy()
+        if np.any(np.isnan(s_raw)):
+            sys.exit(f"[FATAL] rawvol: sp_std_13w NaN in split {sp}")
+        d["garch_mu"]       = mu_train
+        d["garch_sigma"]    = s_raw                       # vol slot = raw 13w std
+        d["garch_omega"]    = 0.0                         # raw 모드: forward 동학 없음
+        d["garch_alpha"]    = 0.0
+        d["garch_beta"]     = 0.0
+        d["sp_return"]      = (r - mu_train) / (s_raw + eps)    # z_t (raw-std 표준화)
+        d["sp_std_13w"]     = s_raw                       # raw 13w std 유지(덮어쓰기 없음)
+        d["sp_log_std_13w"] = np.log(s_raw + eps)
+        outp = os.path.join(out_dir, f"{fold}_{sp}_rawvol.csv")
+        d.to_csv(outp, index=False)
+        out[sp] = outp
+        s_min_last, s_med_last, s_max_last = (
+            float(np.min(s_raw)), float(np.median(s_raw)), float(np.max(s_raw)))
+
+    print(f"  [Raw-Vol] no GARCH fit; train mu = {mu_train:+.5f}")
+    print(f"  [Raw-Vol] sp_std_13w (raw, return units) min/median/max = "
+          f"{s_min_last:.5f}/{s_med_last:.5f}/{s_max_last:.5f}")
+    return out
+
+
+def forward_rawvol_rescale(sim_paths_zt, s2_orig, e2_orig, om, al, be, mu):
+    """raw-vol 모드 역변환: σ origin-frozen (13주 내내 origin σ 상수).
+    forward_garch_rescale 와 시그니처 동일 (drop-in).  GARCH 동학 무시 — 변동성
+    클러스터링 가정 없음 (raw stdev 의 본래 단순화)."""
+    sigma_orig = np.sqrt(np.maximum(s2_orig, 0.0))            # (n_origins,)
+    return sim_paths_zt * sigma_orig[:, None, None] + float(mu)
+
+
+def patch_rawvol():
+    """train_garch_flow 의 GARCH 함수들을 raw-vol 버전으로 monkey-patch.
+
+    main_worker 와 evaluate_test 가 모듈 global 로 garch_preprocess_fold /
+    forward_garch_rescale 를 참조하므로 monkey-patch 가 작동한다.  기존 파일 0 수정.
+    """
+    import train_garch_flow as T
+    T.garch_preprocess_fold = rawstd_preprocess_fold
+    T.forward_garch_rescale = forward_rawvol_rescale
+    print("[patch_rawvol] train_garch_flow.garch_preprocess_fold / "
+          "forward_garch_rescale → rawstd / origin-frozen σ 로 교체")
