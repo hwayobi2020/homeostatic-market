@@ -27,7 +27,7 @@ from best_specs import BEST_SPECS           # noqa: E402
 
 RESULT_DIR = os.path.join(HERE, "result")
 FOLDS_DIR = os.path.join(ROOT, "data", "folds_v33_vix_expanding")
-FOLDS = ["F_gfc"]                            # 위기 fold 집중
+FOLDS = ["F_gfc", "F_long_A", "F_long_B_origin", "F_long"]   # 4 fold 전체 정착 검증
 SEEDS = [2026, 2027, 2028, 2029, 2030]
 PAST_ENCODER_TYPES = ["mlp"]                 # mlp 압축기 단일 (다른 종 위기 skew 못잡음 확인됨)
 PAST_SUMMARY_DIM = 64
@@ -91,3 +91,72 @@ for fold in FOLDS:
                 print(f"[FAIL] {tag} {fold}: {e!r}")
 
 print("\n[done] rawvol-macroenc 학습 완료. (NF-GARCH 비교본: run_garch_macroenc.py)")
+
+
+# =====================================================================
+# Summary: fold × past_enc 별 seed mean±std (skew_sim, CVaR1_sim, nll/wk)
+# =====================================================================
+def _mean_std(vals):
+    import numpy as np
+    a = np.asarray([v for v in vals if isinstance(v, (int, float))], dtype=float)
+    if len(a) == 0:
+        return None, None
+    return float(a.mean()), float(a.std(ddof=0))
+
+
+def print_rawvol_summary():
+    import json
+    print()
+    print("=" * 112)
+    print(f"=== raw-vol + 13w skew rawvol_macroenc sweep: "
+          f"{len(SEEDS)} seed × {len(FOLDS)} fold mean±std ===")
+    print(f"  표준화 = raw 13w stdev,  context = sp_std_13w + sp_skew_13w  (GARCH 동학 없음)")
+    print("=" * 112)
+    hdr = (f"{'fold':<18}{'enc':>5}{'n':>3}{'skew_act':>10}"
+           f"{'skew_sim m±std':>20}{'cvar1_act':>11}{'cvar1_sim m±std':>20}"
+           f"{'nll/wk m±std':>18}")
+    print(hdr)
+    print("-" * len(hdr))
+    for fold in FOLDS:
+        for pe in PAST_ENCODER_TYPES:
+            sk_sims, cv_sims, nlls = [], [], []
+            sk_a = cv_a = None
+            for seed in SEEDS:
+                tag = (f"rawvol_macroenc_past{pe.capitalize()}_"
+                       f"d{PAST_SUMMARY_DIM}_s{seed}")
+                fp = os.path.join(RESULT_DIR,
+                                  f"garch_flow_ar_{tag}_{fold}_summary.json")
+                if not os.path.exists(fp):
+                    continue
+                try:
+                    te = json.load(open(fp)).get("test_eval", {})
+                except Exception:
+                    continue
+                if isinstance(te.get("skew_sim"), (int, float)):
+                    sk_sims.append(te["skew_sim"])
+                if isinstance(te.get("cvar_1pct_sim"), (int, float)):
+                    cv_sims.append(te["cvar_1pct_sim"])
+                if isinstance(te.get("per_week_nll_z"), (int, float)):
+                    nlls.append(te["per_week_nll_z"])
+                if isinstance(te.get("skew_actual"), (int, float)):
+                    sk_a = te["skew_actual"]
+                if isinstance(te.get("cvar_1pct_actual"), (int, float)):
+                    cv_a = te["cvar_1pct_actual"]
+            n = len(sk_sims)
+            if n == 0:
+                print(f"{fold:<18}{pe:>5}{n:>3}  (결과 없음)")
+                continue
+            sm, ss = _mean_std(sk_sims)
+            cm, cs = _mean_std(cv_sims)
+            nm, ns = _mean_std(nlls)
+            sk_a_s = f"{sk_a:+.3f}" if sk_a is not None else " n/a "
+            cv_a_s = f"{cv_a:+.4f}" if cv_a is not None else " n/a "
+            print(f"{fold:<18}{pe:>5}{n:>3}{sk_a_s:>10}"
+                  f"  {sm:+.3f}±{ss:.3f}{cv_a_s:>11}"
+                  f"  {cm:+.4f}±{cs:.4f}  {nm:.3f}±{ns:.3f}")
+    print("=" * 112)
+    print("[해석] skew_sim m 이 음수(좌측) + std 작으면 위기 비대칭 학습 안정.")
+    print("       단 F_gfc 는 train(1971-1999) OOD 한계로 actual 진폭 다 못잡음 — limitation.")
+
+
+print_rawvol_summary()
