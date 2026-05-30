@@ -27,13 +27,13 @@ from best_specs import BEST_SPECS           # noqa: E402
 
 RESULT_DIR = os.path.join(HERE, "result")
 FOLDS_DIR = os.path.join(ROOT, "data", "folds_v33_vix_expanding")
-FOLDS = ["F_gfc"]                            # 위기 fold 집중 (NF-GARCH 와 동일)
+FOLDS = ["F_gfc"]                            # 위기 fold 집중
 SEEDS = [2026, 2027, 2028, 2029, 2030]
-PAST_ENCODER_TYPES = ["mamba", "lstm", "transformer", "mlp"]
+PAST_ENCODER_TYPES = ["mlp"]                 # mlp 압축기 단일 (다른 종 위기 skew 못잡음 확인됨)
 PAST_SUMMARY_DIM = 64
 
 ENC_COLS = ["sp_return", "tbill_wr", "ads_lag", "wti_wr", "metab_13w"]
-DC_COLS = "sp_std_13w"           # vol context = raw 13w std (rawvol 모드)
+DC_COLS = "sp_std_13w,sp_skew_13w"    # vol + skew context (raw 13w 통계 둘 다)
 MASK_FUTURE_TBILL = False
 FUTURE_UNMASK_MACRO_COLS = ["metab_13w"]
 

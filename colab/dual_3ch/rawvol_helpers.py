@@ -38,16 +38,28 @@ def rawstd_preprocess_fold(folds_dir, fold, out_dir, scale=100.0):
     # train sp_return 평균 (단순 constant mean, train 내부만 보므로 누수 없음).
     mu_train = float(dfs["train"]["sp_return"].astype(float).mean())
 
+    # 전체 series 합쳐서 13주 rolling skew 계산 (date 순, 과거 정보만 보므로 누수 없음).
+    # 시작부 NaN(처음 12개)은 0 으로 채움 — "정보 없음" 신호.
+    full = (pd.concat([dfs["train"], dfs["val"], dfs["test"]], ignore_index=True)
+              .drop_duplicates("date").sort_values("date").reset_index(drop=True))
+    full["sp_skew_13w"] = (full["sp_return"].astype(float)
+                                .rolling(window=13, min_periods=13).skew().fillna(0.0))
+    skew_map = dict(zip(full["date"], full["sp_skew_13w"].to_numpy(dtype=float)))
+
     eps = 1e-12
     out = {}
     os.makedirs(out_dir, exist_ok=True)
     s_med_last = s_min_last = s_max_last = None
+    sk_min = sk_med = sk_max = None
     for sp in ("train", "val", "test"):
         d = dfs[sp].copy()
         r = d["sp_return"].astype(float).to_numpy()
         s_raw = d["sp_std_13w"].astype(float).to_numpy()
         if np.any(np.isnan(s_raw)):
             sys.exit(f"[FATAL] rawvol: sp_std_13w NaN in split {sp}")
+        sk_raw = d["date"].map(skew_map).to_numpy(dtype=float)         # 13w rolling skew
+        if np.any(np.isnan(sk_raw)):
+            sys.exit(f"[FATAL] rawvol: sp_skew_13w NaN/미매핑 in split {sp}")
         d["garch_mu"]       = mu_train
         d["garch_sigma"]    = s_raw                       # vol slot = raw 13w std
         d["garch_omega"]    = 0.0                         # raw 모드: forward 동학 없음
@@ -55,16 +67,21 @@ def rawstd_preprocess_fold(folds_dir, fold, out_dir, scale=100.0):
         d["garch_beta"]     = 0.0
         d["sp_return"]      = (r - mu_train) / (s_raw + eps)    # z_t (raw-std 표준화)
         d["sp_std_13w"]     = s_raw                       # raw 13w std 유지(덮어쓰기 없음)
+        d["sp_skew_13w"]    = sk_raw                      # raw 13w rolling skew (신규)
         d["sp_log_std_13w"] = np.log(s_raw + eps)
         outp = os.path.join(out_dir, f"{fold}_{sp}_rawvol.csv")
         d.to_csv(outp, index=False)
         out[sp] = outp
         s_min_last, s_med_last, s_max_last = (
             float(np.min(s_raw)), float(np.median(s_raw)), float(np.max(s_raw)))
+        sk_min, sk_med, sk_max = (
+            float(np.min(sk_raw)), float(np.median(sk_raw)), float(np.max(sk_raw)))
 
     print(f"  [Raw-Vol] no GARCH fit; train mu = {mu_train:+.5f}")
-    print(f"  [Raw-Vol] sp_std_13w (raw, return units) min/median/max = "
+    print(f"  [Raw-Vol] sp_std_13w  (raw, return units) min/median/max = "
           f"{s_min_last:.5f}/{s_med_last:.5f}/{s_max_last:.5f}")
+    print(f"  [Raw-Vol] sp_skew_13w (raw 13w rolling)   min/median/max = "
+          f"{sk_min:+.3f}/{sk_med:+.3f}/{sk_max:+.3f}  (시작부 12개 NaN→0)")
     return out
 
 
