@@ -70,9 +70,73 @@ def fmt(mn, sd, n):
 
 
 # ════════════════════════════════════════════════════════════════════
+# Phase 1a/1b — 선택 근거 (단일 seed 2026 VAL NLL) + Table 3.7 재료
+#   주의: 마스터 select_1a/1b 는 이 VAL NLL 로 본모형을 골랐다.
+#   아래 Table 4.7 (5-seed TEST) 과 순위가 다를 수 있다 (val≠test, 1seed≠5seed).
+# ════════════════════════════════════════════════════════════════════
+P1A_PAST_DIM = [32, 64, 128]
+P1A_DROPOUT = [0.1, 0.2]
+P1B_FLOW_LAYERS = [4, 6, 8]
+P1B_FLOW_HIDDEN = [32, 64, 128]
+
+
+def read_val(tag, fold):
+    fp = os.path.join(RESULT_DIR, f"garch_flow_ar_{tag}_{fold}_summary.json")
+    try:
+        return json.load(open(fp)).get("best_val_nll_per_week")
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+print("=" * 120)
+print("[Phase 1a] 압축기 선택 근거 — 단일 seed(2026) 3-fold avg VAL NLL (= 마스터 선택 기준, Table 3.7 재료)")
+print("=" * 120)
+p1a_best = {}
+for enc in ENCODERS:
+    cands = []
+    for pd in P1A_PAST_DIM:
+        for dr in P1A_DROPOUT:
+            tag = f"rvP1a_{enc}_pd{pd}_dr{dr}"
+            vals = [read_val(tag, fold) for fold in FOLDS_TUNE]
+            if all(v is not None for v in vals):
+                cands.append((pd, dr, sum(vals) / len(vals)))
+    if cands:
+        pd, dr, avg = min(cands, key=lambda x: x[2])
+        p1a_best[enc] = (pd, dr, avg)
+        allc = "  ".join(f"pd{c[0]}dr{c[1]}={c[2]:.4f}"
+                         for c in sorted(cands, key=lambda x: x[2]))
+        print(f"  {enc:12s} best: pd={pd} dr={dr}  avg_val_NLL={avg:.4f}")
+        print(f"  {'':12s}   전체: {allc}")
+    else:
+        print(f"  {enc:12s} (3-fold 미완)")
+if p1a_best:
+    win = min(p1a_best, key=lambda e: p1a_best[e][2])
+    rank = "  >  ".join(f"{e}({p1a_best[e][2]:.4f})"
+                        for e in sorted(p1a_best, key=lambda e: p1a_best[e][2]))
+    print(f"  → 마스터 선택(val NLL 최저) = {win}")
+    print(f"    val NLL 순위: {rank}")
+
+print("\n" + "=" * 120)
+print("[Phase 1b] flow 격자 — 단일 seed(2026) 3-fold avg VAL NLL (압축기=마스터 선택 고정)")
+print("=" * 120)
+fb = []
+for nl in P1B_FLOW_LAYERS:
+    for nh in P1B_FLOW_HIDDEN:
+        tag = f"rvP1b_fl{nl}_fh{nh}"
+        vals = [read_val(tag, fold) for fold in FOLDS_TUNE]
+        if all(v is not None for v in vals):
+            fb.append((nl, nh, sum(vals) / len(vals)))
+for nl, nh, avg in sorted(fb, key=lambda x: x[2]):
+    print(f"  layers={nl} hidden={nh:>3}  avg_val_NLL={avg:.4f}")
+if fb:
+    nl, nh, avg = min(fb, key=lambda x: x[2])
+    print(f"  → best flow = layers={nl} hidden={nh} (avg_val_NLL={avg:.4f})")
+
+
+# ════════════════════════════════════════════════════════════════════
 # Table 4.7 — encoder ablation : 5 seed × 3 fold pooled (per encoder)
 # ════════════════════════════════════════════════════════════════════
-print("=" * 120)
+print("\n" + "=" * 120)
 print("[Table 4.7] Past Encoder ablation — 5 seed × 3 fold pooled (rvP2abl)")
 print("  방향: NLL/CRPS/EMD 낮을수록 | CVaR1% 깊을수록(−) | skew 좌측(−) | cov80→0.80 cov95→0.95 | std비→1.0")
 print("=" * 120)
