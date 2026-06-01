@@ -132,6 +132,23 @@ if fb:
     nl, nh, avg = min(fb, key=lambda x: x[2])
     print(f"  → best flow = layers={nl} hidden={nh} (avg_val_NLL={avg:.4f})")
 
+# [1b-on-MLP] MLP 본모형용 flow 재튜닝 (run_mlp_main_rawvol.py)
+print("\n[Phase 1b-on-MLP] MLP 압축기 위 flow 재튜닝 — 3-fold avg VAL NLL (Table 3.7 MLP flow)")
+fbm = []
+for nl in P1B_FLOW_LAYERS:
+    for nh in P1B_FLOW_HIDDEN:
+        tag = f"rvP1bMlp_fl{nl}_fh{nh}"
+        vals = [read_val(tag, fold) for fold in FOLDS_TUNE]
+        if all(v is not None for v in vals):
+            fbm.append((nl, nh, sum(vals) / len(vals)))
+if not fbm:
+    print("  (rvP1bMlp 결과 없음 — run_mlp_main_rawvol.py 먼저)")
+else:
+    for nl, nh, avg in sorted(fbm, key=lambda x: x[2]):
+        print(f"  layers={nl} hidden={nh:>3}  avg_val_NLL={avg:.4f}")
+    nl, nh, avg = min(fbm, key=lambda x: x[2])
+    print(f"  → MLP best flow = layers={nl} hidden={nh} (avg_val_NLL={avg:.4f})")
+
 
 # ════════════════════════════════════════════════════════════════════
 # Table 4.7 — encoder ablation : 5 seed × 3 fold pooled (per encoder)
@@ -185,31 +202,43 @@ for crit_key, crit_lbl, good in [("per_week_nll_z", "NLL/wk(낮을수록)", "min
 # Table 4.1 — 본모형 (rvP2main) : fold별 5-seed mean±std
 # ════════════════════════════════════════════════════════════════════
 print("\n" + "=" * 120)
-print("[Table 4.1] 본모형 (rvP2main) — fold별 5-seed mean±std")
+print("[Table 4.1] 본모형 — fold별 5-seed mean±std (본모형 tag별 분리)")
 print("=" * 120)
-main_files = glob.glob(os.path.join(RESULT_DIR, "garch_flow_ar_rvP2main_*_summary.json"))
+# rvP2main_ (구 LSTM) + rvP2mainMlp_ (신 MLP) 모두 매칭, tag-stem 별 분리 집계
+main_files = glob.glob(os.path.join(RESULT_DIR, "garch_flow_ar_rvP2main*_summary.json"))
 if not main_files:
-    print("  (rvP2main summary 없음)")
+    print("  (rvP2main* summary 없음)")
 else:
-    # main tag 추출 (압축기/flow 확인)
-    tags = set(re.sub(r"_(F_gfc|F_long_A|F_long_B_origin|F_long)_summary\.json$", "",
-                      os.path.basename(f)) for f in main_files)
-    print(f"  main tag(s): {sorted(tags)}")
-    hdr2 = f"{'fold':<18}" + "".join(f"{lbl:>20}" for _, lbl, _ in METRICS)
-    print(hdr2)
-    print("-" * len(hdr2))
-    for fold in FOLDS_MAIN:
-        ff = [f for f in main_files if fold_of(os.path.basename(f)) == fold]
-        coll = defaultdict(list)
-        for f in ff:
-            te = load_te(f)
+    def stem(fn):
+        return re.sub(r"_(F_gfc|F_long_A|F_long_B_origin|F_long)_summary\.json$", "",
+                      os.path.basename(fn))
+    stem_to_files = defaultdict(list)
+    for f in main_files:
+        stem_to_files[stem(f)].append(f)
+    # seed 접미사 제거한 모형 그룹으로 다시 묶기 (rvP2main..._s2026.. → 모형 단위)
+    model_to_files = defaultdict(list)
+    for st, fs in stem_to_files.items():
+        model = re.sub(r"_s\d+$", "", st)
+        model_to_files[model].extend(fs)
+    for model in sorted(model_to_files):
+        files = model_to_files[model]
+        kind = "MLP(신, 채택)" if "Mlp" in model else "LSTM(구, val선택)"
+        print(f"\n  ── 본모형: {model}  [{kind}] ──")
+        hdr2 = f"{'fold':<18}" + "".join(f"{lbl:>20}" for _, lbl, _ in METRICS)
+        print(hdr2)
+        print("-" * len(hdr2))
+        for fold in FOLDS_MAIN:
+            ff = [f for f in files if fold_of(os.path.basename(f)) == fold]
+            coll = defaultdict(list)
+            for f in ff:
+                te = load_te(f)
+                for key, _, _ in METRICS:
+                    if isinstance(te.get(key), (int, float)):
+                        coll[key].append(te[key])
+            row = f"{fold:<18}"
             for key, _, _ in METRICS:
-                if isinstance(te.get(key), (int, float)):
-                    coll[key].append(te[key])
-        row = f"{fold:<18}"
-        for key, _, _ in METRICS:
-            mn, sd, n = ms(coll[key])
-            row += f"{fmt(mn, sd, n):>20}"
-        print(row)
+                mn, sd, n = ms(coll[key])
+                row += f"{fmt(mn, sd, n):>20}"
+            print(row)
 
 print("\n[안내] 이 출력을 paste 하면 Table 4.7/4.1 작성 + 본모형 채택 기준(NLL vs tail) 검토.")
