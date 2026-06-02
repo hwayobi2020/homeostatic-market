@@ -11,7 +11,7 @@ LOCKED MAC-Flow 본모형: 압축기 MLP(pd64,dr0.2) + flow(fl4/fh128), extra=sp
       (flat·ramp↑·ramp↓·hump∩·trough∪·step↑·step↓).  변수별로 (tbill-shape / metab flat),
       (metab-shape / tbill flat) 분리.  → 같은 평균에서 분포가 달라지면 path-dependence 입증.
 
-평가: skew(좌측−)·CVaR1(깊을수록−)·std + exkurt(발산 감시).  4 fold × 5 seed.
+평가: skew(좌측−)·CVaR1(깊을수록−)·std + exkurt(발산 감시).  4 fold × 3 seed.
   paired: 한 (fold,seed) 안에서 모든 시나리오 같은 torch.manual_seed → 칸/모양 간 차이 = 순수 효과.
   재진입: (fold,seed) 결과를 json 캐시 → 중단돼도 이어받기.
 
@@ -66,7 +66,7 @@ LK_DROPOUT = 0.2
 TAG_PREFIX = f"rvP2mainMlp_pd{LK_PD}_fl{LK_FLOW_LAYERS}_fh{LK_FLOW_HIDDEN}"
 
 FOLDS = ["F_gfc", "F_long_A", "F_long_B_origin", "F_long"]
-SEEDS = [2026, 2027, 2028, 2029, 2030]
+SEEDS = [2026, 2027, 2028]        # seed 3 (5에서 축소)
 PCTLS = [10, 50, 90]
 PCTL_LABEL = {10: "lo", 50: "mid", 90: "hi"}
 N_ORIGIN_MAX = 200
@@ -121,6 +121,12 @@ def build_shapes():
 
 
 SHAPES = build_shapes()
+SHAPE_STD = {k: float(np.std(v)) for k, v in SHAPES.items()}   # 경로 분산(혼동 투명화; 쌍↑↓ 동일)
+JOINT_DEFS = {
+    "easing":     ("ramp_down", "ramp_up"),    # 금리↓ + 유동성↑ (완화/QE)
+    "tightening": ("ramp_up",   "ramp_down"),  # 금리↑ + 유동성↓ (긴축)
+    "crisis":     ("step_down", "step_up"),    # 급금리↓ + 급유동성↑ (위기대응)
+}
 
 
 def _skew(a):
@@ -238,7 +244,7 @@ def run_fold_seed(fold, seed, device):
     ctx = load_fold_seed(fold, seed, device)
     if ctx is None:
         return None
-    res = {"level": {}, "shape_tbill": {}, "shape_metab": {}}
+    res = {"level": {}, "shape_tbill": {}, "shape_metab": {}, "joint": {}}
 
     def _run(tbill_path, metab_path):
         torch.manual_seed(seed)        # paired
@@ -261,6 +267,11 @@ def run_fold_seed(fold, seed, device):
     for name, dev in SHAPES.items():
         res["shape_tbill"][name] = _run(tb_c + dev * tb_rng, mb_flat)   # tbill 모양, metab flat
         res["shape_metab"][name] = _run(tb_flat, mb_c + dev * mb_rng)   # metab 모양, tbill flat
+
+    # [C] JOINT — tbill·metab 동시 경로 (정책 시나리오)
+    for name, (ts, ms) in JOINT_DEFS.items():
+        res["joint"][name] = _run(tb_c + SHAPES[ts] * tb_rng,
+                                  mb_c + SHAPES[ms] * mb_rng)
     return res
 
 
@@ -318,15 +329,26 @@ def _summarize():
         # SHAPE (평균 고정) — skew/cvar1/std mean±std, shape 간 차이 vs seed 노이즈
         for var, label in [("shape_tbill", "tbill-shape (metab flat)"),
                            ("shape_metab", "metab-shape (tbill flat)")]:
-            print(f"  [SHAPE: {label}]  (평균=p50 고정)")
-            print(f"    {'shape':>10} {'skew(m±sd)':>16} {'cvar1(m±sd)':>18} {'std(m±sd)':>16} {'exkurt':>9}")
+            print(f"  [SHAPE: {label}]  (평균=p50 고정 / pathσ=경로 분산, 쌍↑↓ 동일)")
+            print(f"    {'shape':>10} {'pathσ':>6} {'skew(m±sd)':>16} {'cvar1(m±sd)':>18} {'std(m±sd)':>16} {'exkurt':>9}")
             for name in SHAPES:
                 sk = _agg([d[var][name]["skew"] for d in loaded])
                 cv = _agg([d[var][name]["cvar1"] for d in loaded])
                 st = _agg([d[var][name]["std"] for d in loaded])
                 ek = _agg([d[var][name]["exkurt"] for d in loaded])
-                print(f"    {name:>10} {sk[0]:+.3f}±{sk[1]:.3f}   "
+                print(f"    {name:>10} {SHAPE_STD[name]:>6.3f} {sk[0]:+.3f}±{sk[1]:.3f}   "
                       f"{cv[0]:+.5f}±{cv[1]:.5f}   {st[0]:.4f}±{st[1]:.4f}   {ek[0]:+.1f}")
+
+        # JOINT (tbill·metab 동시 경로)
+        print(f"  [JOINT: tbill·metab 동시 경로]")
+        print(f"    {'scenario':>12} {'skew(m±sd)':>16} {'cvar1(m±sd)':>18} {'std(m±sd)':>16} {'exkurt':>9}")
+        for name in JOINT_DEFS:
+            sk = _agg([d["joint"][name]["skew"] for d in loaded])
+            cv = _agg([d["joint"][name]["cvar1"] for d in loaded])
+            st = _agg([d["joint"][name]["std"] for d in loaded])
+            ek = _agg([d["joint"][name]["exkurt"] for d in loaded])
+            print(f"    {name:>12} {sk[0]:+.3f}±{sk[1]:.3f}   "
+                  f"{cv[0]:+.5f}±{cv[1]:.5f}   {st[0]:.4f}±{st[1]:.4f}   {ek[0]:+.1f}")
     print("\n[판정] SHAPE 표에서 모양 간 skew/cvar1 차이가 ±sd(seed 노이즈)보다 크고 fold 일관 →")
     print("       path-dependence 입증.  flat 대비 안 변하면 → 모델은 평균만 본다(negative).")
 
