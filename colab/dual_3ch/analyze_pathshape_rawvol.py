@@ -50,7 +50,7 @@ from train_garch_flow import (                                      # noqa: E402
 
 RESULT_DIR = os.path.join(HERE, "result")
 FOLDS_DIR = os.path.join(ROOT, "data", "folds_v33_vix_expanding")
-CACHE_DIR = os.path.join(RESULT_DIR, "pathshape_cache")
+CACHE_DIR = os.path.join(RESULT_DIR, "pathshape_mdd_cache")   # MDD 추가 → 새 캐시(fresh)
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 ENC_COLS = ["sp_return", "tbill_wr", "ads_lag", "wti_wr", "metab_13w"]
@@ -233,10 +233,17 @@ def load_fold_seed(fold, seed, device):
 def sim_metrics(sim_z, rescale):
     r = rescale
     sim_raw = forward_garch_rescale(sim_z * r["tsd"] + r["tmu"], r["s2"], r["e2"],
-                                    r["om"], r["al"], r["be"], r["mu"])
+                                    r["om"], r["al"], r["be"], r["mu"])   # (n_orig, n_sim, T)
     f = sim_raw.ravel()
+    # 경로(순서 반영) 지표: 누적 로그수익(진입점=0 기준) → 보유기간 중 최악 underwater
+    # (= 최저 누적점, vs 진입).  peak-to-trough 아님 — "이익 토해냄"은 위험으로 안 셈.
+    cum = np.cumsum(sim_raw, axis=2)                                       # (n_orig, n_sim, T)
+    underw = cum.min(axis=2).ravel()                                      # 경로별 최악 누적손실(≤0이면 underwater)
+    term = cum[:, :, -1].ravel()                                          # terminal 누적수익
     return dict(std=float(f.std(ddof=1)), skew=_skew(f), exkurt=_exkurt(f),
-                cvar5=compute_cvar(f, 0.05), cvar1=compute_cvar(f, 0.01))
+                cvar5=compute_cvar(f, 0.05), cvar1=compute_cvar(f, 0.01),
+                uw_mean=float(underw.mean()), uw_cvar1=compute_cvar(underw, 0.01),
+                term_mean=float(term.mean()), term_cvar1=compute_cvar(term, 0.01))
 
 
 def run_fold_seed(fold, seed, device):
@@ -315,42 +322,47 @@ def _summarize():
         print(f"\n=== {fold}  ({len(loaded)} seed) " + "=" * 60)
 
         # LEVEL 9-grid
-        print("  [LEVEL 9-grid]  tbill×metab  skew / cvar1 / std (seed mean)")
+        print("  [LEVEL 9-grid]  tbill×metab  skew / cvar1 / underwaterCVaR1 (seed mean)")
         for pt in PCTLS:
             row = []
             for pm in PCTLS:
                 key = f"{PCTL_LABEL[pt]}_{PCTL_LABEL[pm]}"
                 sk, _, _ = _agg([d["level"][key]["skew"] for d in loaded])
                 cv, _, _ = _agg([d["level"][key]["cvar1"] for d in loaded])
-                st, _, _ = _agg([d["level"][key]["std"] for d in loaded])
-                row.append(f"{PCTL_LABEL[pm]}:{sk:+.2f}/{cv:+.4f}/{st:.4f}")
+                uw, _, _ = _agg([d["level"][key]["uw_cvar1"] for d in loaded])
+                row.append(f"{PCTL_LABEL[pm]}:{sk:+.2f}/{cv:+.4f}/{uw:+.4f}")
             print(f"    tbill={PCTL_LABEL[pt]:>3}  " + "   ".join(row))
 
         # SHAPE (평균 고정) — skew/cvar1/std mean±std, shape 간 차이 vs seed 노이즈
         for var, label in [("shape_tbill", "tbill-shape (metab flat)"),
                            ("shape_metab", "metab-shape (tbill flat)")]:
-            print(f"  [SHAPE: {label}]  (평균=p50 고정 / pathσ=경로 분산, 쌍↑↓ 동일)")
-            print(f"    {'shape':>10} {'pathσ':>6} {'skew(m±sd)':>16} {'cvar1(m±sd)':>18} {'std(m±sd)':>16} {'exkurt':>9}")
+            print(f"  [SHAPE: {label}]  (평균=p50 고정 / underwater=경로의존 → ↑↓ 비교가 순서검증)")
+            print(f"    {'shape':>10} {'pathσ':>6} {'skew':>8} {'cvar1':>10} {'UWmean(m±sd)':>18} {'UWcvar1(m±sd)':>18} {'termCVaR1':>11}")
             for name in SHAPES:
                 sk = _agg([d[var][name]["skew"] for d in loaded])
                 cv = _agg([d[var][name]["cvar1"] for d in loaded])
-                st = _agg([d[var][name]["std"] for d in loaded])
-                ek = _agg([d[var][name]["exkurt"] for d in loaded])
-                print(f"    {name:>10} {SHAPE_STD[name]:>6.3f} {sk[0]:+.3f}±{sk[1]:.3f}   "
-                      f"{cv[0]:+.5f}±{cv[1]:.5f}   {st[0]:.4f}±{st[1]:.4f}   {ek[0]:+.1f}")
+                mm = _agg([d[var][name]["uw_mean"] for d in loaded])
+                mc = _agg([d[var][name]["uw_cvar1"] for d in loaded])
+                tc = _agg([d[var][name]["term_cvar1"] for d in loaded])
+                print(f"    {name:>10} {SHAPE_STD[name]:>6.3f} {sk[0]:>+8.3f} {cv[0]:>+10.5f} "
+                      f"{mm[0]:+.5f}±{mm[1]:.5f} {mc[0]:+.5f}±{mc[1]:.5f} {tc[0]:>+11.5f}")
 
         # JOINT (tbill·metab 동시 경로)
         print(f"  [JOINT: tbill·metab 동시 경로]")
-        print(f"    {'scenario':>12} {'skew(m±sd)':>16} {'cvar1(m±sd)':>18} {'std(m±sd)':>16} {'exkurt':>9}")
+        print(f"    {'scenario':>12} {'skew':>8} {'cvar1':>10} {'UWmean(m±sd)':>18} {'UWcvar1(m±sd)':>18} {'termCVaR1':>11}")
         for name in JOINT_DEFS:
             sk = _agg([d["joint"][name]["skew"] for d in loaded])
             cv = _agg([d["joint"][name]["cvar1"] for d in loaded])
-            st = _agg([d["joint"][name]["std"] for d in loaded])
-            ek = _agg([d["joint"][name]["exkurt"] for d in loaded])
-            print(f"    {name:>12} {sk[0]:+.3f}±{sk[1]:.3f}   "
-                  f"{cv[0]:+.5f}±{cv[1]:.5f}   {st[0]:.4f}±{st[1]:.4f}   {ek[0]:+.1f}")
-    print("\n[판정] SHAPE 표에서 모양 간 skew/cvar1 차이가 ±sd(seed 노이즈)보다 크고 fold 일관 →")
-    print("       path-dependence 입증.  flat 대비 안 변하면 → 모델은 평균만 본다(negative).")
+            mm = _agg([d["joint"][name]["uw_mean"] for d in loaded])
+            mc = _agg([d["joint"][name]["uw_cvar1"] for d in loaded])
+            tc = _agg([d["joint"][name]["term_cvar1"] for d in loaded])
+            print(f"    {name:>12} {sk[0]:>+8.3f} {cv[0]:>+10.5f} "
+                  f"{mm[0]:+.5f}±{mm[1]:.5f} {mc[0]:+.5f}±{mc[1]:.5f} {tc[0]:>+11.5f}")
+    print("\n[판정] *순서/경로 의존*은 순서 반영 지표(underwater=보유 중 최악 누적손실 vs 진입)로 본다.")
+    print("       (skew/cvar/term 은 순서 무감각.  peak-to-trough 아님 — 이익 토해냄은 위험 안 셈.)")
+    print("       SHAPE 표에서 ramp_up vs ramp_down (또는 step_up/down)의 UWmean·UWcvar1 이")
+    print("       다르고 fold 일관 → 주가 경로/순서 의존 입증.")
+    print("       term(끝점)은 비슷한데 UW 만 다르면 → 순수 경로위험 (100→110→100 vs 100→90→100).")
 
 
 if __name__ == "__main__":
