@@ -48,7 +48,7 @@ from train_garch_flow import (                                      # noqa: E402
 
 RESULT_DIR = os.path.join(HERE, "result")
 FOLDS_DIR = os.path.join(ROOT, "data", "folds_v33_vix_expanding")
-CACHE_DIR = os.path.join(RESULT_DIR, "ihl_calib_cache")
+CACHE_DIR = os.path.join(RESULT_DIR, "ihl_calib_cache_var")   # 단측 VaR backtest (지표 변경 → 새 캐시)
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 ENC_COLS = ["sp_return", "tbill_wr", "ads_lag", "wti_wr", "metab_13w"]
@@ -192,22 +192,29 @@ def run_fold_seed(fold, seed, device):
     actual_ihl = intra_horizon_loss(actual_raw)                    # (n_v,)
     sim_ihl = intra_horizon_loss(sim_raw)                          # (n_v, n_sim)
 
-    lo80 = np.percentile(sim_ihl, 10.0, axis=1); hi80 = np.percentile(sim_ihl, 90.0, axis=1)
-    lo95 = np.percentile(sim_ihl, 2.5, axis=1); hi95 = np.percentile(sim_ihl, 97.5, axis=1)
-    cov80 = float(((actual_ihl >= lo80) & (actual_ihl <= hi80)).mean())
-    cov95 = float(((actual_ihl >= lo95) & (actual_ihl <= hi95)).mean())
+    # === 단측(one-sided) VaR exceedance backtest (Kupiec식) ===
+    # IHL 은 좌편향·단측(≤0)·0집중 → 양측 coverage 부적절.  깊은 손실 꼬리만 본다.
+    # 모델 IHL VaR_α = origin별 sim_ihl 의 α-분위(깊은 경계).  실제가 더 깊으면 breach.
+    # 잘 보정되면 breach_rate ≈ α.
+    var05 = np.percentile(sim_ihl, 5.0, axis=1)                    # (n_v,) 5% 최악 경계
+    var10 = np.percentile(sim_ihl, 10.0, axis=1)
+    breach05 = float((actual_ihl < var05).mean())                 # ≈0.05 면 보정 OK
+    breach10 = float((actual_ihl < var10).mean())                 # ≈0.10
 
-    sim_ihl_per_origin_mean = sim_ihl.mean(axis=1)                 # (n_v,)
+    # 쏠림(집중) 진단: sim IHL 의 상단분위가 0 근처면 단측·집중 확인
+    sim_p90 = float(np.percentile(sim_ihl, 90.0))                 # pooled 상단 (0 근처?)
+    frac_near0 = float((sim_ihl > -0.002).mean())                 # 누적 −0.2% 이내(거의 안빠짐) 비율
+
     return dict(
         n_origin=int(n_origins),
-        cov80=cov80, cov95=cov95,
-        mean_actual_ihl=float(actual_ihl.mean()),
-        mean_sim_ihl=float(sim_ihl.mean()),
+        # 단측 VaR backtest (주지표)
+        breach05=breach05, breach10=breach10,
+        mean_var05=float(var05.mean()),                           # 위험 수치: 평균 5% IHL 경계
+        # 강건 중심 descriptor (mean 아님 — 꼬리에 끌리므로)
         median_actual_ihl=float(np.median(actual_ihl)),
         median_sim_ihl=float(np.median(sim_ihl)),
-        # 분포 전체 비교용 보조: per-origin actual & sim-mean
-        actual_ihl=actual_ihl.tolist(),
-        sim_ihl_origin_mean=sim_ihl_per_origin_mean.tolist(),
+        # 쏠림 진단
+        sim_ihl_p90=sim_p90, frac_sim_near0=frac_near0,
     )
 
 
@@ -229,14 +236,14 @@ def main():
                 continue
             json.dump(r, open(cache, "w"), indent=2)
             print(f"[done] {fold} s{seed}  n={r['n_origin']}  "
-                  f"cov80={r['cov80']:.3f} cov95={r['cov95']:.3f}  "
-                  f"meanIHL act/sim={r['mean_actual_ihl']:+.4f}/{r['mean_sim_ihl']:+.4f}")
+                  f"breach 5%/10%={r['breach05']:.3f}/{r['breach10']:.3f}  "
+                  f"VaR5={r['mean_var05']:+.4f}  near0={r['frac_sim_near0']:.2f}")
 
     # ── 집계: seed 평균±std ──
     print("\n" + "=" * 100)
-    print("[집계] IHL 적합도 — 4 fold × 3 seed 평균±std")
-    print(f"  {'fold':>16} {'n_orig':>7} {'cov80':>14} {'cov95':>14} "
-          f"{'mean act IHL':>14} {'mean sim IHL':>14} {'act/sim 비':>10}")
+    print("[집계] IHL 단측 VaR 적합도 — 4 fold × 3 seed 평균±std")
+    print(f"  {'fold':>16} {'n_orig':>7} {'breach5%(→.05)':>15} {'breach10%(→.10)':>16} "
+          f"{'meanVaR5%':>11} {'med act/sim':>16} {'near0':>7}")
 
     def _agg(vals):
         a = np.asarray(vals, float)
@@ -252,18 +259,21 @@ def main():
             print(f"  {fold:>16}  (결과 없음)")
             continue
         n_orig = loaded[0]["n_origin"]
-        c80_m, c80_s = _agg([d["cov80"] for d in loaded])
-        c95_m, c95_s = _agg([d["cov95"] for d in loaded])
-        ai_m, ai_s = _agg([d["mean_actual_ihl"] for d in loaded])
-        si_m, si_s = _agg([d["mean_sim_ihl"] for d in loaded])
-        ratio = ai_m / si_m if abs(si_m) > 1e-9 else float("nan")
+        b5_m, b5_s = _agg([d["breach05"] for d in loaded])
+        b10_m, b10_s = _agg([d["breach10"] for d in loaded])
+        v5_m, _ = _agg([d["mean_var05"] for d in loaded])
+        ma = float(np.mean([d["median_actual_ihl"] for d in loaded]))
+        ms = float(np.mean([d["median_sim_ihl"] for d in loaded]))
+        nz_m, _ = _agg([d["frac_sim_near0"] for d in loaded])
         print(f"  {fold:>16} {n_orig:>7d} "
-              f"{c80_m:.3f}±{c80_s:.3f} {c95_m:.3f}±{c95_s:.3f} "
-              f"{ai_m:+.4f}±{ai_s:.4f} {si_m:+.4f}±{si_s:.4f} {ratio:>9.3f}")
+              f"{b5_m:.3f}±{b5_s:.3f} {b10_m:.3f}±{b10_s:.3f} "
+              f"{v5_m:+.4f} {ma:+.4f}/{ms:+.4f} {nz_m:>6.2f}")
 
-    print("\n[판정] cov80≈0.80 / cov95≈0.95 면 IHL 잘 보정됨.  act/sim 비≈1 이면 편향 없음.")
-    print("       (cov 가 낮으면 sim IHL 구간이 좁아 실제 손실을 과소; 높으면 과대.)")
-    print("       caveat: 메인 4-fold test origin ~150-200 — 표본 충분하나 fold 1.5y 계열은 적음.")
+    print("\n[판정] 단측 VaR backtest: breach5%≈0.05 / breach10%≈0.10 면 IHL 위험 잘 보정.")
+    print("       breach > α → 모델 IHL VaR 이 얕아 실제 손실 과소(위험 underestimate);")
+    print("       breach < α → 과대(보수적).  med=강건중심(mean 아님, 꼬리 끌림 회피).")
+    print("       near0 = sim IHL 이 진입선 −0.2% 이내인 비율(쏠림/단측 진단).")
+    print("       caveat: 메인 4-fold test origin ~150-200.  breach1% 는 표본상 별도 미산출.")
 
 
 if __name__ == "__main__":
