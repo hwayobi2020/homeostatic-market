@@ -38,6 +38,8 @@ METRICS = [
     ("emd",            "EMD",    "낮을수록"),
     ("cvar_1pct_sim",  "CVaR1%", "깊을수록(−)"),
     ("skew_sim",       "skew",   "좌측(−)"),
+    ("exkurt_actual",  "exk_a",  "기준"),
+    ("exkurt_sim",     "exk_s",  "act 근접"),
     ("coverage_80",    "cov80",  "0.80 근접"),
     ("coverage_95",    "cov95",  "0.95 근접"),
     ("std_ratio",      "std비",  "1.0 근접"),
