@@ -43,16 +43,17 @@ PS.PCTLS = [10, 30, 50, 70, 90]
 FOLDS = PS.FOLDS                       # F_gfc / F_long_A / F_long_B_origin / F_long
 SEEDS = PS.SEEDS                       # 2026/27/28
 FUTURE_LEN = PS.FUTURE_LEN
-CACHE_DIR = os.path.join(PS.RESULT_DIR, "debasement_cache_v3")   # [C] 진폭 sweep 추가 → 새 캐시
+CACHE_DIR = os.path.join(PS.RESULT_DIR, "debasement_cache_v4")   # [C] shape×진폭 그리드 → 새 캐시
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 LOW_PCTL = 10                          # tbill 저금리 고정 수준
 METAB_LEVELS = [10, 30, 50, 70, 90]    # [A] 미세 레벨 sweep
 # [B] 동적: 점진(ramp)·급격(step)·충격왔다감(hump/trough) × 확대(up)/축소(down)
 METAB_SHAPES = ["flat", "ramp_up", "ramp_down", "step_up", "step_down", "hump", "trough"]
-# [C] COVID-급 진폭 sweep: step_up(유동성 급팽창) × {1×리만, 2×, 3×, 5×COVID} (p90-p10 배수)
-#     metab z 가 학습범위(±3) 밖으로 외삽 — 효과가 이어지나/포화/발산하는지 (절대값 OOD).
-AMP_MULTS = [1.0, 2.0, 3.0, 5.0]
+# [C] 경로 SHAPE × 진폭 그리드: 작은 진폭(리만)에선 순서효과(up vs down)가 약했는데,
+#     COVID-급 진폭에서 *비로소* 커지나?  ramp↑↓·step↑↓·hump/trough × {1×리만,3×,5×COVID}.
+AMP_MULTS = [1.0, 3.0, 5.0]
+SHAPES_C = ["ramp_up", "ramp_down", "step_up", "step_down", "hump", "trough"]
 
 
 @torch.no_grad()
@@ -85,13 +86,14 @@ def run_fold_seed(fold, seed, device):
         mb_path = mb_c + dev * mb_rng
         res["dynamic_lowrate"][name] = _run(tb_flat_lo, mb_path)
 
-    # [C] COVID-급 진폭 sweep: step_up 진폭을 1×~5×(p90-p10)로 확대 (저금리 고정)
-    step_up = PS.SHAPES["step_up"]
-    for mult in AMP_MULTS:
-        mb_path = mb_c + step_up * (mult * mb_rng)
-        m = _run(tb_flat_lo, mb_path)
-        m["mb_path_std_z"] = float(np.std(step_up * (mult * mb_rng), ddof=0))  # 주입경로 std(z)
-        res["amp_sweep"][f"x{mult:.0f}"] = m
+    # [C] 경로 SHAPE × 진폭: 큰 진폭(COVID급)에서 순서효과(up vs down)가 커지는지
+    for name in SHAPES_C:
+        dev = PS.SHAPES[name]
+        for mult in AMP_MULTS:
+            mb_path = mb_c + dev * (mult * mb_rng)
+            m = _run(tb_flat_lo, mb_path)
+            m["mb_path_std_z"] = float(np.std(dev * (mult * mb_rng), ddof=0))
+            res["amp_sweep"][f"{name}_x{mult:.0f}"] = m
 
     return res
 
@@ -157,27 +159,28 @@ def main():
             print(f"    {name:<10} σ{sg:.2f}  skew {sk[0]:+.3f}±{sk[1]:.3f}  "
                   f"UWcvar1 {uc[0]:+.4f}±{uc[1]:.4f}  term {tm[0]:+.4f}")
 
-        # [C] COVID-급 진폭 sweep (step_up 1×리만 → 5×COVID)
-        print(f"  [C] tbill=p{LOW_PCTL} 고정, step_up 진폭 sweep (1×≈리만 … 5×≈COVID)  "
-              f"— 경로std(z) / skew / UWcvar1 / std / exkurt(발산감시)")
+        # [C] 경로 SHAPE × 진폭 — 순서효과(up vs down)가 진폭(1×리만→5×COVID) 따라 커지나
+        print(f"  [C] tbill=p{LOW_PCTL} 고정, SHAPE × 진폭 — 진폭별 up vs down UWcvar1(gap)·skew·exkurt")
         for mult in AMP_MULTS:
-            key = f"x{mult:.0f}"
-            ps_ = _agg([d["amp_sweep"][key]["mb_path_std_z"] for d in loaded])
-            sk = _agg([d["amp_sweep"][key]["skew"] for d in loaded])
-            uc = _agg([d["amp_sweep"][key]["uw_cvar1"] for d in loaded])
-            sd = _agg([d["amp_sweep"][key]["std"] for d in loaded])
-            ek = _agg([d["amp_sweep"][key]["exkurt"] for d in loaded])
+            psz = _agg([d["amp_sweep"][f"step_up_x{mult:.0f}"]["mb_path_std_z"] for d in loaded])
             tag = "≈리만" if mult == 1 else ("≈COVID" if mult == 5 else "")
-            print(f"    {mult:.0f}× {tag:<7} 경로std {ps_[0]:.2f}  skew {sk[0]:+.3f}  "
-                  f"UWcvar1 {uc[0]:+.4f}  std {sd[0]:.4f}  exkurt {ek[0]:+.2f}")
+            print(f"    --- {mult:.0f}× {tag:<6} (step 경로std~{psz[0]:.1f}) ---")
+            for a, b in [("ramp_up", "ramp_down"), ("step_up", "step_down"), ("hump", "trough")]:
+                ua = _agg([d["amp_sweep"][f"{a}_x{mult:.0f}"]["uw_cvar1"] for d in loaded])[0]
+                ub = _agg([d["amp_sweep"][f"{b}_x{mult:.0f}"]["uw_cvar1"] for d in loaded])[0]
+                ska = _agg([d["amp_sweep"][f"{a}_x{mult:.0f}"]["skew"] for d in loaded])[0]
+                ek = _agg([d["amp_sweep"][f"{a}_x{mult:.0f}"]["exkurt"] for d in loaded])[0]
+                print(f"      {a:>9}/{b:<9} UWcvar1 {ua:+.4f}/{ub:+.4f} (gap{ub-ua:+.4f})  "
+                      f"skew {ska:+.2f}  exk {ek:+.1f}")
 
     print("\n[판정] [A] 저금리에서 metab 레벨↑ → skew 더 좌(−)·UWcvar1 더 깊으면 = 저금리 유동성 꼬리증폭 (4.2.1 zoom).")
     print("       [B] *분산효과*: pathσ↑(flat<ramp/hump<step) 따라 skew 더 좌 → 유동성 *변동 자체*가 모양 reshape.")
     print("           *순서효과*: 같은 σ 내 up vs down (ramp↑/↓, step↑/↓, hump/trough) 의 UWcvar1 차이 +fold 일관 → 순서위험.")
     print("           (skew 는 순서무감각이라 up≈down 당연 — 순서는 UWcvar1 로만 본다.)")
     print("       term 비슷한데 UWcvar1 만 다르면 → 순수 경로위험.  *상대* 비교만 (절대수치 OOD 한계 §5).")
-    print("       [C] 진폭 1×(리만)→5×(COVID): skew 가 계속 깊어지면 *외삽 지속*, 평평하면 *포화*,")
-    print("           std/exkurt 폭증하면 *발산*(모델이 COVID-급 외삽서 깨짐).  절대값 신뢰 X — *거동*만.")
+    print("       [C] SHAPE×진폭: 같은 pair(up vs down)의 UWcvar1 'gap'이 진폭 1×(리만)→5×(COVID)↑ 따라")
+    print("           *커지면* → COVID 규모 유동성에서 비로소 *순서효과* 유의 (리만급에선 약했던 게).")
+    print("           gap 그대로면 → 큰 진폭에서도 순서 무관.  (skew=분산효과, gap=순서효과 분리해 본다.)")
 
 
 if __name__ == "__main__":
