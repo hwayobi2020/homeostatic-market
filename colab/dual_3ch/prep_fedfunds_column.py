@@ -20,21 +20,42 @@ ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
 FOLDS_DIR = os.path.join(ROOT, "data", "folds_v33_vix_expanding")
 FOLDS = ["F_gfc", "F_long_A", "F_long_B_origin", "F_long"]
 
-try:
-    import pandas_datareader.data as web
-except ImportError:
-    import subprocess
-    subprocess.run([sys.executable, "-m", "pip", "install", "pandas_datareader", "-q"], check=True)
-    import pandas_datareader.data as web
+def fetch_dff():
+    """FRED DFF(일별 연방기금금리) 다운로드 — CSV 직접 받기(1순위, Colab 안정) →
+    pandas_datareader(2순위) 순으로 시도.  pandas Series(index=date, value=연%) 반환."""
+    # 1순위: FRED graph CSV 엔드포인트를 pd.read_csv 로 직접 (의존성 0)
+    try:
+        url = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DFF"
+        raw = pd.read_csv(url)
+        datecol, valcol = raw.columns[0], raw.columns[1]   # (observation_date|DATE, DFF)
+        s = pd.Series(pd.to_numeric(raw[valcol], errors="coerce").values,
+                      index=pd.to_datetime(raw[datecol]))
+        s = s.dropna().sort_index()
+        if len(s) > 100:
+            print(f"  [fetch] FRED CSV 직접 OK (n={len(s)})")
+            return s
+        print(f"  [warn] FRED CSV 행 부족(n={len(s)}) → pandas_datareader 시도")
+    except Exception as e:
+        print(f"  [warn] FRED CSV 직접 실패: {e!r} → pandas_datareader 시도")
+    # 2순위: pandas_datareader
+    try:
+        import pandas_datareader.data as web
+    except ImportError:
+        import subprocess
+        subprocess.run([sys.executable, "-m", "pip", "install", "pandas_datareader", "-q"], check=True)
+        import pandas_datareader.data as web
+    dff = web.DataReader("DFF", "fred", start="1950-01-01", end="2026-04-01")
+    if isinstance(dff, pd.DataFrame):
+        dff = dff["DFF"]
+    s = pd.to_numeric(dff, errors="coerce").dropna().sort_index()
+    s.index = pd.to_datetime(s.index)
+    print(f"  [fetch] pandas_datareader OK (n={len(s)})")
+    return s
 
 
 def main():
     print("[fedfunds] FRED DFF (daily fed funds) 다운로드")
-    dff = web.DataReader("DFF", "fred", start="1950-01-01", end="2026-04-01")
-    if isinstance(dff, pd.DataFrame):
-        dff = dff["DFF"]
-    dff = dff.dropna().sort_index()
-    dff.index = pd.to_datetime(dff.index)
+    dff = fetch_dff()
     dff_w = dff.resample("W-FRI").mean()        # 주간 평균 (tbill DTB3 와 동일 처리)
     print(f"  DFF: {dff.index.min().date()} ~ {dff.index.max().date()}  weekly n={len(dff_w)}")
 
