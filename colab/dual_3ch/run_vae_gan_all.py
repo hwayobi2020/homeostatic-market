@@ -20,6 +20,19 @@ sys.path.insert(0, HERE)
 
 import train_vae_gan_baseline as VG                                 # noqa: E402
 
+# ── raw-vol 모드 일치 (MAC-Flow 와 동일 파이프라인) ──────────────────────────────
+# train_vae_gan_baseline 은 `from train_garch_flow import garch_preprocess_fold,
+# forward_garch_rescale` 로 *import 시점에 이름을 복사*하므로, patch_rawvol() 이
+# train_garch_flow.* 만 바꿔서는 baseline 에 전달되지 않는다(여전히 원본 GARCH 사용).
+# → baseline 모듈(VG)의 import-bound 이름을 raw-vol 버전으로 직접 덮어쓴다.
+#   이로써 VAE/GAN 도 MAC-Flow 와 동일하게 rolling-std 표준화 + origin-frozen σ 로 평가됨.
+from rawvol_helpers import (patch_rawvol, rawstd_preprocess_fold,        # noqa: E402
+                            forward_rawvol_rescale)
+patch_rawvol()                                   # train_garch_flow.* (모듈-참조 사용처용)
+VG.garch_preprocess_fold = rawstd_preprocess_fold   # ★ baseline import-bound 이름 교체
+VG.forward_garch_rescale = forward_rawvol_rescale   # ★
+print("[run_vae_gan_all] raw-vol 모드 적용 — VAE/GAN 도 MAC-Flow 와 동일 파이프라인(rolling-std + origin-frozen σ)")
+
 FOLDS = ["F_gfc", "F_long_A", "F_long_B_origin", "F_long"]
 RESULT_DIR = os.path.join(HERE, "result")
 FOLDS_DIR = os.path.join(ROOT, "data", "folds_v33_vix_expanding")
