@@ -20,9 +20,24 @@ ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
 FOLDS_DIR = os.path.join(ROOT, "data", "folds_v33_vix_expanding")
 FOLDS = ["F_gfc", "F_long_A", "F_long_B_origin", "F_long"]
 
+BUNDLED_DFF = os.path.join(ROOT, "data", "dff_fed_funds.csv")  # repo 번들 (H.15 RIFSPFF_N.D)
+
+
 def fetch_dff():
-    """FRED DFF(일별 연방기금금리) 다운로드 — CSV 직접 받기(1순위, Colab 안정) →
-    pandas_datareader(2순위) 순으로 시도.  pandas Series(index=date, value=연%) 반환."""
+    """연방기금실효금리(일별) 로드 — repo 번들 CSV(0순위, 네트워크 불필요) →
+    FRED CSV 직접(1순위) → pandas_datareader(2순위).  Series(index=date, value=연%) 반환.
+
+    번들 CSV(data/dff_fed_funds.csv)는 FRB H.15 의 RIFSPFF_N.D(=FRED DFF 동일)에서
+    추출한 것으로, Colab 에서 FRED 접속이 막혀도(504/timeout) 동작한다."""
+    # 0순위: repo 번들 CSV
+    if os.path.exists(BUNDLED_DFF):
+        raw = pd.read_csv(BUNDLED_DFF)
+        s = pd.Series(pd.to_numeric(raw["DFF"], errors="coerce").values,
+                      index=pd.to_datetime(raw["DATE"])).dropna().sort_index()
+        if len(s) > 100:
+            print(f"  [fetch] 번들 CSV {os.path.basename(BUNDLED_DFF)} OK (n={len(s)})")
+            return s
+        print(f"  [warn] 번들 CSV 행 부족(n={len(s)}) → FRED 시도")
     # 1순위: FRED graph CSV 엔드포인트를 pd.read_csv 로 직접 (의존성 0)
     try:
         url = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DFF"
