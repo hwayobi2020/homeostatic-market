@@ -89,6 +89,19 @@ def set_window(fl):
         if orig is None:
             continue
         fn.__defaults__ = tuple(fl if d == ORIG_FL else d for d in orig)
+    # ★ 모델 MambaFlowAR.__init__ 의 future_len 기본값(=13)도 rebind.
+    #   main_worker 가 future_len 을 안 넘기고 기본값을 쓰므로(→ self.L, pos_emb 크기 결정),
+    #   이걸 안 바꾸면 win26/52 에서 데이터 길이(78/104)와 pos_emb(65) 가 불일치한다.
+    #   __init__ 기본값 중 13 은 future_len 뿐(d_model=128, bins=16, past_len=52 등) → 값매칭 안전.
+    try:
+        init_fn = T.MambaFlowAR.__init__
+        if "MambaFlowAR.__init__" not in _ORIG_DEFAULTS:
+            _ORIG_DEFAULTS["MambaFlowAR.__init__"] = init_fn.__defaults__
+        orig_init = _ORIG_DEFAULTS["MambaFlowAR.__init__"]
+        if orig_init is not None:
+            init_fn.__defaults__ = tuple(fl if d == ORIG_FL else d for d in orig_init)
+    except Exception as e:
+        print(f"  [warn] MambaFlowAR.__init__ future_len rebind 실패: {e!r}")
     try:
         T._DATA_CACHE.clear()
     except Exception:
