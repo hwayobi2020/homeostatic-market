@@ -183,14 +183,17 @@ SHAPE_STD = _build_shape_std()
 # ════════════════════════════════════════════════════════════════════
 def sec_4_1_1():
     print("\n" + "#" * 110)
-    print("# §4.1.1  단순 분포 추정모델과의 비교 — GARCH(1,1)-X-t  vs  MAC-Flow(본모형)")
-    print("#  공통 지표만(생성형 baseline 엔 NLL 없음/CVaR diff).  핵심=skew_s: GARCH≈0(대칭) vs MAC-Flow 좌(−)")
+    print("# §4.1.1  정보 일치 비교 — MAC-Flow(maskall)  vs  GARCH-X(past)-skewt")
+    print("#  둘 다 과거 거시 사용 + 미래 거시 경로 배제.  GARCH 엔 skew-t(공정).")
+    print("#  → 동일 정보·미래경로 미사용 조건에서 생성 head(flow vs GARCH) 차이.  미래경로 기여는 §4.3.1.")
     print("#" * 110)
-    main = collect_summaries(f"garch_flow_ar_{MAIN_TAG}_*_summary.json")
-    garchx = collect_summaries("garch_x_*_summary.json")
-    if not garchx:
-        print("  [GARCH-X 결과 없음] → train_garch_x.py 선행 필요.")
-    print_metric_table([("MAC-Flow", main), ("GARCH-X", garchx)], GEN_METRICS)
+    maskall = collect_summaries("garch_flow_ar_rvAbl_maskall_*_summary.json")
+    garch = collect_summaries("garch_xpast_*_summary.json")
+    if not garch:
+        print("  [GARCH-X(past) 결과 없음] → train_garch_xpast.py 선행 필요.")
+    if not any(maskall.values()):
+        print("  [MAC-Flow(maskall) 결과 없음] → run_ablations_rawvol.py(maskall) 필요.")
+    print_metric_table([("MAC-Flow(maskall)", maskall), ("GARCH-ST(past)", garch)], GEN_METRICS)
 
 
 def sec_4_1_2():
