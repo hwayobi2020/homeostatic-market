@@ -65,16 +65,30 @@ def set_cond_cols(cols, rate_col):
         pass
 
 
+_WIN_FNAMES = ("cached_load_windows_seq", "load_windows_seq", "load_extra_context",
+               "cond_valid_mask", "compute_valid_mask", "extract_derived_origin")
+_ORIG_DEFAULTS = {}   # fname -> *원본* __defaults__ 스냅샷 (import 시점, future_len=13 기준)
+
+
 def set_window(fl):
-    """windowing 함수들의 future_len 기본값(=13)을 rebind — main_worker 가 인자 없이 호출하므로."""
+    """windowing 함수들의 future_len 기본값(=13)을 rebind — main_worker 가 인자 없이 호출하므로.
+
+    ★ *원본* 기본값 스냅샷에서 매번 rebind 한다.  (이전 버그: 현재(이미 변형된) 기본값에서
+    d==13 만 교체 → win26 이 26 으로 바꾼 뒤 13 복원/52 재설정이 d==26 을 못 잡아 26 에 고착
+    → FUTURE_LEN 과 불일치(78 vs 65).  스냅샷 기준 rebind 로 idempotent 하게 해결.)
+    """
     T.FUTURE_LEN = fl
     T.L = ORIG_PL + fl
-    for fname in ("cached_load_windows_seq", "load_windows_seq", "load_extra_context",
-                  "cond_valid_mask", "compute_valid_mask", "extract_derived_origin"):
+    for fname in _WIN_FNAMES:
         fn = getattr(T, fname, None)
-        if fn is None or fn.__defaults__ is None:
+        if fn is None:
             continue
-        fn.__defaults__ = tuple(fl if d == ORIG_FL else d for d in fn.__defaults__)
+        if fname not in _ORIG_DEFAULTS:
+            _ORIG_DEFAULTS[fname] = fn.__defaults__     # 최초 1회: 원본 보존
+        orig = _ORIG_DEFAULTS[fname]
+        if orig is None:
+            continue
+        fn.__defaults__ = tuple(fl if d == ORIG_FL else d for d in orig)
     try:
         T._DATA_CACHE.clear()
     except Exception:
