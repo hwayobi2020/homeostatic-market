@@ -48,7 +48,8 @@ D_CTX   = 128
 LATENT  = 16
 HID     = 128
 EPOCHS  = 250
-LR_VAE  = 1e-3
+LR_VAE  = 5e-4          # 1e-3 → 5e-4: decoder logvar 폭발/불안정(std 2.3배·우편향) 완화
+DEC_LOGVAR_CLAMP = (-6.0, 2.0)   # decoder 출력 logvar 범위(상한 exp(1)=2.7σ 캡 → 분산 폭발 차단)
 LR_GAN  = 1e-4
 BATCH   = 64
 N_CRITIC = 5          # WGAN-GP critic steps per generator step
@@ -102,7 +103,7 @@ class CondVAE(nn.Module):
         mu, logvar = h[:, :LATENT], h[:, LATENT:].clamp(-8, 8)
         z = mu + torch.randn_like(mu) * torch.exp(0.5 * logvar)
         out = self.dec(torch.cat([z, c], dim=-1))
-        ymean, ylogvar = out[:, :FUTURE_LEN], out[:, FUTURE_LEN:].clamp(-8, 8)
+        ymean, ylogvar = out[:, :FUTURE_LEN], out[:, FUTURE_LEN:].clamp(*DEC_LOGVAR_CLAMP)
         return ymean, ylogvar, mu, logvar
 
     @torch.no_grad()
@@ -113,7 +114,7 @@ class CondVAE(nn.Module):
         z = torch.randn(B * n_sim, LATENT, device=c.device)
         out = self.dec(torch.cat([z, c_rep], dim=-1))
         ymean = out[:, :FUTURE_LEN]
-        ylogvar = out[:, FUTURE_LEN:].clamp(-8, 8)
+        ylogvar = out[:, FUTURE_LEN:].clamp(*DEC_LOGVAR_CLAMP)
         y = ymean + torch.randn_like(ymean) * torch.exp(0.5 * ylogvar)
         return y.view(B, n_sim, FUTURE_LEN)
 
