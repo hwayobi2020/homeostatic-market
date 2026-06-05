@@ -49,7 +49,8 @@ LATENT  = 16
 HID     = 128
 EPOCHS  = 250
 LR_VAE  = 5e-4          # 1e-3 → 5e-4: decoder logvar 폭발/불안정(std 2.3배·우편향) 완화
-DEC_LOGVAR_CLAMP = (-6.0, 2.0)   # decoder 출력 logvar 범위(상한 exp(1)=2.7σ 캡 → 분산 폭발 차단)
+DEC_LOGVAR_CLAMP = (-2.0, 2.0)   # decoder logvar 범위: 하한 -2(σ floor exp(-1)=0.37 → 과확신/
+                                 # variance collapse 차단, per-origin 구간 확보) · 상한 2(폭발 캡)
 LR_GAN  = 1e-4
 BATCH   = 64
 N_CRITIC = 5          # WGAN-GP critic steps per generator step
