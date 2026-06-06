@@ -7,16 +7,17 @@
 각 fold 의 *학습 구간* 데이터를 (단기금리 × 초과유동성) 분위 구간으로 나눠 칸별 실현치를 계산
 → 반사실 표 4.1 과 같은 3×3 격자로 나란히 놓아 "실제 패턴 → 모델 재현" 을 보인다.
 
-설계 (반사실 LEVEL 과 직접 비교되게)
+설계 (★ 전체 데이터 — 모델 없으니 train/test 구분 불필요)
 -----------------------------------
-  · fold 별: 해당 fold 의 train CSV (반사실이 origin·percentile 을 train 에서 뽑는 것과 동일 population).
-  · 분위 구간: 각 fold train 의 tbill·metab 을 *3분위*(하/중/상, p33·p67 절단)로 나눔
-    (반사실은 p10/p50/p90 *점* 수준 — 여기선 실데이터라 구간(tercile)으로 binning).
+  · model-free 분석이므로 누수 개념이 없다 → **전 기간(1971~2025) 실제 데이터** 사용.
+    (fold train 만 쓰면 2008 GFC·2020 COVID 등 *위기 국면*이 빠져 핵심을 놓침.)
+  · 모든 fold CSV(train/val/test)를 합쳐 date 중복 제거 → 연속 series 복원.
+  · 분위 구간: 전 기간 tbill·metab 을 *3분위*(하/중/상, p33·p67 절단)로 나눔.
   · 각 origin t 를 (tbill_bin[t], metab_bin[t]) 칸에 배정하고, 미래 13주 실제 수익률 경로로:
       - 실현 왜도  = 칸 내 모든 주별 수익률 pooled skew
       - 실현 UW    = origin 별 진입 대비 보유기간 최저 누적수익(intra-horizon loss, ≤0)
                      → 칸 내 UW 평균 / 5% CVaR
-      - n          = 칸 내 origin 수  ★ 저금리×고유동성 칸의 *희소성*을 드러냄(생성 접근의 동기)
+      - n          = 칸 내 origin 수
 
 해석 주의
 --------
@@ -45,13 +46,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
 FOLDS_DIR = os.path.join(ROOT, "data", "folds_v33_vix_expanding")
 
-# 반사실 표 4.1 과 동일 fold 순서 / A·B·C·D 라벨 (train period 순)
-FOLDS = [
-    ("A", "F_gfc",           "1971-01 ~ 1998-12"),
-    ("B", "F_long_A",        "1971-01 ~ 2003-12"),
-    ("C", "F_long_B_origin", "1971-01 ~ 2008-12"),
-    ("D", "F_long",          "1971-01 ~ 2013-12"),
-]
+FOLD_NAMES = ["F_gfc", "F_long_A", "F_long_B_origin", "F_long"]   # 합쳐서 full series 복원용
+SPLITS = ["train", "val", "test"]
 FUT = 13          # 미래 13주 (반사실과 동일 horizon)
 BINS = ["lo", "mid", "hi"]
 
@@ -84,17 +80,28 @@ def tercile_bin(v, p33, p67):
     return "mid"
 
 
-def analyze_fold(fold_code):
-    p = os.path.join(FOLDS_DIR, f"{fold_code}_train.csv")
-    if not os.path.exists(p):
+def load_full():
+    """모든 fold CSV(train/val/test)를 합쳐 date 중복 제거 → 전 기간(1971~2025) 연속 series."""
+    frames = []
+    for fold in FOLD_NAMES:
+        for sp in SPLITS:
+            p = os.path.join(FOLDS_DIR, f"{fold}_{sp}.csv")
+            if os.path.exists(p):
+                frames.append(pd.read_csv(p, parse_dates=["date"]))
+    if not frames:
         return None
-    df = pd.read_csv(p)
+    df = (pd.concat(frames, ignore_index=True)
+            .drop_duplicates("date").sort_values("date").reset_index(drop=True))
+    return df
+
+
+def analyze_grid(df):
     r = pd.to_numeric(df["sp_return"], errors="coerce").to_numpy(float)        # 실제 주별 로그수익
     tb = pd.to_numeric(df["tbill_wr"], errors="coerce").to_numpy(float)
     mt = pd.to_numeric(df["metab_13w"], errors="coerce").to_numpy(float)
     n = len(r)
 
-    # train 분포 기준 3분위 절단 (NaN 제외)
+    # 전 기간 분포 기준 3분위 절단 (NaN 제외)
     tb_v = tb[np.isfinite(tb)]; mt_v = mt[np.isfinite(mt)]
     tb33, tb67 = np.percentile(tb_v, [100/3, 200/3])
     mt33, mt67 = np.percentile(mt_v, [100/3, 200/3])
@@ -131,36 +138,40 @@ def analyze_fold(fold_code):
 
 def main():
     print("#" * 100)
-    print("# §4.1.1 과거데이터(model-free) 실증 격자 — 실제 주간수익으로 본 금리×유동성 → 꼬리위험")
-    print("#  칸 = 실현skew / UW평균 / UW5%CVaR / (n=origin수).  학습 0, 실제 데이터만.")
-    print("#  ※ 절대치는 반사실(1000 sim)과 스케일 달라 *방향/패턴* 비교용.  n 으로 희소성 확인.")
+    print("# §4.1.1 과거데이터(model-free) 실증 격자 — 전 기간(1971~2025) 실제 주간수익, 위기 포함")
+    print("#  칸 = 실현skew / UW평균 / (n=origin수).  학습 0, 실제 데이터만. train/test 구분 없음.")
+    print("#  ※ 절대치는 반사실(1000 sim)과 스케일 달라 *방향/패턴* 비교용.")
     print("#" * 100)
 
-    for label, fold_code, period in FOLDS:
-        res = analyze_fold(fold_code)
-        print(f"\n=== fold {label}  (train {period}) " + "=" * 40)
-        if res is None:
-            print("   [train CSV 없음]"); continue
-        hdr = "tbill\\metab"
-        print(f"   {hdr:<12}{'metab lo':>22}{'metab mid':>22}{'metab hi':>22}")
-        for a in BINS:
-            cells = []
-            for b in BINS:
-                d = res[(a, b)]
-                cells.append(f"{d['skew']:+.2f}/{d['uw_mean']:+.3f}(n{d['n']})")
-            print(f"   tbill {a:<6}" + "".join(f"{c:>22}" for c in cells))
+    df = load_full()
+    if df is None:
+        print("[FATAL] fold CSV 없음"); return
+    d0, d1 = df["date"].min(), df["date"].max()
+    print(f"\n전 기간: {d0.date()} ~ {d1.date()}  (주 {len(df)})  — GFC(2008)·COVID(2020) 포함")
 
-        # 핵심 대조: 저금리(tbill lo)에서 유동성 lo→hi 실현 왜도 변화
-        lo_lo = res[("lo", "lo")]; lo_hi = res[("lo", "hi")]
-        hi_lo = res[("hi", "lo")]; hi_hi = res[("hi", "hi")]
-        print(f"   → 저금리(tbill lo) 유동성 lo→hi 실현왜도: {lo_lo['skew']:+.2f} → {lo_hi['skew']:+.2f} "
-              f"(Δ{lo_hi['skew']-lo_lo['skew']:+.2f}, n {lo_lo['n']}→{lo_hi['n']})")
-        print(f"     고금리(tbill hi) 유동성 lo→hi 실현왜도: {hi_lo['skew']:+.2f} → {hi_hi['skew']:+.2f} "
-              f"(Δ{hi_hi['skew']-hi_lo['skew']:+.2f}, n {hi_lo['n']}→{hi_hi['n']})")
+    res = analyze_grid(df)
+    print("\n=== 전 기간 LEVEL 격자 (tbill 3분위 × metab 3분위) " + "=" * 30)
+    hdr = "tbill\\metab"
+    print(f"   {hdr:<12}{'metab lo':>22}{'metab mid':>22}{'metab hi':>22}")
+    for a in BINS:
+        cells = []
+        for b in BINS:
+            d = res[(a, b)]
+            cells.append(f"{d['skew']:+.2f}/{d['uw_mean']:+.3f}(n{d['n']})")
+        print(f"   tbill {a:<6}" + "".join(f"{c:>22}" for c in cells))
 
-    print("\n[해석] 실제 데이터에서도 '저금리 + 고유동성' 칸의 실현 좌측 왜도가 더 음(−)이고,")
-    print("       그 효과가 저금리에서 더 크면 → 반사실 격자(표 4.1)가 *현실의 동행성을 재현*함을 뒷받침.")
-    print("       단, 해당 칸의 n 이 작으면(역사적 희소) 정량 단정은 제한 → 생성형 반사실의 필요성.")
+    lo_lo = res[("lo", "lo")]; lo_hi = res[("lo", "hi")]
+    hi_lo = res[("hi", "lo")]; hi_hi = res[("hi", "hi")]
+    print(f"\n   → 저금리(tbill lo) 유동성 lo→hi 실현왜도: {lo_lo['skew']:+.2f} → {lo_hi['skew']:+.2f} "
+          f"(Δ{lo_hi['skew']-lo_lo['skew']:+.2f}, n {lo_lo['n']}→{lo_hi['n']})")
+    print(f"     고금리(tbill hi) 유동성 lo→hi 실현왜도: {hi_lo['skew']:+.2f} → {hi_hi['skew']:+.2f} "
+          f"(Δ{hi_hi['skew']-hi_lo['skew']:+.2f}, n {hi_lo['n']}→{hi_hi['n']})")
+    print(f"     저금리×고유동성 칸 실현 UW평균 {lo_hi['uw_mean']:+.3f} / UW5%CVaR {lo_hi['uw_cvar5']:+.3f} (n={lo_hi['n']})")
+
+    print("\n[해석] 부호 방향을 본다: '저금리×고유동성' 칸의 실현 좌측 왜도가 더 음(−)이고 그 효과가")
+    print("       저금리에서 더 크면 → 반사실 격자(표 4.1)가 *현실 동행성*을 재현. 반대(덜 음)면,")
+    print("       동시점 실데이터(QE 멜트업)와 *미래* 취약성(Minsky/debasement)·모델 조건부응답의")
+    print("       차이를 §에서 정직하게 논의해야 한다.  희소성·시간교란(저금리×고유동성≈2008후 집중)도 함께 본다.")
 
 
 if __name__ == "__main__":
