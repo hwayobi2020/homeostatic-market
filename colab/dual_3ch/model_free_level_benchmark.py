@@ -136,42 +136,96 @@ def analyze_grid(df):
     return res
 
 
+def _exkurt(a):
+    a = np.asarray(a, float); a = a[np.isfinite(a)]
+    if len(a) < 4:
+        return float("nan")
+    m = a.mean(); s = a.std() + 1e-12
+    return float(np.mean(((a - m) / s) ** 4) - 3.0)
+
+
+def pct_rank(value, ref):
+    """value 가 ref 분포에서 차지하는 백분위(0~100)."""
+    ref = np.asarray(ref, float); ref = ref[np.isfinite(ref)]
+    if not np.isfinite(value) or len(ref) == 0:
+        return float("nan")
+    return float((ref < value).mean() * 100.0)
+
+
+# test 구간 = 공인 위기·회복 국면 (모델이 *학습하지 않은* out-of-sample)
+REGIMES = [
+    ("F_gfc",           "금융위기(GFC)"),
+    ("F_long_A",        "회복기(QE)"),
+    ("F_long_B_origin", "코로나위기(COVID)"),
+    ("F_long",          "긴축(인플레)"),
+]
+
+
+def analyze_test_regime(fold, ref_tb, ref_mt):
+    p = os.path.join(FOLDS_DIR, f"{fold}_test.csv")
+    if not os.path.exists(p):
+        return None
+    df = pd.read_csv(p, parse_dates=["date"])
+    r = pd.to_numeric(df["sp_return"], errors="coerce").to_numpy(float)
+    tb = pd.to_numeric(df["tbill_wr"], errors="coerce").to_numpy(float)
+    mt = pd.to_numeric(df["metab_13w"], errors="coerce").to_numpy(float)
+    n = len(r)
+
+    uws = []
+    for t in range(0, n - FUT):
+        fut = r[t + 1: t + 1 + FUT]
+        if not np.all(np.isfinite(fut)):
+            continue
+        cum = np.concatenate([[0.0], np.cumsum(fut)])
+        uws.append(float(cum.min()))
+
+    tb_med = float(np.nanmedian(tb)); mt_med = float(np.nanmedian(mt))
+    return dict(
+        d0=df["date"].min(), d1=df["date"].max(),
+        skew=_skew(r), exk=_exkurt(r),
+        worst_wk=float(np.nanmin(r)),                       # 최악 단일주 (크래시 강도)
+        uw_mean=float(np.mean(uws)) if uws else float("nan"),
+        uw_cvar5=_cvar(uws, 0.05) if uws else float("nan"),
+        uw_worst=float(np.min(uws)) if uws else float("nan"),
+        tb_med=tb_med, tb_pct=pct_rank(tb_med, ref_tb),
+        mt_med=mt_med, mt_pct=pct_rank(mt_med, ref_mt),
+        n=len(uws),
+    )
+
+
 def main():
-    print("#" * 100)
-    print("# §4.1.1 과거데이터(model-free) 실증 격자 — 전 기간(1971~2025) 실제 주간수익, 위기 포함")
-    print("#  칸 = 실현skew / UW평균 / (n=origin수).  학습 0, 실제 데이터만. train/test 구분 없음.")
-    print("#  ※ 절대치는 반사실(1000 sim)과 스케일 달라 *방향/패턴* 비교용.")
-    print("#" * 100)
+    print("#" * 104)
+    print("# §4.1.1 과거데이터(model-free) — 공인 위기·회복 국면별 *실현* 꼬리위험 (test 구간, out-of-sample)")
+    print("#  test = 모델이 학습하지 않은 구간이자 공인 국면(GFC·QE회복·COVID·긴축).")
+    print("#  금리/유동성 상태는 전 역사(1971~2025) 분포 대비 백분위.  학습 0, 실제 데이터만.")
+    print("#" * 104)
 
-    df = load_full()
-    if df is None:
+    full = load_full()
+    if full is None:
         print("[FATAL] fold CSV 없음"); return
-    d0, d1 = df["date"].min(), df["date"].max()
-    print(f"\n전 기간: {d0.date()} ~ {d1.date()}  (주 {len(df)})  — GFC(2008)·COVID(2020) 포함")
+    ref_tb = pd.to_numeric(full["tbill_wr"], errors="coerce").to_numpy(float)
+    ref_mt = pd.to_numeric(full["metab_13w"], errors="coerce").to_numpy(float)
 
-    res = analyze_grid(df)
-    print("\n=== 전 기간 LEVEL 격자 (tbill 3분위 × metab 3분위) " + "=" * 30)
-    hdr = "tbill\\metab"
-    print(f"   {hdr:<12}{'metab lo':>22}{'metab mid':>22}{'metab hi':>22}")
-    for a in BINS:
-        cells = []
-        for b in BINS:
-            d = res[(a, b)]
-            cells.append(f"{d['skew']:+.2f}/{d['uw_mean']:+.3f}(n{d['n']})")
-        print(f"   tbill {a:<6}" + "".join(f"{c:>22}" for c in cells))
+    print(f"\n{'국면(test)':<16}{'기간':<20}{'금리(%ile)':<14}{'유동성(%ile)':<15}"
+          f"{'실현skew':>9}{'실현exk':>8}{'UW평균':>9}{'UW5%CVaR':>10}{'최악주':>8}{'n':>6}")
+    print("-" * 128)
+    rows = []
+    for fold, label in REGIMES:
+        d = analyze_test_regime(fold, ref_tb, ref_mt)
+        if d is None:
+            print(f"{label:<16}(test CSV 없음)"); continue
+        rows.append((label, d))
+        period = f"{d['d0'].strftime('%Y.%m')}~{d['d1'].strftime('%Y.%m')}"
+        rate = f"{'저' if d['tb_pct']<40 else ('고' if d['tb_pct']>60 else '중')}(p{d['tb_pct']:.0f})"
+        liq = f"{'고' if d['mt_pct']>60 else ('저' if d['mt_pct']<40 else '중')}(p{d['mt_pct']:.0f})"
+        print(f"{label:<16}{period:<20}{rate:<14}{liq:<15}"
+              f"{d['skew']:>+9.2f}{d['exk']:>+8.1f}{d['uw_mean']:>+9.3f}"
+              f"{d['uw_cvar5']:>+10.3f}{d['worst_wk']:>+8.3f}{d['n']:>6}")
 
-    lo_lo = res[("lo", "lo")]; lo_hi = res[("lo", "hi")]
-    hi_lo = res[("hi", "lo")]; hi_hi = res[("hi", "hi")]
-    print(f"\n   → 저금리(tbill lo) 유동성 lo→hi 실현왜도: {lo_lo['skew']:+.2f} → {lo_hi['skew']:+.2f} "
-          f"(Δ{lo_hi['skew']-lo_lo['skew']:+.2f}, n {lo_lo['n']}→{lo_hi['n']})")
-    print(f"     고금리(tbill hi) 유동성 lo→hi 실현왜도: {hi_lo['skew']:+.2f} → {hi_hi['skew']:+.2f} "
-          f"(Δ{hi_hi['skew']-hi_lo['skew']:+.2f}, n {hi_lo['n']}→{hi_hi['n']})")
-    print(f"     저금리×고유동성 칸 실현 UW평균 {lo_hi['uw_mean']:+.3f} / UW5%CVaR {lo_hi['uw_cvar5']:+.3f} (n={lo_hi['n']})")
-
-    print("\n[해석] 부호 방향을 본다: '저금리×고유동성' 칸의 실현 좌측 왜도가 더 음(−)이고 그 효과가")
-    print("       저금리에서 더 크면 → 반사실 격자(표 4.1)가 *현실 동행성*을 재현. 반대(덜 음)면,")
-    print("       동시점 실데이터(QE 멜트업)와 *미래* 취약성(Minsky/debasement)·모델 조건부응답의")
-    print("       차이를 §에서 정직하게 논의해야 한다.  희소성·시간교란(저금리×고유동성≈2008후 집중)도 함께 본다.")
+    print("\n[읽는 법] 각 국면은 금리·유동성이 거의 상수인 *한 점*이다(저금리×고유동성=QE회복·COVID 대응 등).")
+    print("  → 실현 꼬리위험은 '그 국면에서 실제로 일어난 일'이며, 금리·유동성을 *독립적으로* 가를 수 없다.")
+    print("  → 금리·유동성을 3×3으로 *분리*해 보는 것은 컨텍스트 고정·경로 주입의 반사실 모델만 가능(§4.2).")
+    print("  ※ 모델은 train 까지만 학습 → 위 realized 는 모두 out-of-sample. §4.1 IHL backtest 가 모델×실제 비교.")
 
 
 if __name__ == "__main__":
