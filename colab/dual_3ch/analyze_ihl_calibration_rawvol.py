@@ -205,11 +205,24 @@ def run_fold_seed(fold, seed, device):
     sim_p90 = float(np.percentile(sim_ihl, 90.0))                 # pooled 상단 (0 근처?)
     frac_near0 = float((sim_ihl > -0.002).mean())                 # 누적 −0.2% 이내(거의 안빠짐) 비율
 
+    # === UW CVaR (꼬리 깊이) — 모델(sim) vs 실현(actual), 동일 파이프라인 ===
+    #   §4 UWcvar1 과 일관(1%).  순위 비교용(절대 1% 는 실현 ~1-2 obs 라 노이즈).
+    def _cvar(x, a):
+        x = np.sort(np.asarray(x, float).ravel())
+        if len(x) == 0:
+            return float("nan")
+        k = max(1, int(a * len(x)))
+        return float(x[:k].mean())
+
+    sim_flat = sim_ihl.ravel()
     return dict(
         n_origin=int(n_origins),
         # 단측 VaR backtest (주지표)
         breach05=breach05, breach10=breach10,
         mean_var05=float(var05.mean()),                           # 위험 수치: 평균 5% IHL 경계
+        # UW CVaR — 모델(sim) vs 실현(actual), 1%·5%
+        sim_uwcvar1=_cvar(sim_flat, 0.01), actual_uwcvar1=_cvar(actual_ihl, 0.01),
+        sim_uwcvar5=_cvar(sim_flat, 0.05), actual_uwcvar5=_cvar(actual_ihl, 0.05),
         # 강건 중심 descriptor (mean 아님 — 꼬리에 끌리므로)
         median_actual_ihl=float(np.median(actual_ihl)),
         median_sim_ihl=float(np.median(sim_ihl)),
@@ -268,6 +281,26 @@ def main():
         print(f"  {fold:>16} {n_orig:>7d} "
               f"{b5_m:.3f}±{b5_s:.3f} {b10_m:.3f}±{b10_s:.3f} "
               f"{v5_m:+.4f} {ma:+.4f}/{ms:+.4f} {nz_m:>6.2f}")
+
+    # ── UW CVaR 순위표 (모델 sim vs 실현 actual, 동일 파이프라인) ──
+    print("\n" + "=" * 100)
+    print("[UW CVaR] 모델(sim) vs 실현(actual) — 꼬리 깊이 (seed 평균).  §4 UWcvar1 와 일관(1%).")
+    print(f"  {'fold':>16} {'모델 UW1%':>11} {'실현 UW1%':>11} {'모델 UW5%':>11} {'실현 UW5%':>11}")
+    for fold in FOLDS:
+        loaded = []
+        for s in SEEDS:
+            c = os.path.join(CACHE_DIR, f"{fold}_s{s}.json")
+            if os.path.exists(c):
+                loaded.append(json.load(open(c)))
+        if not loaded:
+            continue
+        s1 = float(np.mean([d.get("sim_uwcvar1", float("nan")) for d in loaded]))
+        a1 = float(np.mean([d.get("actual_uwcvar1", float("nan")) for d in loaded]))
+        s5 = float(np.mean([d.get("sim_uwcvar5", float("nan")) for d in loaded]))
+        a5 = float(np.mean([d.get("actual_uwcvar5", float("nan")) for d in loaded]))
+        print(f"  {fold:>16} {s1:>+11.4f} {a1:>+11.4f} {s5:>+11.4f} {a5:>+11.4f}")
+    print("  → 깊은 순(rank)이 모델·실현에서 동일하면, 모델이 국면별 꼬리위험을 올바로 *변별*.")
+    print("  ※ NaN 이면 구 캐시 — result/ihl_calib_cache_var 삭제 후 재실행 필요.")
 
     print("\n[판정] 단측 VaR backtest: breach5%≈0.05 / breach10%≈0.10 면 IHL 위험 잘 보정.")
     print("       breach > α → 모델 IHL VaR 이 얕아 실제 손실 과소(위험 underestimate);")
