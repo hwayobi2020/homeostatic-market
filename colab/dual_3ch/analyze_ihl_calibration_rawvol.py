@@ -215,8 +215,42 @@ def run_fold_seed(fold, seed, device):
         return float(x[:k].mean())
 
     sim_flat = sim_ihl.ravel()
+
+    # === 순위(discrimination) — 보정 무관, 모델이 위험 시점을 *변별*하나 ===
+    #   AUC·Spearman: 모델 예측 UW 깊이가 실제 깊은 손실 시점을 올바로 순위매기나.
+    #   (절대 보정 X — 2-factor 모델이 *할 수 있는 것*만 평가.)
+    sim_mean_o = sim_ihl.mean(axis=1)                    # (n_v,) origin별 모델 기대 UW(깊을수록 위험)
+
+    def _spearman(a, b):
+        a = np.asarray(a, float); b = np.asarray(b, float)
+        m = np.isfinite(a) & np.isfinite(b)
+        a, b = a[m], b[m]
+        if len(a) < 3:
+            return float("nan")
+        ar = np.argsort(np.argsort(a)).astype(float); br = np.argsort(np.argsort(b)).astype(float)
+        ar -= ar.mean(); br -= br.mean()
+        den = np.sqrt((ar**2).sum() * (br**2).sum())
+        return float((ar * br).sum() / den) if den > 0 else float("nan")
+
+    def _auc(score, label):
+        score = np.asarray(score, float); label = np.asarray(label, int)
+        pos = score[label == 1]; neg = score[label == 0]
+        if len(pos) == 0 or len(neg) == 0:
+            return float("nan")
+        allv = np.concatenate([pos, neg])
+        ranks = np.argsort(np.argsort(allv)).astype(float) + 1.0      # 평균순위(동률 무시 근사)
+        rpos = ranks[:len(pos)].sum()
+        return float((rpos - len(pos) * (len(pos) + 1) / 2.0) / (len(pos) * len(neg)))
+
+    spearman_uw = _spearman(sim_mean_o, actual_ihl)       # 모델 기대UW vs 실현UW 순위상관
+    thr20 = np.percentile(actual_ihl, 20.0)               # 실현 하위20% = 깊은 꼬리 사건
+    label20 = (actual_ihl <= thr20).astype(int)
+    auc_tail = _auc(-sim_mean_o, label20)                 # 모델이 더 깊게 본 시점이 실제 꼬리사건?
+
     return dict(
         n_origin=int(n_origins),
+        # 순위(discrimination) — 보정 무관
+        auc_tail20=auc_tail, spearman_uw=spearman_uw,
         # 단측 VaR backtest (주지표)
         breach05=breach05, breach10=breach10,
         mean_var05=float(var05.mean()),                           # 위험 수치: 평균 5% IHL 경계
@@ -301,6 +335,29 @@ def main():
         print(f"  {fold:>16} {s1:>+11.4f} {a1:>+11.4f} {s5:>+11.4f} {a5:>+11.4f}")
     print("  → 깊은 순(rank)이 모델·실현에서 동일하면, 모델이 국면별 꼬리위험을 올바로 *변별*.")
     print("  ※ NaN 이면 구 캐시 — result/ihl_calib_cache_var 삭제 후 재실행 필요.")
+
+    # ── 순위(discrimination) — AUC·Spearman, 보정 무관 ──
+    print("\n" + "=" * 100)
+    print("[순위/변별] AUC(실현 하위20% 꼬리사건 변별)·Spearman(모델기대UW vs 실현UW) — seed 평균")
+    print("  보정과 독립 — '모델이 *어느 시점이 더 위험한지*' 순위만 평가 (2-factor 모델이 할 수 있는 것).")
+    print(f"  {'fold':>16} {'AUC(꼬리20%)':>13} {'Spearman':>11} {'n_orig':>8}")
+    auc_all, sp_all = [], []
+    for fold in FOLDS:
+        loaded = []
+        for s in SEEDS:
+            c = os.path.join(CACHE_DIR, f"{fold}_s{s}.json")
+            if os.path.exists(c):
+                loaded.append(json.load(open(c)))
+        if not loaded:
+            continue
+        a = float(np.nanmean([d.get("auc_tail20", float("nan")) for d in loaded]))
+        sp = float(np.nanmean([d.get("spearman_uw", float("nan")) for d in loaded]))
+        auc_all.append(a); sp_all.append(sp)
+        print(f"  {fold:>16} {a:>13.3f} {sp:>11.3f} {loaded[0]['n_origin']:>8d}")
+    if auc_all:
+        print(f"  {'평균':>16} {np.nanmean(auc_all):>13.3f} {np.nanmean(sp_all):>11.3f}")
+    print("  → AUC>0.5 = 위험 시점 변별.  ~0.7+ 면 양호, ~0.5 면 무작위(못 가림).  Spearman>0 = 순위 일치.")
+    print("  ※ NaN 이면 구 캐시 삭제 후 재실행.")
 
     print("\n[판정] 단측 VaR backtest: breach5%≈0.05 / breach10%≈0.10 면 IHL 위험 잘 보정.")
     print("       breach > α → 모델 IHL VaR 이 얕아 실제 손실 과소(위험 underestimate);")
