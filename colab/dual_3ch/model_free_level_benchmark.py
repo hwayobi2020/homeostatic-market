@@ -186,6 +186,7 @@ def analyze_test_regime(fold, ref_tb, ref_mt):
         worst_wk=float(np.nanmin(r)),                       # 최악 단일주 (크래시 강도)
         uw_mean=float(np.mean(uws)) if uws else float("nan"),
         uw_cvar5=_cvar(uws, 0.05) if uws else float("nan"),
+        uw_cvar1=_cvar(uws, 0.01) if uws else float("nan"),  # ★ 1% CVaR (논문 UWcvar1 일관; 단 ~1-2 obs)
         uw_worst=float(np.min(uws)) if uws else float("nan"),
         tb_med=tb_med, tb_pct=pct_rank(tb_med, ref_tb),
         mt_med=mt_med, mt_pct=pct_rank(mt_med, ref_mt),
@@ -206,9 +207,9 @@ def main():
     ref_tb = pd.to_numeric(full["tbill_wr"], errors="coerce").to_numpy(float)
     ref_mt = pd.to_numeric(full["metab_13w"], errors="coerce").to_numpy(float)
 
-    print(f"\n{'국면(test)':<16}{'기간':<20}{'금리(%ile)':<14}{'유동성(%ile)':<15}"
-          f"{'실현skew':>9}{'실현exk':>8}{'UW평균':>9}{'UW5%CVaR':>10}{'최악주':>8}{'n':>6}")
-    print("-" * 128)
+    print(f"\n{'국면(test)':<16}{'기간':<18}{'금리':<10}{'유동성':<10}"
+          f"{'실현skew':>9}{'UW평균':>9}{'UW5%CVaR':>10}{'UW1%CVaR':>10}{'최악UW':>9}{'n':>6}")
+    print("-" * 122)
     rows = []
     for fold, label in REGIMES:
         d = analyze_test_regime(fold, ref_tb, ref_mt)
@@ -216,11 +217,12 @@ def main():
             print(f"{label:<16}(test CSV 없음)"); continue
         rows.append((label, d))
         period = f"{d['d0'].strftime('%Y.%m')}~{d['d1'].strftime('%Y.%m')}"
-        rate = f"{'저' if d['tb_pct']<40 else ('고' if d['tb_pct']>60 else '중')}(p{d['tb_pct']:.0f})"
-        liq = f"{'고' if d['mt_pct']>60 else ('저' if d['mt_pct']<40 else '중')}(p{d['mt_pct']:.0f})"
-        print(f"{label:<16}{period:<20}{rate:<14}{liq:<15}"
-              f"{d['skew']:>+9.2f}{d['exk']:>+8.1f}{d['uw_mean']:>+9.3f}"
-              f"{d['uw_cvar5']:>+10.3f}{d['worst_wk']:>+8.3f}{d['n']:>6}")
+        rate = f"{'저' if d['tb_pct']<40 else ('고' if d['tb_pct']>60 else '중')}p{d['tb_pct']:.0f}"
+        liq = f"{'고' if d['mt_pct']>60 else ('저' if d['mt_pct']<40 else '중')}p{d['mt_pct']:.0f}"
+        print(f"{label:<16}{period:<18}{rate:<10}{liq:<10}"
+              f"{d['skew']:>+9.2f}{d['uw_mean']:>+9.3f}"
+              f"{d['uw_cvar5']:>+10.3f}{d['uw_cvar1']:>+10.3f}{d['uw_worst']:>+9.3f}{d['n']:>6}")
+    print("  ※ UW1%CVaR 는 국면당 ~1-2 obs 기반이라 노이즈 큼 — *순위*(위기 깊음) 위주로 해석.")
 
     print("\n[읽는 법] 각 국면은 금리·유동성이 거의 상수인 *한 점*이다(저금리×고유동성=QE회복·COVID 대응 등).")
     print("  → 실현 꼬리위험은 '그 국면에서 실제로 일어난 일'이며, 금리·유동성을 *독립적으로* 가를 수 없다.")
