@@ -43,7 +43,7 @@ PS.PCTLS = [10, 30, 50, 70, 90]
 FOLDS = PS.FOLDS                       # F_gfc / F_long_A / F_long_B_origin / F_long
 SEEDS = PS.SEEDS                       # 2026/27/28
 FUTURE_LEN = PS.FUTURE_LEN
-CACHE_DIR = os.path.join(PS.RESULT_DIR, "debasement_cache_v4")   # [C] shape×진폭 그리드 → 새 캐시
+CACHE_DIR = os.path.join(PS.RESULT_DIR, "debasement_test_cache")   # ★ test origin(OOS) 재실행 캐시 (옛 train 캐시 debasement_cache_v4 와 분리)
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 LOW_PCTL = 10                          # tbill 저금리 고정 수준

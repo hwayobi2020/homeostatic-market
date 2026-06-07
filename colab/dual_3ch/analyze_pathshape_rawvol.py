@@ -50,7 +50,7 @@ from train_garch_flow import (                                      # noqa: E402
 
 RESULT_DIR = os.path.join(HERE, "result")
 FOLDS_DIR = os.path.join(ROOT, "data", "folds_v33_vix_expanding")
-CACHE_DIR = os.path.join(RESULT_DIR, "pathshape_full_cache")   # UW(intra-horizon)+MDD → 새 캐시(fresh)
+CACHE_DIR = os.path.join(RESULT_DIR, "pathshape_test_cache")   # ★ test origin(OOS) 재실행 캐시 (옛 train 캐시 pathshape_full_cache 와 분리 — 재사용 방지)
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 ENC_COLS = ["sp_return", "tbill_wr", "ads_lag", "wti_wr", "metab_13w"]
@@ -188,7 +188,8 @@ def load_fold_seed(fold, seed, device):
     model = rebuild_model(ckpt, device)
 
     gp = garch_preprocess_fold(FOLDS_DIR, fold, RESULT_DIR)
-    origin_csv = gp["train"]
+    origin_csv = gp["test"]    # ★ 반사실 시나리오 origin = test(OOS). train 은 in-sample(모델 학습 구간) → 무효.
+                               #   (시나리오 레벨 percentile 만 train 분포 사용: 아래 df_tr — 그건 origin 아님)
     Xte, Yte, _, _, _ = cached_load_windows_seq(
         origin_csv, cond_stats=cond_stats, target_stats=target_stats)
     Xte_dev = Xte.to(device)
