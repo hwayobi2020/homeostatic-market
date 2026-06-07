@@ -1,136 +1,85 @@
-# Homeostatic-Market → Purchasing-Power Debasement Scenario Generator
+# MAC-Flow — Monetary Debasement and Equity Tail-Risk
 
-> 화폐가치절하(Purchasing-Power Debasement) 압력을 다중목표 학습(MTL)으로 Conditional Normalizing Flow에 임베딩하여, 외생 시장변수(VIX) 없이 주가 분포 시나리오를 생성한다.
+> **Macro-Path-Conditional Counterfactual Scenario Generation** (aSSIST PhD 학위청구논문)
+>
+> 단기금리(3M T-bill)와 초과 유동성(M2 − INDPRO − CPI)의 **미래 시계열 경로**를 조건으로 주가 수익률의 조건부 분포를 생성하는 자기회귀(AR) 기반 Conditional Normalizing Flow. 보유기간 내 최악 손실(**intra-horizon loss**)로 통화정책 경로에 연동된 꼬리위험을 측정한다. 전체 코드 공개.
 
-논문 제목 후보: *Stock Market Tail-Risk Scenario Generation via Purchasing-Power Debasement Embedding in Multi-Target Normalizing Flows*
-
----
-
-## 0. 경과 요약
-
-### 0.1 출발점 — 항상성 강화학습
-
-PPO 단일 에이전트에 항상성 reward(구매력 setpoint 유지)만 주고 투자 행동의 자발적 출현을 검증. 이후 실제 데이터·다층 reward·population evolution·Mamba weight learner 등으로 확장. 상세는 [`docs/project_documentation.md`](docs/project_documentation.md).
-
-### 0.2 강화학습을 떠난 이유
-
-**항상성 reward는 학습 신호로서 간접적이다.** setpoint를 reward에 주입한 뒤 policy gradient를 통해 행동을 *간접 유도*하는 구조에서는, 학습 신호와 관심 대상(주가 분포·tail risk) 사이에 다단계 매개가 끼어든다. 이 간접성 자체가 학계 기여로서 차별화 근거가 부족하다고 판단.
-
-### 0.3 새 프레임 — 화폐가치절하 신호의 직접 임베딩
-
-1. **비중 결정 → 분포 추정**: 출력 단위를 단일 가중치에서 조건부 시계열 분포로 격상. 모델은 가역 확률밀도 변환인 **Conditional Normalizing Flow**.
-2. **Reward 매개 → MTL target**: 항상성의 정량적 본질인 *화폐가치절하 압력 누적* 을 누적 구매력 변화 신호(채권 기반 `bondpp_3m`, 주식 기반 `stockpp_3m`)로 환산하여, reward가 아닌 학습 target으로 직접 부여.
+> **상태(2026-06-07):** §3 모형·§4 결과 작성 중. hyperparameter 재튜닝 및 반사실 시나리오의 **표본외(out-of-sample) 재실행 진행 중** — 아래 수치는 잠정.
 
 ---
 
-## 1. 현재 모델
+## 1. 핵심 아이디어
 
-### 1.1 흐름 — Multi-Task Learning (Hard Parameter Sharing)
+기존 금융 생성모형의 한계 두 가지를 동시에 넘는다:
+- **GARCH 계열**: 변동성 스케일에 초점 → 조건에 따라 분포 *모양*이 바뀌기 어려움.
+- **one-shot 심층 생성모형(VAE/GAN/Diffusion)**: 거시 조건을 출발 시점에 *고정 스칼라*로 주입 → 통화정책·유동성의 *시변 경로*를 조건화 못 함.
 
-```mermaid
-flowchart TB
-    A["거시 시나리오 입력<br/>(향후 52주: 금리·통화량·인플레)"]
-    B["공유 backbone<br/>Conditional Normalizing Flow<br/>(Causal Transformer + Affine Coupling K=2)"]
-    H1["Task 1 head<br/>주가 분포<br/>(메인)"]
-    H2["Task 2 head<br/>구매력 변화 신호<br/>(보조 — 외생 VIX 대체)"]
+MAC-Flow는 **매 시점 거시 경로를 조건으로 받는 AR rollout**으로 둘을 결합하여, *같은 변동성 가정에서도 경로에 따라 다른 intra-horizon loss*를 산출한다.
 
-    A --> B
-    B --> H1
-    B --> H2
-```
+## 2. 모델
 
-| 박스 | 내용 |
+| 구성 | 내용 |
 |---|---|
-| **입력** | 향후 52주 거시 시나리오 (사용자 자유 설정, counterfactual 가능) |
-| **공유 backbone** | Conditional Normalizing Flow, 822k 파라미터. 두 task가 *모든 파라미터 공유* (Caruana 1993, hard parameter sharing) |
-| **Task 1 (메인)** | 주가 분포 → 시나리오 1,000개 × 52주 → tail-risk · EMD · CVaR 평가 |
-| **Task 2 (보조)** | 구매력 변화 신호 (`stockpp_3m` / `bondpp_3m`) — backbone 표현을 화폐가치절하 정보로 정렬, 외생 VIX 없이도 메인 task 성능 향상 |
+| 인코더 | per-step MLP (매 시점 5채널 거시 벡터 변환) + 과거 52주 요약 압축기 |
+| Flow head | 1D Conditional RQ-NSF (Durkan et al. 2019) + **Hansen(1994) skew Student-t** base (좌측 비대칭·꼬리 흡수) |
+| 표준화 | raw 13주 rolling std (z), forward σ = origin-frozen |
+| 입력 | 길이 65 (과거 52 + 미래 13), 채널 5 (`sp_return`, `tbill_wr`, `metab_13w`, `ads_lag`, `wti_wr`) |
+| 조건 주입 | 미래 13주 `tbill_wr`·`metab_13w` 경로를 매 시점 인코더에 unmask |
 
-### 1.2 화폐가치 침식 신호
+**조건부 반사실(conditional counterfactual):** 실현된 직전 52주 상태에 *조건부*로, 미래 거시 경로만 가정 주입한다. 과거 경로와 변동성 스케일은 실측에 고정되므로, 결과는 **시나리오 간 *상대* 효과**로 해석한다(절대 꼬리 크기의 인과적 분리는 주장하지 않음).
 
-```
-metab_max[t] = max( M2 증가율, T-bill 금리, MICH 인플레 기대 )
-pp_bond[t]   = pp_bond[t-1] × (1 + tbill[t-1]) / (1 + metab_max[t])
-bondpp_3m[t] = log( pp_bond[t-1] / pp_bond[t-14] )
-```
-
-`bondpp_3m < 0` = 안전자산만으론 구매력 손실 → 위험자산 매수 압력. 이 신호가 MTL target.
-
-### 1.3 학습 구성
-
-| 항목 | 값 |
-|---|---|
-| Past condition | 52주 (`tbill_wr`, `tbill_26w_lag`, `excess_liq_wr`) |
-| Future condition | 52주 (`tbill_wr` 시나리오) |
-| MTL target (2ch) | `sp_return` + (`bondpp_3m` 또는 `stockpp_3m` ★) |
-| Train / Test | 1999-2015 (887주) / 2016-2025 (516주) |
-
----
-
-## 2. 결과
-
-### 2.1 sp_return Test NLL (3-fold pooled, n=15 = 5 seed × 3 fold, 낮을수록 좋음)
-
-| # | 변종 | full med | full mean ± std | tail med | tail mean ± std |
-|---:|---|---:|---:|---:|---:|
-| 7 | Base | −2.461 | −2.427 ± 0.335 | −2.393 | −1.948 ± 1.120 |
-| 8 | MTL 2ch (+초과유동성) | −2.504 | −2.517 ± 0.119 | −2.289 | −2.215 ± 0.302 |
-| 9 | MTL 2ch (+**VIX**, 외생) | −2.488 | −2.491 ± 0.078 | −2.355 | −2.169 ± 0.369 |
-| 10 | MTL 2ch (+bondpp정규) | −2.469 | −2.358 ± 0.536 | −2.295 | −2.145 ± 0.415 |
-| **11 ★** | **MTL 2ch (+stockpp정규)** | **−2.520** | **−2.526 ± 0.116** | **−2.401** | **−2.288 ± 0.202** |
-| 15 | MTL 3ch (liq+**VIX**, 외생) | −2.501 | −2.515 ± 0.095 | −2.352 | −2.214 ± 0.317 |
-
-전체 17변종 표는 `_print_paper_table.py` 출력 참조.
-- **full** = 52주 전 구간 NLL, **tail** = 하위 구간 (tail risk) NLL — paper 이중 평가지표.
-- 행 9·15: 외생 시장변수(VIX) 사용. 행 10·11: 내생 화폐가치절하 신호.
-
-### 2.2 핵심 발견
-
-1. **★ 행 11 (stockpp정규)이 모든 핵심 지표에서 best**: full med −2.520, tail med −2.401
-2. **외생 VIX보다 우위 (특히 tail)**:
-   - full med: −2.520 (★) vs −2.488 (행 9, VIX) — 우위
-   - tail med: −2.401 (★) vs −2.355 (행 9) — 우위
-   - tail std : 0.202 (★) vs 0.369 (행 9) — **★이 절반 수준 안정**
-3. **Main thesis 입증**: 외생 시장변수 없이, 내부 화폐가치절하 신호만으로 더 우수한 분포 학습 + tail 영역 안정성
-
----
-
-## 3. 진행 중
-
-### 3.1 NLL → EMD/CVaR 전환
-
-NLL이 ★를 best로 지목했지만 **Vuong closeness test**(HAC, lag 52w) 4건 모두 동률 (Z 0.01~1.53, p > 0.12). NLL만으론 통계 차별화 불가.
-
-→ Main metric 전환:
-- **EMD** (Earth Mover's Distance): 생성 분포 vs 실측 분포 거리
-- **CVaR** (Conditional VaR): 하위 5% tail 평균 손실 — 페이퍼 제목의 *Tail-Risk Scenario Generation* 과 직접 정합
-
-### 3.2 실행 (Colab T4)
-
-```bash
-python colab/generate_scenarios.py --N 1000 --batch-size 256
-python colab/eval_scenario_metrics.py
-```
-
-파일럿: 3 변종(Base / ★ / VIX) × 3 fold × 5 seed. 핵심 기법 *past-z swap* — past 잠재변수는 보존, future만 재샘플링 (Flow 가역성).
-
-### 3.3 워크포워드 (3-fold non-overlapping)
+**Walk-forward 4 fold** (expanding window, train/val/test + 6개월 gap):
 
 | Fold | Train | Test |
 |---|---|---|
-| F1 | ~2014-12 | 2016-01 ~ 2019-03 |
-| F2 | ~2018-09 | 2019-12 ~ 2023-02 |
-| F3 | ~2022-06 | 2023-09 ~ 2025-12 |
+| 금융위기 | 1971-01 ~ 1998-12 | 2006-04 ~ 2010-12 |
+| 완화기 | 1971-01 ~ 2003-12 | 2011-04 ~ 2015-12 |
+| 코로나 | 1971-01 ~ 2008-12 | 2016-04 ~ 2020-12 |
+| 긴축기 | 1971-01 ~ 2013-12 | 2021-04 ~ 2025-12 |
 
-각 fold val 39주 + gap 13주 + test 39주. Future 구간 leak 정정 완료 (commit 9a532d0).
+## 3. 측정 지표 — intra-horizon loss
+
+VaR/CVaR는 보유기간 *종점* 분포만 보아 순서에 무감각하다. 본 연구는 보유기간 *도중* 진입가 대비 최저 누적손실(intra-horizon loss; Kritzman-Rich 2002, Bakshi-Panayotov 2010)을 핵심 지표로 사용 — 종점 수익이 같아도 **경로·순서**에 따라 달라지는 실질 위험을 포착한다.
+
+## 4. 현재 결과 (§4, OOS 재실행 진행 중 · 잠정)
+
+**검증 (out-of-sample):** 표본외 구간 포함률 cov95 **0.94–0.97**, cov80 ≈ 0.80 → 잘 보정된 분포.
+
+**반사실 시나리오 (OOS test origin):**
+- **금리 경로 순서효과** — 하강 경로가 상승보다 보유손실을 깊게: 4 fold × {ramp, step} = **8/8** 일관.
+- **정책 시나리오(동시 경로)** — 급격 위기대응(crisis)이 최심, 완화(easing) > 긴축(tightening): **4/4**.
+- **화폐절하 수준효과** — 저금리 × 유동성 확대에서 좌측 비대칭 심화: **3/4** (금융위기 fold는 학습구간이 1971–98뿐이라 2008 test가 OOD).
+- 유동성 *순서*효과: 약하고 국면별 혼재.
+
+**비교 (test):** 동일 정보·파이프라인에서 전통 분포모형(GARCH-skew-t)·경로 없는 생성모형(VAE/GAN) 대비, **좌측 비대칭 생성**과 **구간 보정**에서 우위.
+
+> 한 fold는 단일 국면이 아니라 평온·위기 origin이 섞인 ~180개 조건의 평균이다. 다음 단계로 **per-origin 조건부 분포 + 직전상태 구분** 보고로 전환한다.
+
+## 5. 방법론 점검 (2026-06)
+
+- 반사실 시나리오 origin을 **학습(train) → 표본외(test)** 로 교정(in-sample 제거). 재실행 결과 핵심 발견이 OOS에서 유지 → "학습 기억"이 아닌 조건부 응답임을 확인.
+- 모델·검증 파이프라인은 train(gradient)/val(early-stop)/test(평가) 표준 분리 준수.
+
+## 6. 코드 위치 (`colab/dual_3ch/`)
+
+| 파일 | 역할 |
+|---|---|
+| `train_garch_flow.py` (+ `rawvol_helpers.py`) | 메인 학습 (raw-vol monkey-patch) |
+| `run_rawvol_macroenc.py` | 본 모형 러너 (4 fold × 5 seed) |
+| `analyze_pathshape_rawvol.py` | 반사실 시나리오 — LEVEL 격자 / 경로(분산·순서) / JOINT |
+| `analyze_debasement_rawvol.py` | 저금리 고정 유동성 수준·진폭 sweep |
+| `analyze_ihl_calibration_rawvol.py` | OOS 구간 포함률(coverage) 검증 |
+| `train_garch_xpast.py` · `train_vae_gan_baseline.py` | baseline (GARCH-skew-t / Cond VAE·GAN) |
+
+실행: Colab에서 repo pull 후 스크립트 실행 (inference는 재학습 불필요).
+
+## 7. 다음 단계
+
+1. debasement 수준·진폭 시나리오 OOS 재실행 마무리, §4 표 6종 갱신.
+2. per-origin 조건부 분포 + 직전상태(변동성·추세) 구분 보고.
+3. hyperparameter 재튜닝(raw-vol 전환 반영), baseline 학습.
+4. §4 표 번호·서술 정리.
 
 ---
 
-## 4. 다음 단계
-
-| | 항목 |
-|---|---|
-| P1 | 파일럿 EMD/CVaR 결과 분석 (현재 진행 중) |
-| P2 | 17 변종 전체 확장 여부 결정 |
-| P3 | 페이퍼 writeup (target: ESWA) |
-| P4 | M2 publication lag 적용 (보류) |
+*초기 단계(항상성 강화학습 → 화폐가치절하 MTL 임베딩)는 현재 MAC-Flow 모형으로 대체됨. 연혁은 [`docs/project_documentation.md`](docs/project_documentation.md) 참조.*
