@@ -1,10 +1,8 @@
 # MAC-Flow — Monetary Debasement and Equity Tail-Risk
 
-> **Macro-Path-Conditional Counterfactual Scenario Generation** (aSSIST PhD 학위청구논문)
+> **Macro-Path-Conditional Counterfactual Scenario Generation**
 >
-> 단기금리(3M T-bill)와 초과 유동성(M2 − INDPRO − CPI)의 **미래 시계열 경로**를 조건으로 주가 수익률의 조건부 분포를 생성하는 자기회귀(AR) 기반 Conditional Normalizing Flow. 보유기간 내 최악 손실(**intra-horizon loss**)로 통화정책 경로에 연동된 꼬리위험을 측정한다. 전체 코드 공개.
-
-> **상태(2026-06-07):** §3 모형·§4 결과 작성 중. hyperparameter 재튜닝 및 반사실 시나리오의 **표본외(out-of-sample) 재실행 진행 중** — 아래 수치는 잠정.
+> 단기금리(3M T-bill)와 초과 유동성(M2 − INDPRO − CPI)의 **미래 시계열 경로**를 조건으로 주가 수익률의 조건부 분포를 생성하는 자기회귀(AR) 기반 Conditional Normalizing Flow. 보유기간 내 최악 손실(**intra-horizon loss**)로 통화정책 경로에 연동된 꼬리위험을 측정한다.
 
 ---
 
