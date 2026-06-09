@@ -146,6 +146,31 @@ def analyze_fold(fold):
                 n_origin=n_origin, cells=cells)
 
 
+def print_level_def_table():
+    """논문용 레벨 정의 표 — fold별 train p10/p50/p90 를 해석 단위로 정확 출력.
+    금리 = 3M T-bill 연율 % (tbill_wr 정의의 정확한 역산: ((1+wr)^52 - 1)*100)
+    유동성 = M2-INDPRO-CPI 13주누적 % (metab_13w * 100)
+    """
+    print("\n" + "#" * 100)
+    print("# [레벨 정의 표 — 논문용]  fold별 train p10/p50/p90 (해석 단위, 정확값)")
+    print("#   금리=3M T-bill 연율% | 유동성=M2-INDPRO-CPI 13주누적%")
+    print("#" * 100)
+    print(f"{'fold':<20}{'금리p10':>9}{'금리p50':>9}{'금리p90':>9}"
+          f"{'유동p10':>9}{'유동p50':>9}{'유동p90':>9}")
+    for fold, label in FOLDS:
+        ftr = os.path.join(FOLDS_DIR, f"{fold}_train.csv")
+        if not os.path.exists(ftr):
+            print(f"{label:<20} (train CSV 없음)")
+            continue
+        tr = pd.read_csv(ftr)
+        wr = pd.to_numeric(tr["tbill_wr"], errors="coerce").dropna().to_numpy()
+        mt = pd.to_numeric(tr["metab_13w"], errors="coerce").dropna().to_numpy()
+        tb = [((1.0 + np.percentile(wr, p)) ** 52 - 1.0) * 100 for p in PCTLS]
+        mb = [np.percentile(mt, p) * 100 for p in PCTLS]
+        print(f"{label:<20}{tb[0]:>8.2f}%{tb[1]:>8.2f}%{tb[2]:>8.2f}%"
+              f"{mb[0]:>+8.2f}%{mb[1]:>+8.2f}%{mb[2]:>+8.2f}%")
+
+
 def main():
     print("#" * 100)
     print("# §4.1.2 LEVEL 격자 실측 셀 점유 — fold별 test origin 을 train p10/50/90 기준 칸 배정")
@@ -187,6 +212,8 @@ def main():
             print(row)
     print("\n[읽는 법] 빈칸 = 그 fold 역사에 없던 조합 → 반사실 모델만 채우는 영역(모델 기여).")
     print("          채워진 칸 = factual 앵커 가능 → 모델값 vs 실현값 대조로 신뢰성 검증.")
+
+    print_level_def_table()
 
 
 if __name__ == "__main__":
