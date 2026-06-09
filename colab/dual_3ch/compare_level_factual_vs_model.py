@@ -52,6 +52,14 @@ FUTURE_LEN = 13
 PCTLS = [10, 50, 90]
 BINS = ["lo", "mid", "hi"]
 SEEDS = [2026, 2027, 2028]      # 반사실과 동일 (3 seed)
+LEVEL_WINDOW_WEEKS = 520        # 레벨 분위수 = train 최근 ~10년 (analyze_pathshape 와 일치)
+
+
+def recent_train(path):
+    df = pd.read_csv(path)
+    if "date" in df.columns:
+        df = df.sort_values("date")
+    return df.tail(LEVEL_WINDOW_WEEKS)
 
 FOLDS = [
     ("F_gfc", "금융위기(2006-2010)"),
@@ -100,7 +108,7 @@ def factual_grid(fold):
     f_test = os.path.join(FOLDS_DIR, f"{fold}_test.csv")
     if not (os.path.exists(f_train) and os.path.exists(f_test)):
         return None
-    tr = pd.read_csv(f_train)
+    tr = recent_train(f_train)
     tb_lv, tb_edges = level_edges(tr["tbill_wr"])
     mb_lv, mb_edges = level_edges(tr["metab_13w"])
 

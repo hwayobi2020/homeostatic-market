@@ -70,6 +70,7 @@ SEEDS = [2026, 2027, 2028]        # seed 3 (5에서 축소)
 PCTLS = [10, 50, 90]
 PCTL_LABEL = {10: "lo", 50: "mid", 90: "hi"}
 N_ORIGIN_MAX = 200
+LEVEL_WINDOW_WEEKS = 520    # 시나리오 레벨 분위수 = train 최근 ~10년(520주)만 (전체 1971~ 는 70~80년대 고금리로 high 비현실적)
 N_SIM = 1000
 CHUNK = 8
 
@@ -204,8 +205,13 @@ def load_fold_seed(fold, seed, device):
     last_full = z_te[PAST_LEN - 1: PAST_LEN - 1 + n_w, T.SP_CH]
     last_sp_dev = torch.from_numpy(last_full[valid_mask].astype(np.float32)).to(device)
 
-    # 시나리오 수준 = fold train raw percentile → z
-    df_tr = pd.read_csv(os.path.join(FOLDS_DIR, f"{fold}_train.csv"))
+    # 시나리오 수준 = fold train *최근 LEVEL_WINDOW_WEEKS주* raw percentile → z
+    #   (전체 1971~ 분위는 70~80년대 고금리에 끌려 high 가 비현실적 → 최근 ~10년만 사용.
+    #    train 내부라 leak-free.  표준화 cmu/csd 는 모델 학습대로 전체 train 통계 그대로.)
+    _df_tr_full = pd.read_csv(os.path.join(FOLDS_DIR, f"{fold}_train.csv"))
+    if "date" in _df_tr_full.columns:
+        _df_tr_full = _df_tr_full.sort_values("date")
+    df_tr = _df_tr_full.tail(LEVEL_WINDOW_WEEKS)
     cmu = np.asarray(cond_stats["mean"], float); csd = np.asarray(cond_stats["std"], float)
     ti = ENC_COLS.index("tbill_wr"); mi = ENC_COLS.index("metab_13w")
     tb_z = {p: (np.percentile(df_tr["tbill_wr"].dropna(), p) - cmu[ti]) / csd[ti] for p in PCTLS}

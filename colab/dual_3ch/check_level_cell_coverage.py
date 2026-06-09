@@ -53,6 +53,15 @@ PAST_LEN = 52
 FUTURE_LEN = 13
 PCTLS = [10, 50, 90]
 BINS = ["lo", "mid", "hi"]
+LEVEL_WINDOW_WEEKS = 520    # 레벨 분위수 = train 최근 ~10년(520주)만 (analyze_pathshape 와 일치)
+
+
+def recent_train(path):
+    """train CSV 의 최근 LEVEL_WINDOW_WEEKS주 (반사실 레벨 정의와 동일 윈도우)."""
+    df = pd.read_csv(path)
+    if "date" in df.columns:
+        df = df.sort_values("date")
+    return df.tail(LEVEL_WINDOW_WEEKS)
 
 FOLDS = [
     ("F_gfc", "금융위기(2006-2010)"),
@@ -102,7 +111,7 @@ def analyze_fold(fold):
     if not (os.path.exists(f_train) and os.path.exists(f_test)):
         return None
 
-    tr = pd.read_csv(f_train)
+    tr = recent_train(f_train)
     tb_lv, tb_edges = level_edges(tr["tbill_wr"])
     mb_lv, mb_edges = level_edges(tr["metab_13w"])
 
@@ -162,7 +171,7 @@ def print_level_def_table():
         if not os.path.exists(ftr):
             print(f"{label:<20} (train CSV 없음)")
             continue
-        tr = pd.read_csv(ftr)
+        tr = recent_train(ftr)
         wr = pd.to_numeric(tr["tbill_wr"], errors="coerce").dropna().to_numpy()
         mt = pd.to_numeric(tr["metab_13w"], errors="coerce").dropna().to_numpy()
         tb = [((1.0 + np.percentile(wr, p)) ** 52 - 1.0) * 100 for p in PCTLS]
