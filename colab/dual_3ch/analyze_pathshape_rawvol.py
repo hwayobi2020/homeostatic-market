@@ -205,17 +205,21 @@ def load_fold_seed(fold, seed, device):
     last_full = z_te[PAST_LEN - 1: PAST_LEN - 1 + n_w, T.SP_CH]
     last_sp_dev = torch.from_numpy(last_full[valid_mask].astype(np.float32)).to(device)
 
-    # 시나리오 수준 = fold train *최근 LEVEL_WINDOW_WEEKS주* raw percentile → z
-    #   (전체 1971~ 분위는 70~80년대 고금리에 끌려 high 가 비현실적 → 최근 ~10년만 사용.
-    #    train 내부라 leak-free.  표준화 cmu/csd 는 모델 학습대로 전체 train 통계 그대로.)
-    _df_tr_full = pd.read_csv(os.path.join(FOLDS_DIR, f"{fold}_train.csv"))
-    if "date" in _df_tr_full.columns:
-        _df_tr_full = _df_tr_full.sort_values("date")
-    df_tr = _df_tr_full.tail(LEVEL_WINDOW_WEEKS)
+    # 시나리오 수준 = *절대 정책스탠스* 레벨 (분위수 아님 — 분위는 fold마다 드리프트/Volcker 왜곡).
+    #   tbill = 자연이자율(r*) 기준: low 0.25% / mid 2.5%(명목 중립) / high 5%(긴축).  연율 → 주간 tbill_wr → z.
+    #   metab = 0(중립=초과유동성 없음) 기준: low −2% / mid 0% / high +2.5% (13주 %).  raw → z.
+    #   30/70 분위(debasement sweep)는 앵커 사이 선형보간.  표준화 cmu/csd = 모델 학습 전체 train 통계 유지(불변).
     cmu = np.asarray(cond_stats["mean"], float); csd = np.asarray(cond_stats["std"], float)
     ti = ENC_COLS.index("tbill_wr"); mi = ENC_COLS.index("metab_13w")
-    tb_z = {p: (np.percentile(df_tr["tbill_wr"].dropna(), p) - cmu[ti]) / csd[ti] for p in PCTLS}
-    mb_z = {p: (np.percentile(df_tr["metab_13w"].dropna(), p) - cmu[mi]) / csd[mi] for p in PCTLS}
+
+    def _tbill_wr(annual_pct):
+        return (1.0 + annual_pct / 100.0) ** (1.0 / 52.0) - 1.0
+
+    def _interp(p, lo, mid, hi):     # 앵커 10→lo, 50→mid, 90→hi 선형보간
+        return lo + (mid - lo) * (p - 10) / 40.0 if p <= 50 else mid + (hi - mid) * (p - 50) / 40.0
+
+    tb_z = {p: (_tbill_wr(_interp(p, 0.25, 2.5, 5.0)) - cmu[ti]) / csd[ti] for p in PCTLS}
+    mb_z = {p: (_interp(p, -0.02, 0.0, 0.025) - cmu[mi]) / csd[mi] for p in PCTLS}
 
     # raw rescale 재료 (raw-vol: omega/alpha/beta=0 → origin-frozen σ)
     tmu = float(target_stats["mean"]); tsd = float(target_stats["std"])

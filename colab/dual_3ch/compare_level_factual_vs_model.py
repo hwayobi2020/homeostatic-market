@@ -69,10 +69,15 @@ def _cvar(x, alpha):
     return float(x[:k].mean())
 
 
-def level_edges(train_vals):
-    v = np.asarray(train_vals, float); v = v[np.isfinite(v)]
-    p10, p50, p90 = (float(np.percentile(v, p)) for p in PCTLS)
-    return (p10, p50, p90), ((p10 + p50) / 2.0, (p50 + p90) / 2.0)
+def _tbill_wr(annual_pct):
+    return (1.0 + annual_pct / 100.0) ** (1.0 / 52.0) - 1.0
+
+
+# 절대 정책스탠스 레벨 (분위수 아님; analyze_pathshape 와 동일)
+TBILL_LV = (_tbill_wr(0.25), _tbill_wr(2.5), _tbill_wr(5.0))   # tbill_wr 단위
+METAB_LV = (-0.02, 0.0, 0.025)                                 # raw 13주
+TBILL_EDGES = ((TBILL_LV[0] + TBILL_LV[1]) / 2.0, (TBILL_LV[1] + TBILL_LV[2]) / 2.0)
+METAB_EDGES = ((METAB_LV[0] + METAB_LV[1]) / 2.0, (METAB_LV[1] + METAB_LV[2]) / 2.0)
 
 
 def assign_bin(value, edges):
@@ -92,9 +97,8 @@ def factual_grid(fold):
     f_test = os.path.join(FOLDS_DIR, f"{fold}_test.csv")
     if not (os.path.exists(f_train) and os.path.exists(f_test)):
         return None
-    tr = recent_train(f_train)
-    tb_lv, tb_edges = level_edges(tr["tbill_wr"])
-    mb_lv, mb_edges = level_edges(tr["metab_13w"])
+    tb_lv, tb_edges = TBILL_LV, TBILL_EDGES      # 절대 레벨 (전 fold 공통)
+    mb_lv, mb_edges = METAB_LV, METAB_EDGES
 
     te = pd.read_csv(f_test)
     r = pd.to_numeric(te["sp_return"], errors="coerce").to_numpy(float)

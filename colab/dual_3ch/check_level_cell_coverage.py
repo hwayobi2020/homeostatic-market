@@ -87,11 +87,16 @@ def _cvar(x, alpha):
     return float(x[:k].mean())
 
 
-def level_edges(train_vals):
-    """train p10/p50/p90 → (p10,p50,p90), (edge_lo_mid, edge_mid_hi)."""
-    v = np.asarray(train_vals, float); v = v[np.isfinite(v)]
-    p10, p50, p90 = (float(np.percentile(v, p)) for p in PCTLS)
-    return (p10, p50, p90), ((p10 + p50) / 2.0, (p50 + p90) / 2.0)
+def _tbill_wr(annual_pct):
+    return (1.0 + annual_pct / 100.0) ** (1.0 / 52.0) - 1.0
+
+
+# 절대 정책스탠스 레벨 (분위수 아님; analyze_pathshape 와 동일)
+#   tbill = r* 기준 low 0.25% / mid 2.5% / high 5% | metab = 0 기준 low −2% / mid 0% / high +2.5%
+TBILL_LV = (_tbill_wr(0.25), _tbill_wr(2.5), _tbill_wr(5.0))   # tbill_wr 단위
+METAB_LV = (-0.02, 0.0, 0.025)                                 # raw 13주
+TBILL_EDGES = ((TBILL_LV[0] + TBILL_LV[1]) / 2.0, (TBILL_LV[1] + TBILL_LV[2]) / 2.0)
+METAB_EDGES = ((METAB_LV[0] + METAB_LV[1]) / 2.0, (METAB_LV[1] + METAB_LV[2]) / 2.0)
 
 
 def assign_bin(value, edges):
@@ -111,9 +116,8 @@ def analyze_fold(fold):
     if not (os.path.exists(f_train) and os.path.exists(f_test)):
         return None
 
-    tr = recent_train(f_train)
-    tb_lv, tb_edges = level_edges(tr["tbill_wr"])
-    mb_lv, mb_edges = level_edges(tr["metab_13w"])
+    tb_lv, tb_edges = TBILL_LV, TBILL_EDGES      # 절대 레벨 (전 fold 공통)
+    mb_lv, mb_edges = METAB_LV, METAB_EDGES
 
     te = pd.read_csv(f_test)
     r = pd.to_numeric(te["sp_return"], errors="coerce").to_numpy(float)
@@ -156,28 +160,13 @@ def analyze_fold(fold):
 
 
 def print_level_def_table():
-    """논문용 레벨 정의 표 — fold별 train p10/p50/p90 를 해석 단위로 정확 출력.
-    금리 = 3M T-bill 연율 % (tbill_wr 정의의 정확한 역산: ((1+wr)^52 - 1)*100)
-    유동성 = M2-INDPRO-CPI 13주누적 % (metab_13w * 100)
-    """
+    """레벨 정의 — 절대 정책스탠스 (전 fold 공통, 분위수 아님)."""
     print("\n" + "#" * 100)
-    print("# [레벨 정의 표 — 논문용]  fold별 train p10/p50/p90 (해석 단위, 정확값)")
-    print("#   금리=3M T-bill 연율% | 유동성=M2-INDPRO-CPI 13주누적%")
+    print("# [레벨 정의 — 절대 정책스탠스, 전 fold 공통]")
+    print("#   금리(3M T-bill 연율)     : low 0.25% / mid 2.5%(r* 명목중립) / high 5%(긴축)")
+    print("#   유동성(M2-INDPRO-CPI 13주): low -2% / mid 0%(중립=초과없음) / high +2.5%(초과)")
+    print("#   ※ GFC fold(train 1971~98)는 ZLB 미학습 → low(0.25%) 외삽, OOD 명시 필요.")
     print("#" * 100)
-    print(f"{'fold':<20}{'금리p10':>9}{'금리p50':>9}{'금리p90':>9}"
-          f"{'유동p10':>9}{'유동p50':>9}{'유동p90':>9}")
-    for fold, label in FOLDS:
-        ftr = os.path.join(FOLDS_DIR, f"{fold}_train.csv")
-        if not os.path.exists(ftr):
-            print(f"{label:<20} (train CSV 없음)")
-            continue
-        tr = recent_train(ftr)
-        wr = pd.to_numeric(tr["tbill_wr"], errors="coerce").dropna().to_numpy()
-        mt = pd.to_numeric(tr["metab_13w"], errors="coerce").dropna().to_numpy()
-        tb = [((1.0 + np.percentile(wr, p)) ** 52 - 1.0) * 100 for p in PCTLS]
-        mb = [np.percentile(mt, p) * 100 for p in PCTLS]
-        print(f"{label:<20}{tb[0]:>8.2f}%{tb[1]:>8.2f}%{tb[2]:>8.2f}%"
-              f"{mb[0]:>+8.2f}%{mb[1]:>+8.2f}%{mb[2]:>+8.2f}%")
 
 
 def main():
