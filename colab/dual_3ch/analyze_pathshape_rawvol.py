@@ -221,6 +221,12 @@ def load_fold_seed(fold, seed, device):
     tb_z = {p: (_tbill_wr(_interp(p, 0.25, 2.5, 5.0)) - cmu[ti]) / csd[ti] for p in PCTLS}
     mb_z = {p: (_interp(p, -0.02, 0.0, 0.025) - cmu[mi]) / csd[mi] for p in PCTLS}
 
+    # origin별 *실현* 미래 13주 거시 z 경로 (model-on-realized / sensitivity 용). Xte 와 동일 정렬.
+    _fut_tb = np.stack([z_te[w + PAST_LEN: w + PAST_LEN + FUTURE_LEN, ti]
+                        for w in range(n_w)])[valid_mask]
+    _fut_mb = np.stack([z_te[w + PAST_LEN: w + PAST_LEN + FUTURE_LEN, mi]
+                        for w in range(n_w)])[valid_mask]
+
     # raw rescale 재료 (raw-vol: omega/alpha/beta=0 → origin-frozen σ)
     tmu = float(target_stats["mean"]); tsd = float(target_stats["std"])
     _gsig = df_te["garch_sigma"].to_numpy(float); _gz = df_te["sp_return"].to_numpy(float)
@@ -235,10 +241,16 @@ def load_fold_seed(fold, seed, device):
         idx = np.linspace(0, n_orig - 1, N_ORIGIN_MAX).astype(int)
         Xte_dev = Xte_dev[idx]; Xte_extra_dev = Xte_extra_dev[idx]
         last_sp_dev = last_sp_dev[idx]; _s2 = _s2[idx]; _e2 = _e2[idx]
+        _fut_tb = _fut_tb[idx]; _fut_mb = _fut_mb[idx]
 
     rescale = dict(tmu=tmu, tsd=tsd, s2=_s2, e2=_e2, om=_om, al=_al, be=_be, mu=_mu)
+    real_tb_mean = _fut_tb.mean(axis=1) * csd[ti] + cmu[ti]   # raw 연주간금리 (binning 용, per origin)
+    real_mb_mean = _fut_mb.mean(axis=1) * csd[mi] + cmu[mi]   # raw metab
     return dict(model=model, Xte=Xte_dev, extra=Xte_extra_dev, last_sp=last_sp_dev,
-                rescale=rescale, tb_z=tb_z, mb_z=mb_z)
+                rescale=rescale, tb_z=tb_z, mb_z=mb_z,
+                real_tb_fut=_fut_tb, real_mb_fut=_fut_mb,       # (n_orig, FUTURE_LEN) z 경로
+                real_tb_mean=real_tb_mean, real_mb_mean=real_mb_mean,
+                csd=csd, cmu=cmu, ti=ti, mi=mi)
 
 
 def sim_metrics(sim_z, rescale):
