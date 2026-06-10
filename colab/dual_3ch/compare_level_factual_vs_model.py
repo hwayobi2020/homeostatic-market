@@ -156,9 +156,11 @@ def model_grid(fold):
             key = f"{a}_{b}"
             sk = [d[key]["skew"] for d in per_seed if key in d]
             uc = [d[key]["uw_cvar1"] for d in per_seed if key in d]
+            um = [d[key]["uw_mean"] for d in per_seed if key in d]
             cells[(a, b)] = dict(
                 skew=float(np.mean(sk)) if sk else float("nan"),
                 uw_cvar1=float(np.mean(uc)) if uc else float("nan"),
+                uw_mean=float(np.mean(um)) if um else float("nan"),
                 n_seed=len(sk),
             )
     return dict(cells=cells)
@@ -171,7 +173,7 @@ def _annual_pct(wr):
 
 def print_grid(title, cells, is_factual):
     print(f"  {title}")
-    print(f"    {'tbill＼metab':<12}" + "".join(f"{('metab ' + b):>22}" for b in BINS))
+    print(f"    {'tbill＼metab':<12}" + "".join(f"{('metab ' + b):>28}" for b in BINS))
     for a in BINS:
         row = f"    {('tbill ' + a):<12}"
         for b in BINS:
@@ -180,20 +182,20 @@ def print_grid(title, cells, is_factual):
                 if c is None or c["n"] == 0:
                     cell = "—"
                 else:
-                    cell = f"{c['skew']:+.2f} / {c['uw_cvar1']:+.3f} (n{c['n']})"
+                    cell = f"{c['skew']:+.2f}/{c['uw_cvar1']:+.3f}/{c['uw_mean']:+.3f}(n{c['n']})"
             else:
                 if c is None or not np.isfinite(c.get("skew", float("nan"))):
                     cell = "—"
                 else:
-                    cell = f"{c['skew']:+.2f} / {c['uw_cvar1']:+.3f}"
-            row += f"{cell:>22}"
+                    cell = f"{c['skew']:+.2f}/{c['uw_cvar1']:+.3f}/{c['uw_mean']:+.3f}"
+            row += f"{cell:>28}"
         print(row)
 
 
 def main():
     print("#" * 112)
-    print("# §4.1.2 LEVEL — 모델 vs 실측, 둘 다 UWcvar1(1% intra-horizon-loss) · 칸 = skew / UWcvar1")
-    print("#   레벨 = train 최근 10년 p10/50/90 | 실측 UWcvar1 은 칸당 n 적어 노이즈 큼(참고)")
+    print("# §4.1.2 LEVEL — 모델 vs 실측 · 칸 = skew / UWcvar1(1% 꼬리) / uw_mean(평균IHL)")
+    print("#   레벨 = 절대 정책스탠스(tbill r* 기준, metab 0 기준) | 실측은 칸당 n 적어 노이즈(특히 n<5)")
     print("#" * 112)
 
     if not os.path.isdir(MODEL_CACHE):
@@ -210,8 +212,8 @@ def main():
         mb = [x * 100 for x in fac["mb_lv"]]
         print(f"  레벨 금리 lo/mid/hi = {tb[0]:.2f}/{tb[1]:.2f}/{tb[2]:.2f}%   "
               f"유동성 = {mb[0]:+.2f}/{mb[1]:+.2f}/{mb[2]:+.2f}%")
-        print_grid("[표 4.1 모델]  skew / UWcvar1", mod["cells"] if mod else None, is_factual=False)
-        print_grid("[표 4.2 실측]  skew / UWcvar1 (n)", fac["cells"], is_factual=True)
+        print_grid("[표 4.1 모델]  skew / UWcvar1 / uw_mean", mod["cells"] if mod else None, is_factual=False)
+        print_grid("[표 4.2 실측]  skew / UWcvar1 / uw_mean (n)", fac["cells"], is_factual=True)
 
     print("\n[읽는 법] 둘 다 1% 꼬리(UWcvar1)라 같은 척도. 빈칸(—)=실측 없음=반사실 전용.")
     print("          실측 UWcvar1 은 칸당 origin 적음(특히 n<20) → 방향/패턴으로 해석, 절대크기 과신 금지.")
