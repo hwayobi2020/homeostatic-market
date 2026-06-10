@@ -33,7 +33,9 @@ import analyze_pathshape_rawvol as PS                                # noqa: E40
 CACHE_DIR = os.path.join(PS.RESULT_DIR, "model_realized_cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 
-FOLDS = PS.FOLDS
+FOLDS = PS.FOLDS                       # ["F_gfc", "F_long_A", "F_long_B_origin", "F_long"] (문자열)
+LABELS = {"F_gfc": "금융위기(2006-2010)", "F_long_A": "회복기(2011-2015)",
+          "F_long_B_origin": "코로나위기(2016-2020)", "F_long": "긴축기(2021-2025)"}
 SEEDS = PS.SEEDS
 FUTURE_LEN = PS.FUTURE_LEN
 CHUNK = PS.CHUNK
@@ -105,7 +107,8 @@ def main():
     print(f"#   LOCKED {PS.TAG_PREFIX}, device={device}, n_sim={N_SIM} | 칸=skew / UWcvar1 / uw_mean (n)")
     print("#" * 110)
 
-    for fold, label in FOLDS:
+    for fold in FOLDS:
+        label = LABELS.get(fold, fold)
         rows = []   # (tb_bin, mb_bin, skew, uw_mean, uw_cvar1)
         for seed in SEEDS:
             cache = os.path.join(CACHE_DIR, f"{fold}_s{seed}.json")
