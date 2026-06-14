@@ -2,7 +2,8 @@
 
 ablation/경로 표의 *모델* skew·CVaR이 현실적인지 판단할 ground-truth.
 sim_metrics(=모델)는 raw 수익률 pooled(n_orig×n_sim×T)에 _skew/_exkurt/compute_cvar 적용.
-여기선 *실현* raw 수익률(df_te["sp_return"])을 같은 origin-window(미래 13주)로 pool해 동일 함수 적용.
+여기선 *실현* raw 수익률(= sp_return(표준화 z) × garch_sigma + garch_mu 로 복원)을 같은 origin-window(미래 13주)로 pool해 동일 함수 적용.
+주의: 실현은 rolling σ(실제 변동성), 모델 sim_raw는 origin-frozen σ — skew 비교는 유효(분포 모양), CVaR 절대크기 비교는 σ구조 차이 감안.
   · skew/exkurt: scale-invariant → 모델과 정의 동일.
   · cvar1: compute_cvar(pooled returns, 0.01) — 모델 CVaR1%와 동일.
   · uw_mean/uw_cvar1: 누적-진입대비 최저(underwater) — sim_metrics와 동일 식. (uw_cvar1은 n_orig 1%라 노이즈)
@@ -45,7 +46,12 @@ def realized_stats(fold):
     origin_csv = gp["test"]
     valid_mask, z_te, df_te = PS.compute_valid_mask(origin_csv, cond_stats)
 
-    sp = df_te["sp_return"].to_numpy(float)                  # raw 실현 주간수익률
+    # ★ df_te["sp_return"]은 *표준화 잔차 z* (sim_metrics가 _gz로 사용). raw 수익률로 복원:
+    #   ε = z × σ,  raw r = ε + μ  →  r = sp_return × garch_sigma + garch_mu
+    sp_z = df_te["sp_return"].to_numpy(float)
+    sig = df_te["garch_sigma"].to_numpy(float)               # σ = rolling sp_std_13w (실현 변동성)
+    mu_c = float(df_te["garch_mu"].iloc[0])
+    sp = sp_z * sig + mu_c                                    # 실제 raw 주간수익률 (return units)
     n_w = z_te.shape[0] - PS.PAST_LEN - PS.FUTURE_LEN + 1
     real = np.stack([sp[w + PS.PAST_LEN: w + PS.PAST_LEN + PS.FUTURE_LEN]
                      for w in range(n_w)])[valid_mask]        # (n_orig, FUTURE_LEN) 미래 13주 실현
