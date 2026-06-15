@@ -25,6 +25,7 @@ Usage (Colab):
 import os
 import sys
 
+import json
 import numpy as np
 import torch
 
@@ -56,7 +57,9 @@ CHUNK = 8
 DC_COLS = ["sp_std_13w", "sp_skew_13w"]
 LK = dict(d_model=128, mlp_layers=4, flow_layers=4, flow_hidden=128, pd=64, dropout=0.2)
 ORDER = ["full", "metab_drop", "maskall"]
-ERRK = ["skew", "uw_mean", "uw_cvar1"]                     # actual 기준 오차 비교 대상
+ERRK = ["uw_mean", "uw_cvar10"]                            # actual 기준 오차 비교 (robust; skew·1% 제외)
+CACHE_DIR = os.path.join(RESULT_DIR, "tail_ablation_cache")
+os.makedirs(CACHE_DIR, exist_ok=True)
 
 FULL_TAG = "rvP2mainMlp_pd64_fl4_fh128"
 CONFIGS = {
@@ -172,16 +175,31 @@ def metrics_seed(sim_raw, actual):
     return dict(
         cov80=float(((aret >= lo80) & (aret <= hi80)).mean()),
         cov95=float(((aret >= lo95) & (aret <= hi95)).mean()),
-        skew=_skew(ret), uw_mean=float(uw.mean()), uw_cvar1=compute_cvar(uw, 0.01),
-        a_skew=_skew(aret), a_uw_mean=float(auw.mean()), a_uw_cvar1=compute_cvar(auw, 0.01),
+        skew=_skew(ret), uw_mean=float(uw.mean()),
+        uw_cvar1=compute_cvar(uw, 0.01), uw_cvar5=compute_cvar(uw, 0.05), uw_cvar10=compute_cvar(uw, 0.10),
+        a_skew=_skew(aret), a_uw_mean=float(auw.mean()),
+        a_uw_cvar1=compute_cvar(auw, 0.01), a_uw_cvar5=compute_cvar(auw, 0.05), a_uw_cvar10=compute_cvar(auw, 0.10),
     )
+
+
+def get_metrics(nm, fold, seed, device):
+    """캐시된 per-seed metrics (없으면 추론 후 캐시) — 지표 변경 시 재샘플 회피."""
+    cp = os.path.join(CACHE_DIR, f"{nm}_{fold}_s{seed}.json")
+    if os.path.exists(cp):
+        return json.load(open(cp))
+    r = sample_config(nm, fold, seed, device)
+    if r is None:
+        return None
+    m = metrics_seed(r[0], r[1])
+    json.dump(m, open(cp, "w"))
+    return m
 
 
 def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print("#" * 104)
     print(f"# §4.3.3 actual 재현도 — seed별 계산 후 평균 (pool 금지).  device={device}, seeds={SEEDS}, N_SIM={N_SIM}")
-    print("#  지표 cov80·cov95·skew·uw_mean·uw_cvar1.  기준 |model−actual| (작을수록 실제에 가까움)")
+    print("#  지표 cov80·cov95·skew·uw_mean·IHL10%.  기준 |model−actual| = uw_mean·IHL10% (skew·1% 제외: 실측 1%=1점·skew seed노이즈)")
     print("#" * 104)
 
     for fold in FOLDS:
@@ -189,37 +207,37 @@ def main():
         sr = {nm: [] for nm in ORDER}
         for nm in ORDER:
             for seed in SEEDS:
-                r = sample_config(nm, fold, seed, device)
-                if r is not None:
-                    sr[nm].append(metrics_seed(r[0], r[1]))
+                m = get_metrics(nm, fold, seed, device)
+                if m is not None:
+                    sr[nm].append(m)
         if not sr["full"]:
             print("  [skip] full 없음"); continue
 
-        # (a) seed별 진단 (skew, uw_cvar1)
-        print("  [seed별]  skew / uw_cvar1")
+        # (a) seed별 진단 (skew, IHL10%)
+        print("  [seed별]  skew / IHL10%")
         for nm in ORDER:
             if not sr[nm]:
                 continue
             sk = ", ".join(f"{m['skew']:+.3f}" for m in sr[nm])
-            uc = ", ".join(f"{m['uw_cvar1']:+.4f}" for m in sr[nm])
-            print(f"    {nm:<11} skew[{sk}]  uw_cvar1[{uc}]")
+            uc = ", ".join(f"{m['uw_cvar10']:+.4f}" for m in sr[nm])
+            print(f"    {nm:<11} skew[{sk}]  ihl10[{uc}]")
 
         # (b) seed-평균 + actual
-        keys = ["cov80", "cov95", "skew", "uw_mean", "uw_cvar1"]
+        keys = ["cov80", "cov95", "skew", "uw_mean", "uw_cvar10"]
         avg = {nm: {k: float(np.mean([m[k] for m in sr[nm]])) for k in keys} for nm in ORDER if sr[nm]}
         sd = {nm: {k: float(np.std([m[k] for m in sr[nm]])) for k in keys} for nm in ORDER if sr[nm]}
         a = sr["full"][0]
-        act = dict(skew=a["a_skew"], uw_mean=a["a_uw_mean"], uw_cvar1=a["a_uw_cvar1"])
-        print("\n  [seed-평균]  cov80  cov95   skew(±sd)        uw_mean(±sd)       uw_cvar1(±sd)")
+        act = dict(skew=a["a_skew"], uw_mean=a["a_uw_mean"], uw_cvar10=a["a_uw_cvar10"])
+        print("\n  [seed-평균]  cov80  cov95   skew(±sd)        uw_mean(±sd)       IHL10%(±sd)")
         for nm in ORDER:
             if nm not in avg:
                 continue
             print(f"    {nm:<11} {avg[nm]['cov80']:.3f}  {avg[nm]['cov95']:.3f}  "
                   f"{avg[nm]['skew']:+.3f}(±{sd[nm]['skew']:.2f})  "
                   f"{avg[nm]['uw_mean']:+.4f}(±{sd[nm]['uw_mean']:.3f})  "
-                  f"{avg[nm]['uw_cvar1']:+.4f}(±{sd[nm]['uw_cvar1']:.3f})")
+                  f"{avg[nm]['uw_cvar10']:+.4f}(±{sd[nm]['uw_cvar10']:.3f})")
         print(f"    {'actual':<11} {'—':>5}  {'—':>5}  {act['skew']:+.3f}            "
-              f"{act['uw_mean']:+.4f}             {act['uw_cvar1']:+.4f}")
+              f"{act['uw_mean']:+.4f}             {act['uw_cvar10']:+.4f}")
 
         # (c) 실제에 가장 가까운 모델 (seed-평균 기준) + per-seed 승수
         print("  [실제 재현도]  |seed평균 − actual|  → 가장 가까움 / full vs ablation per-seed 승수")
@@ -232,7 +250,7 @@ def main():
                 if not sr.get(abl):
                     continue
                 n = min(len(sr["full"]), len(sr[abl]))
-                ak = {"skew": "a_skew", "uw_mean": "a_uw_mean", "uw_cvar1": "a_uw_cvar1"}[k]
+                ak = {"uw_mean": "a_uw_mean", "uw_cvar10": "a_uw_cvar10"}[k]
                 w = sum(1 for i in range(n)
                         if abs(sr["full"][i][k] - sr["full"][i][ak]) < abs(sr[abl][i][k] - sr[abl][i][ak]))
                 wins[abl] = f"{w}/{n}"
