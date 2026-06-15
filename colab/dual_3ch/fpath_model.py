@@ -30,6 +30,9 @@ import train_garch_flow as T
 # 런너가 덮어쓰는 전역 설정 (기본값).
 FUTURE_SUMMARY_DIM = 16        # Flow context 에 더해지는 미래요약 차원 (out)
 FUTURE_SUMMARY_HIDDEN = 16     # 요약기 bottleneck hidden
+# summary_only: per-step 미래 거시는 *모델 내부에서* 마스킹(인코더가 못 봄)하고,
+# 미래 인코더(요약 코드)로만 조건화.  데이터는 full 로 로드해야 인코더가 실제 경로를 받음.
+FPATH_SUMMARY_ONLY = False
 
 
 class FutureMLPSummary(nn.Module):
@@ -72,6 +75,10 @@ class MambaFlowARFpath(T.MambaFlowAR):
         self._fp_n_ch = n_ch
         in_dim = T.FUTURE_LEN * n_ch
         self.future_summary_dim = int(FUTURE_SUMMARY_DIM)
+        # summary_only: per-step 미래 거시(금리+모든 macro)를 메인 인코더 입력에서 0 마스킹.
+        # (미래 인코더는 마스킹 전 실제 경로를 받음 → 요약 코드로만 조건화)
+        self._summary_only = bool(FPATH_SUMMARY_ONLY)
+        self._fp_mask_cols = [T.TBILL_CH] + list(T.MACRO_CH)
 
         self.future_encoder = FutureMLPSummary(
             in_dim=in_dim, out_dim=self.future_summary_dim,
@@ -105,7 +112,13 @@ class MambaFlowARFpath(T.MambaFlowAR):
         """teacher-forced log p — 원본과 동일 + 미래경로 요약 broadcast(맨 뒤)."""
         B = x_input.shape[0]
         Tn = target_path.shape[1]
-        h = self.encode(x_input)                                # (B, L, d_model)
+        # 미래경로 요약은 *마스킹 전* 실제 경로에서 뽑는다 (아래). 메인 인코더 입력만 마스킹.
+        if self._summary_only:
+            x_enc = x_input.clone()
+            x_enc[:, self.past_len:, self._fp_mask_cols] = 0.0   # per-step 미래 거시 제거
+        else:
+            x_enc = x_input
+        h = self.encode(x_enc)                                  # (B, L, d_model)
         h_future = h[:, self.past_len:, :]                      # (B, T, d_model)
         ctx_parts = [h_future]
         if self.use_past_summary:
@@ -182,10 +195,13 @@ class MambaFlowARFpath(T.MambaFlowAR):
             next_input = torch.zeros(B * n_sim, 1, T.N_CHANNELS,
                                      device=device, dtype=seq.dtype)
             next_input[:, 0, T.SP_CH] = last_sp
-            next_input[:, 0, T.TBILL_CH] = tbill_fut[:, tau]
-            if fm is not None:
-                for _j, _ch in enumerate(_unmask_idx):
-                    next_input[:, 0, _ch] = fm[:, tau, _j]
+            if not self._summary_only:
+                # full_fpath: per-step 미래 거시 주입(인코더가 봄).
+                next_input[:, 0, T.TBILL_CH] = tbill_fut[:, tau]
+                if fm is not None:
+                    for _j, _ch in enumerate(_unmask_idx):
+                        next_input[:, 0, _ch] = fm[:, tau, _j]
+            # summary_only: per-step 미래 거시 안 채움(0=마스크) → 요약 코드로만 조건화
 
             seq = torch.cat([seq, next_input], dim=1)
             h_seq = self.encode(seq)

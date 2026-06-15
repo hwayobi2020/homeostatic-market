@@ -30,6 +30,9 @@ import fpath_model                                                  # noqa: E402
 # 미래요약 설정 (env override 가능) → monkeypatch *전에* 세팅.
 fpath_model.FUTURE_SUMMARY_DIM = int(os.environ.get("FPATH_DIM", "16"))
 fpath_model.FUTURE_SUMMARY_HIDDEN = int(os.environ.get("FPATH_HIDDEN", "16"))
+# summary_only=1: per-step 미래 마스킹 + 요약 코드로만 조건화 (데이터는 full 로 로드).
+SUMMARY_ONLY = os.environ.get("FPATH_SUMMARY_ONLY", "0") == "1"
+fpath_model.FPATH_SUMMARY_ONLY = SUMMARY_ONLY
 T.MambaFlowAR = fpath_model.MambaFlowARFpath                        # ★ monkeypatch
 
 from train_garch_flow import main_worker                            # noqa: E402
@@ -64,10 +67,11 @@ def set_cond_cols(cols, rate_col):
 
 def main():
     print("#" * 96)
-    print("# full_fpath 학습 — LOCKED full spec + 미래경로 전체 요약(Flow context)")
+    _mode = "summary_only(per-step 미래 마스킹, 요약코드만)" if SUMMARY_ONLY else "full_fpath(per-step+요약)"
+    print(f"# {_mode} 학습 — LOCKED full spec + 미래경로 요약(Flow context)")
     print(f"#  future_summary_dim={fpath_model.FUTURE_SUMMARY_DIM} "
-          f"hidden={fpath_model.FUTURE_SUMMARY_HIDDEN}  seeds={SEEDS}")
-    print(f"#  ENC={ENC_FULL}  unmask=[metab_13w]  mask_tbill=False")
+          f"hidden={fpath_model.FUTURE_SUMMARY_HIDDEN}  summary_only={SUMMARY_ONLY}  seeds={SEEDS}")
+    print(f"#  데이터 ENC={ENC_FULL}  unmask=[metab_13w]  mask_tbill=False (요약기엔 실제경로 공급)")
     print("#" * 96)
 
     # full 과 동일 조건: 미래 tbill 보임 + metab unmask, sp 미마스크.
@@ -81,7 +85,8 @@ def main():
                    for s in ("train", "val", "test")):
             print(f"  [skip {fold}] fold CSV 없음"); continue
         for seed in SEEDS:
-            tag = f"rvAbl_full_fpath_d{fpath_model.FUTURE_SUMMARY_DIM}_s{seed}"
+            _nm = "summary_only" if SUMMARY_ONLY else "full_fpath"
+            tag = f"rvAbl_{_nm}_d{fpath_model.FUTURE_SUMMARY_DIM}_s{seed}"
             sp = os.path.join(RESULT_DIR, f"garch_flow_ar_{tag}_{fold}_summary.json")
             if os.path.exists(sp):
                 print(f"  [skip] {os.path.basename(sp)}"); continue

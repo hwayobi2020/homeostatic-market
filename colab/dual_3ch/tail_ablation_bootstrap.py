@@ -61,7 +61,7 @@ N_SIM = 1000
 CHUNK = 8
 DC_COLS = ["sp_std_13w", "sp_skew_13w"]
 LK = dict(d_model=128, mlp_layers=4, flow_layers=4, flow_hidden=128, pd=64, dropout=0.2)
-ORDER = ["full", "full_fpath", "metab_drop", "maskall"]
+ORDER = ["full", "full_fpath", "summary_only", "metab_drop", "maskall"]
 ERRK = ["uw_mean", "uw_cvar1", "uw_cvar5", "uw_cvar10"]    # actual 기준 오차 비교 (1%는 참고: 실측~1점)
 CACHE_DIR = os.path.join(RESULT_DIR, "tail_ablation_cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
@@ -72,6 +72,8 @@ CONFIGS = {
                    "garch_flow_ar_%s_s{seed}_{fold}_best.pt" % FULL_TAG),
     "full_fpath": (["sp_return", "tbill_wr", "ads_lag", "wti_wr", "metab_13w"], False, ["metab_13w"],
                    f"garch_flow_ar_rvAbl_full_fpath_d{fpath_model.FUTURE_SUMMARY_DIM}_s{{seed}}_{{fold}}_best.pt"),
+    "summary_only": (["sp_return", "tbill_wr", "ads_lag", "wti_wr", "metab_13w"], False, ["metab_13w"],
+                     f"garch_flow_ar_rvAbl_summary_only_d{fpath_model.FUTURE_SUMMARY_DIM}_s{{seed}}_{{fold}}_best.pt"),
     "maskall":    (["sp_return", "tbill_wr", "ads_lag", "wti_wr", "metab_13w"], True, [],
                    "garch_flow_ar_rvAbl_maskall_s{seed}_{fold}_best.pt"),
     "metab_drop": (["sp_return", "tbill_wr", "ads_lag", "wti_wr"], False, [],
@@ -117,7 +119,8 @@ def sample_config(name, fold, seed, device):
     ckpt = torch.load(bp, map_location=device); meta = ckpt["meta"]
     cond_stats = meta["cond_stats"]; target_stats = meta["target_stats"]
     extra_stats = meta.get("extra_stats")
-    _cls = fpath_model.MambaFlowARFpath if name == "full_fpath" else MambaFlowAR
+    fpath_model.FPATH_SUMMARY_ONLY = (name == "summary_only")   # 모델 __init__ 가 읽음
+    _cls = fpath_model.MambaFlowARFpath if name in ("full_fpath", "summary_only") else MambaFlowAR
     model = rebuild(ckpt, len(cols), device, cls=_cls)
 
     test_csv = garch_preprocess_fold(FOLDS_DIR, fold, RESULT_DIR)["test"]
