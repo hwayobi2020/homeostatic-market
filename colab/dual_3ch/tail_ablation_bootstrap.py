@@ -46,6 +46,10 @@ from train_garch_flow import (                                        # noqa: E4
     compute_valid_mask, forward_garch_rescale, garch_preprocess_fold,
     compute_cvar, PAST_LEN, FUTURE_LEN,
 )
+import fpath_model                                                    # noqa: E402
+# full_fpath 로드용 미래요약 차원 — *학습 때와 동일해야* state_dict 일치.
+fpath_model.FUTURE_SUMMARY_DIM = int(os.environ.get("FPATH_DIM", "16"))
+fpath_model.FUTURE_SUMMARY_HIDDEN = int(os.environ.get("FPATH_HIDDEN", "16"))
 
 RESULT_DIR = os.path.join(HERE, "result")
 FOLDS_DIR = os.path.join(ROOT, "data", "folds_v33_vix_expanding")
@@ -56,7 +60,7 @@ N_SIM = 1000
 CHUNK = 8
 DC_COLS = ["sp_std_13w", "sp_skew_13w"]
 LK = dict(d_model=128, mlp_layers=4, flow_layers=4, flow_hidden=128, pd=64, dropout=0.2)
-ORDER = ["full", "metab_drop", "maskall"]
+ORDER = ["full", "full_fpath", "metab_drop", "maskall"]
 ERRK = ["uw_mean", "uw_cvar1", "uw_cvar5", "uw_cvar10"]    # actual 기준 오차 비교 (1%는 참고: 실측~1점)
 CACHE_DIR = os.path.join(RESULT_DIR, "tail_ablation_cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
@@ -65,6 +69,8 @@ FULL_TAG = "rvP2mainMlp_pd64_fl4_fh128"
 CONFIGS = {
     "full":       (["sp_return", "tbill_wr", "ads_lag", "wti_wr", "metab_13w"], False, ["metab_13w"],
                    "garch_flow_ar_%s_s{seed}_{fold}_best.pt" % FULL_TAG),
+    "full_fpath": (["sp_return", "tbill_wr", "ads_lag", "wti_wr", "metab_13w"], False, ["metab_13w"],
+                   "garch_flow_ar_rvAbl_full_fpath_s{seed}_{fold}_best.pt"),
     "maskall":    (["sp_return", "tbill_wr", "ads_lag", "wti_wr", "metab_13w"], True, [],
                    "garch_flow_ar_rvAbl_maskall_s{seed}_{fold}_best.pt"),
     "metab_drop": (["sp_return", "tbill_wr", "ads_lag", "wti_wr"], False, [],
@@ -83,8 +89,9 @@ def set_cond(cols):
         pass
 
 
-def rebuild(ckpt, d_input, device):
-    m = MambaFlowAR(
+def rebuild(ckpt, d_input, device, cls=MambaFlowAR):
+    # cls=MambaFlowARFpath 면 미래경로 요약 포함(state_dict 에 future_encoder/확장 flow 존재).
+    m = cls(
         d_input=d_input, d_model=LK["d_model"], n_flow_layers=LK["flow_layers"],
         n_flow_hidden=LK["flow_hidden"], dropout=LK["dropout"], extra_context_dim=len(DC_COLS),
         encoder_type="mlp", mlp_num_layers=LK["mlp_layers"], direct_prev_return=True,
@@ -109,7 +116,8 @@ def sample_config(name, fold, seed, device):
     ckpt = torch.load(bp, map_location=device); meta = ckpt["meta"]
     cond_stats = meta["cond_stats"]; target_stats = meta["target_stats"]
     extra_stats = meta.get("extra_stats")
-    model = rebuild(ckpt, len(cols), device)
+    _cls = fpath_model.MambaFlowARFpath if name == "full_fpath" else MambaFlowAR
+    model = rebuild(ckpt, len(cols), device, cls=_cls)
 
     test_csv = garch_preprocess_fold(FOLDS_DIR, fold, RESULT_DIR)["test"]
     Xte, Yte, _, _, _ = cached_load_windows_seq(test_csv, cond_stats=cond_stats, target_stats=target_stats)
