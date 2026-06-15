@@ -30,7 +30,9 @@ from train_garch_flow import main_worker                            # noqa: E402
 RESULT_DIR = os.path.join(HERE, "result")
 FOLDS_DIR = os.path.join(ROOT, "data", "folds_v33_vix_expanding")
 FOLDS = ["F_gfc", "F_long_A", "F_long_B_origin", "F_long"]
-SEEDS = [2026, 2027, 2028]                # ablation 3-seed (mean±std)
+# 기본 3-seed(mean±std). 5-seed 보강 시 env ABL_SEEDS=2029,2030 으로 *추가 시드만* 학습
+# (summary skip 로직이 기존 3시드를 보호). env ABL_ONLY=metab_drop,maskall 로 대상 ablation 한정.
+SEEDS = [int(s) for s in os.environ.get("ABL_SEEDS", "2026,2027,2028").split(",") if s.strip()]
 ENC_FULL = ["sp_return", "tbill_wr", "ads_lag", "wti_wr", "metab_13w"]
 ORIG_FL = int(T.FUTURE_LEN)               # 13 (rebind 복원용)
 ORIG_PL = int(T.PAST_LEN)                 # 52
@@ -111,10 +113,12 @@ def set_window(fl):
 def main():
     print("#" * 96)
     print("# §4.3 ablation 재학습 (LOCKED spec, 한 축만 변형) — 4 fold × 3 seed × 5 ablation")
-    print(f"#  ablations: {[a[0] for a in ABLATIONS]}")
+    only = [x.strip() for x in os.environ.get("ABL_ONLY", "").split(",") if x.strip()]
+    ablations = [a for a in ABLATIONS if (not only or a[0] in only)]
+    print(f"#  ablations: {[a[0] for a in ablations]}  seeds={SEEDS}")
     print("#" * 96)
 
-    for name, enc, rate, unmask, mask_tbill, fl in ABLATIONS:
+    for name, enc, rate, unmask, mask_tbill, fl in ablations:
         # fedrate 는 fedfunds_wr 컬럼 필요 (prep_fedfunds_column.py 선행)
         miss = [c for c in unmask if c not in enc]
         if miss:
