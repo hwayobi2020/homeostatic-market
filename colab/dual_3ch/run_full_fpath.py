@@ -41,12 +41,13 @@ RESULT_DIR = os.path.join(HERE, "result")
 FOLDS_DIR = os.path.join(ROOT, "data", "folds_v33_vix_expanding")
 FOLDS = ["F_gfc", "F_long_A", "F_long_B_origin", "F_long"]
 SEEDS = [int(s) for s in os.environ.get("FPATH_SEEDS", "2026").split(",") if s.strip()]
+NOVOL = os.environ.get("FPATH_NOVOL", "0") == "1"   # sp_std 제거 (extra_context=sp_skew_13w 만)
 
 ENC_FULL = ["sp_return", "tbill_wr", "ads_lag", "wti_wr", "metab_13w"]
 
-# LOCKED 본모형 spec (rvP2mainMlp / run_ablations LOCKED 와 동일).
+# LOCKED 본모형 spec (rvP2mainMlp / run_ablations LOCKED 와 동일).  NOVOL 이면 sp_std 제거.
 LOCKED = dict(encoder_type="mlp", d_model=128, mlp_num_layers=4,
-              extra_context_channels="sp_std_13w,sp_skew_13w",
+              extra_context_channels=("sp_skew_13w" if NOVOL else "sp_std_13w,sp_skew_13w"),
               direct_prev_return=True, use_past_summary=True,
               past_encoder_type="mlp", past_summary_dim=64,
               dropout=0.2, n_flow_layers=4, n_flow_hidden=128, weight_decay=0.5)
@@ -86,6 +87,8 @@ def main():
             print(f"  [skip {fold}] fold CSV 없음"); continue
         for seed in SEEDS:
             _nm = "summary_only" if SUMMARY_ONLY else "full_fpath"
+            if NOVOL:
+                _nm += "_novol"
             tag = f"rvAbl_{_nm}_d{fpath_model.FUTURE_SUMMARY_DIM}_s{seed}"
             sp = os.path.join(RESULT_DIR, f"garch_flow_ar_{tag}_{fold}_summary.json")
             if os.path.exists(sp):

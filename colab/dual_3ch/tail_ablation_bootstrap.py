@@ -61,7 +61,7 @@ N_SIM = 1000
 CHUNK = 8
 DC_COLS = ["sp_std_13w", "sp_skew_13w"]
 LK = dict(d_model=128, mlp_layers=4, flow_layers=4, flow_hidden=128, pd=64, dropout=0.2)
-ORDER = ["full", "full_fpath", "summary_only", "metab_drop", "maskall"]
+ORDER = ["full", "fpath_novol", "maskall", "full_fpath", "summary_only", "metab_drop"]
 ERRK = ["uw_mean", "uw_cvar1", "uw_cvar5", "uw_cvar10"]    # actual 기준 오차 비교 (1%는 참고: 실측~1점)
 CACHE_DIR = os.path.join(RESULT_DIR, "tail_ablation_cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
@@ -74,6 +74,8 @@ CONFIGS = {
                    f"garch_flow_ar_rvAbl_full_fpath_d{fpath_model.FUTURE_SUMMARY_DIM}_s{{seed}}_{{fold}}_best.pt"),
     "summary_only": (["sp_return", "tbill_wr", "ads_lag", "wti_wr", "metab_13w"], False, ["metab_13w"],
                      f"garch_flow_ar_rvAbl_summary_only_d{fpath_model.FUTURE_SUMMARY_DIM}_s{{seed}}_{{fold}}_best.pt"),
+    "fpath_novol": (["sp_return", "tbill_wr", "ads_lag", "wti_wr", "metab_13w"], False, ["metab_13w"],
+                    f"garch_flow_ar_rvAbl_full_fpath_novol_d{fpath_model.FUTURE_SUMMARY_DIM}_s{{seed}}_{{fold}}_best.pt"),
     "maskall":    (["sp_return", "tbill_wr", "ads_lag", "wti_wr", "metab_13w"], True, [],
                    "garch_flow_ar_rvAbl_maskall_s{seed}_{fold}_best.pt"),
     "metab_drop": (["sp_return", "tbill_wr", "ads_lag", "wti_wr"], False, [],
@@ -92,11 +94,12 @@ def set_cond(cols):
         pass
 
 
-def rebuild(ckpt, d_input, device, cls=MambaFlowAR):
+def rebuild(ckpt, d_input, device, cls=MambaFlowAR, extra_dim=len(DC_COLS)):
     # cls=MambaFlowARFpath 면 미래경로 요약 포함(state_dict 에 future_encoder/확장 flow 존재).
+    # extra_dim 은 meta 의 extra_cond_cols 수(novol=1, 기본=2) — 체크포인트와 일치시킴.
     m = cls(
         d_input=d_input, d_model=LK["d_model"], n_flow_layers=LK["flow_layers"],
-        n_flow_hidden=LK["flow_hidden"], dropout=LK["dropout"], extra_context_dim=len(DC_COLS),
+        n_flow_hidden=LK["flow_hidden"], dropout=LK["dropout"], extra_context_dim=extra_dim,
         encoder_type="mlp", mlp_num_layers=LK["mlp_layers"], direct_prev_return=True,
         use_past_summary=True, past_encoder_type="mlp", past_summary_dim=LK["pd"],
     ).to(device)
@@ -120,13 +123,15 @@ def sample_config(name, fold, seed, device):
     cond_stats = meta["cond_stats"]; target_stats = meta["target_stats"]
     extra_stats = meta.get("extra_stats")
     fpath_model.FPATH_SUMMARY_ONLY = (name == "summary_only")   # 모델 __init__ 가 읽음
-    _cls = fpath_model.MambaFlowARFpath if name in ("full_fpath", "summary_only") else MambaFlowAR
-    model = rebuild(ckpt, len(cols), device, cls=_cls)
+    _fp = name in ("full_fpath", "summary_only", "fpath_novol")
+    _cls = fpath_model.MambaFlowARFpath if _fp else MambaFlowAR
+    dc_cols = meta.get("extra_cond_cols") or DC_COLS             # novol=sp_skew만(dim1), 기본 dim2
+    model = rebuild(ckpt, len(cols), device, cls=_cls, extra_dim=len(dc_cols))
 
     test_csv = garch_preprocess_fold(FOLDS_DIR, fold, RESULT_DIR)["test"]
     Xte, Yte, _, _, _ = cached_load_windows_seq(test_csv, cond_stats=cond_stats, target_stats=target_stats)
     Xte_dev = Xte.to(device)
-    Xe, _, n_ex, _ = load_extra_context(test_csv, DC_COLS, extra_stats=extra_stats)
+    Xe, _, n_ex, _ = load_extra_context(test_csv, dc_cols, extra_stats=extra_stats)
     Xe_dev = Xe.to(device) if Xe is not None else None
 
     valid_mask, z_te, df_te = compute_valid_mask(test_csv, cond_stats)
@@ -201,7 +206,7 @@ def get_metrics(nm, fold, seed, device):
       캐시키에 dim 을 포함한다(없으면 dim 스윕이 stale 캐시히트로 같은 값 반환 = 버그).
     """
     suffix = (f"_d{fpath_model.FUTURE_SUMMARY_DIM}"
-              if nm in ("full_fpath", "summary_only") else "")
+              if nm in ("full_fpath", "summary_only", "fpath_novol") else "")
     cp = os.path.join(CACHE_DIR, f"{nm}{suffix}_{fold}_s{seed}.json")
     if os.path.exists(cp):
         return json.load(open(cp))
