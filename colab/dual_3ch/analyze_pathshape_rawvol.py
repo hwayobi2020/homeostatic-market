@@ -66,7 +66,7 @@ LK_DROPOUT = 0.2
 TAG_PREFIX = f"rvP2mainMlp_pd{LK_PD}_fl{LK_FLOW_LAYERS}_fh{LK_FLOW_HIDDEN}"
 
 FOLDS = ["F_gfc", "F_long_A", "F_long_B_origin", "F_long"]
-SEEDS = [2026, 2027, 2028]        # seed 3 (5에서 축소)
+SEEDS = [2026, 2027, 2028, 2029, 2030]   # 5시드 통일 (full ckpt 5시드 보유 → 재추론만)
 PCTLS = [10, 50, 90]
 PCTL_LABEL = {10: "lo", 50: "mid", 90: "hi"}
 N_ORIGIN_MAX = 200
