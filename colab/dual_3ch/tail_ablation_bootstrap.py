@@ -71,7 +71,7 @@ CONFIGS = {
     "full":       (["sp_return", "tbill_wr", "ads_lag", "wti_wr", "metab_13w"], False, ["metab_13w"],
                    "garch_flow_ar_%s_s{seed}_{fold}_best.pt" % FULL_TAG),
     "full_fpath": (["sp_return", "tbill_wr", "ads_lag", "wti_wr", "metab_13w"], False, ["metab_13w"],
-                   "garch_flow_ar_rvAbl_full_fpath_s{seed}_{fold}_best.pt"),
+                   f"garch_flow_ar_rvAbl_full_fpath_d{fpath_model.FUTURE_SUMMARY_DIM}_s{{seed}}_{{fold}}_best.pt"),
     "maskall":    (["sp_return", "tbill_wr", "ads_lag", "wti_wr", "metab_13w"], True, [],
                    "garch_flow_ar_rvAbl_maskall_s{seed}_{fold}_best.pt"),
     "metab_drop": (["sp_return", "tbill_wr", "ads_lag", "wti_wr"], False, [],

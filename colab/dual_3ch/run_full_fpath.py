@@ -81,7 +81,7 @@ def main():
                    for s in ("train", "val", "test")):
             print(f"  [skip {fold}] fold CSV 없음"); continue
         for seed in SEEDS:
-            tag = f"rvAbl_full_fpath_s{seed}"
+            tag = f"rvAbl_full_fpath_d{fpath_model.FUTURE_SUMMARY_DIM}_s{seed}"
             sp = os.path.join(RESULT_DIR, f"garch_flow_ar_{tag}_{fold}_summary.json")
             if os.path.exists(sp):
                 print(f"  [skip] {os.path.basename(sp)}"); continue
