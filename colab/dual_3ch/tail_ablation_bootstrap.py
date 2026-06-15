@@ -1,21 +1,21 @@
-"""§4.3.3 유의성 — full vs (maskall / metab_drop) 좌꼬리(skew·CVaR1%·IHL) paired-origin bootstrap.
+"""§4.3.3 — full / metab_drop / maskall 이 *실제(actual)* 꼬리를 얼마나 잘 재현하나.
 
-저장된 ablation 결과는 pooled 스칼라뿐이라, 체크포인트(.pt)로 *추론만* 재샘플하여
-per-origin raw sim 을 얻고, origin 을 paired 복원추출해 Δ(full−ablation)의 CI/p 를 구한다.
-(학습 0. evaluate_test 의 샘플링 경로 L1276-1328 를 그대로 복제 → 마스킹 정확.)
+지표: cov80, cov95, skew, IHL mean(uw_mean), IHL CVaR1%(uw_cvar1).
+기준: "실제값에 가까운가" = |model − actual|.  Δerror = |full−actual| − |ablation−actual|.
+      Δerror < 0 = full 이 실제에 더 가까움(= 경로/유동성이 실제 꼬리 재현에 기여).
+
+IHL(uw_mean/uw_cvar1)은 어느 표에도 저장된 적 없음(표 4.12는 per-step CVaR1%) →
+체크포인트로 *추론만(학습 0)* 재샘플하여 per-origin sim 생성 후 계산.
 
 config (run_ablations_rawvol.py 와 동일 spec):
-  full       : cols 5(+metab), MASK_FUTURE_TBILL=False, unmask=[metab_13w]   tag=rvP2mainMlp_pd64_fl4_fh128
-  maskall    : cols 5,           MASK_FUTURE_TBILL=True,  unmask=[]            tag=rvAbl_maskall
-  metab_drop : cols 4(-metab),   MASK_FUTURE_TBILL=False, unmask=[]            tag=rvAbl_metab_drop
+  full       : cols 5(+metab), MASK_FUTURE_TBILL=False, unmask=[metab_13w]  tag=rvP2mainMlp_pd64_fl4_fh128
+  maskall    : cols 5,          MASK_FUTURE_TBILL=True,  unmask=[]           tag=rvAbl_maskall
+  metab_drop : cols 4(-metab),  MASK_FUTURE_TBILL=False, unmask=[]           tag=rvAbl_metab_drop
 
-검정: 같은 fold·같은 test origin 에서 full 과 ablation 평가 → origin paired bootstrap.
-  공통 seed 2026·2027·2028 사용, origin 별 3-seed sim pool.
-  Δskew, ΔCVaR1%, Δuw_cvar1 (full − ablation; 음수 = full 이 더 깊음/꼬리 큼).
-  fold별 + 전체 pooled.  p = 2 × min(P(Δ>0), P(Δ<0)).
-
-한계(정직): full·ablation 은 학습이 다른 별도 모델. 3-seed pool 로 줄이되 Δ 에 학습차 일부 포함
-  → "config 가 pooled 꼬리통계를 origin 노이즈 이상으로 바꾸는가" 검정.
+비교: fold별 + 전체 pooled.  (pooling 은 fold 스케일 차이로 극단 fold 가 지배 → 둘 다 보고)
+유의성: skew·uw_mean·uw_cvar1 에 대해 full vs maskall paired-origin bootstrap (같은 origin).
+        metab_drop 은 채널이 달라 origin 이 다르면 점 비교만(페어 p 제외).
+cov80/cov95 = 모델 구간이 실제를 덮는 비율 → 값만 보고(actual 행은 —).
 
 Usage (Colab):
     %cd '/content/drive/MyDrive/Colab Notebooks/homeostatic-market'
@@ -50,14 +50,15 @@ RESULT_DIR = os.path.join(HERE, "result")
 FOLDS_DIR = os.path.join(ROOT, "data", "folds_v33_vix_expanding")
 FOLDS = ["F_gfc", "F_long_A", "F_long_B_origin", "F_long"]
 LABELS = {"F_gfc": "금융위기", "F_long_A": "회복기", "F_long_B_origin": "코로나", "F_long": "긴축기"}
-SEEDS = [2026, 2027, 2028]              # full·ablation 공통 seed
+SEEDS = [2026, 2027, 2028]
 N_SIM = 1000
 CHUNK = 8
 N_BOOT = 1000
 DC_COLS = ["sp_std_13w", "sp_skew_13w"]
 LK = dict(d_model=128, mlp_layers=4, flow_layers=4, flow_hidden=128, pd=64, dropout=0.2)
+ORDER = ["full", "metab_drop", "maskall"]
+METRICS_ERR = ["skew", "uw_mean", "uw_cvar1"]      # actual 기준 오차 비교 대상
 
-# config: (cols, mask_future_tbill, unmask, tag_template)
 FULL_TAG = "rvP2mainMlp_pd64_fl4_fh128"
 CONFIGS = {
     "full":       (["sp_return", "tbill_wr", "ads_lag", "wti_wr", "metab_13w"], False, ["metab_13w"],
@@ -93,7 +94,7 @@ def rebuild(ckpt, d_input, device):
 
 @torch.no_grad()
 def sample_config(name, fold, seed, device):
-    """returns sim_paths_raw (n_orig, N_SIM, FUTURE_LEN) for given config/fold/seed, or None."""
+    """returns (sim_raw (n_orig,N_SIM,T), actual_raw (n_orig,T)) or None."""
     cols, mask_tbill, unmask, tagtmpl = CONFIGS[name]
     bp = os.path.join(RESULT_DIR, tagtmpl.format(seed=seed, fold=fold))
     if not os.path.exists(bp):
@@ -132,144 +133,182 @@ def sample_config(name, fold, seed, device):
         fmac = Xte_dev[s:e, PAST_LEN:, um_idx] if um_idx else None
         sim = model.ar_sample(xp, ftb, lsp, N_SIM, extra_context=ex, future_macro_z=fmac)
         out.append(sim.cpu())
-    sim_z = torch.cat(out, dim=0).numpy()                                  # (n_orig, N_SIM, T) z
+    sim_z = torch.cat(out, dim=0).numpy()
 
-    # rescale to raw (forward GARCH σ, evaluate_test L1294-1328 와 동일)
     tmu = float(target_stats["mean"]); tsd = float(target_stats["std"])
     _gsig = df_te["garch_sigma"].to_numpy(float); _gz = df_te["sp_return"].to_numpy(float)
+    _gmu = df_te["garch_mu"].to_numpy(float)
     _oidx = np.where(valid_mask)[0]
     _om = float(df_te["garch_omega"].iloc[0]); _al = float(df_te["garch_alpha"].iloc[0])
-    _be = float(df_te["garch_beta"].iloc[0]); _mu = float(df_te["garch_mu"].iloc[0])
+    _be = float(df_te["garch_beta"].iloc[0]); _mu = float(_gmu[0])
     _orow = _oidx + (PAST_LEN - 1)
     s2 = _gsig[_orow] ** 2
     e2 = (_gz[_orow] * _gsig[_orow]) ** 2
     sim_raw = forward_garch_rescale(sim_z * tsd + tmu, s2, e2, _om, _al, _be, _mu)
-    return sim_raw                                                        # (n_orig, N_SIM, T)
+
+    # actual raw 미래 13주 (= z × σ + μ), 같은 valid origin
+    sp_raw_full = _gz * _gsig + _gmu                                      # 전체 시계열 raw 수익률
+    actual = np.stack([sp_raw_full[w + PAST_LEN: w + PAST_LEN + FUTURE_LEN]
+                       for w in range(n_w)])[valid_mask]                  # (n_orig, T)
+    return sim_raw, actual
 
 
 def pooled_sims(name, fold, device):
-    """3-seed pool → (n_orig, 3*N_SIM, T) raw."""
-    chunks = []
+    """3-seed pool → (sim (n_orig, k*N_SIM, T), actual (n_orig, T)) or None."""
+    sims = []; actual = None
     for seed in SEEDS:
-        sr = sample_config(name, fold, seed, device)
-        if sr is not None:
-            chunks.append(sr)
-    if not chunks:
+        r = sample_config(name, fold, seed, device)
+        if r is None:
+            continue
+        sims.append(r[0]); actual = r[1]
+    if not sims:
         return None
-    return np.concatenate(chunks, axis=1)                                 # (n_orig, k*N_SIM, T)
+    return np.concatenate(sims, axis=1), actual
 
 
 def underwater(sim):
-    """(n_orig, M, T) -> per (orig,M) worst cumulative drawdown (<=0)."""
+    """(n,M,T) -> (n,M) worst cumulative drawdown(<=0)."""
     cum = np.cumsum(sim, axis=2)
     z0 = np.zeros((cum.shape[0], cum.shape[1], 1), dtype=cum.dtype)
-    cum0 = np.concatenate([z0, cum], axis=2)
-    return cum0.min(axis=2)                                               # (n_orig, M)
+    return np.concatenate([z0, cum], axis=2).min(axis=2)
 
 
-def _skew_flat(a):
+def _skew(a):
     m = a.mean(); s = a.std() + 1e-12
     return float(np.mean(((a - m) / s) ** 3))
 
 
-def stats_from_origins(ret_by_orig, uw_by_orig, idx):
-    """resampled origin idx -> pooled skew, cvar1(returns), uw_cvar1."""
-    r = np.concatenate([ret_by_orig[i] for i in idx])
-    uw = np.concatenate([uw_by_orig[i] for i in idx])
-    return _skew_flat(r), compute_cvar(r, 0.01), compute_cvar(uw, 0.01)
+def prep(sim_raw, actual):
+    """per-origin 2D 배열 묶음 (bootstrap 입력)."""
+    n = sim_raw.shape[0]
+    ret2d = sim_raw.reshape(n, -1)                       # (n, M*T)
+    uw2d = underwater(sim_raw)                           # (n, M)
+    a_ret2d = actual                                     # (n, T)
+    a_uw2d = underwater(actual[:, None, :])              # (n, 1)
+    return dict(ret=ret2d, uw=uw2d, a_ret=a_ret2d, a_uw=a_uw2d, n=n)
 
 
-def paired_bootstrap(full_raw, abl_raw, rng):
-    """returns dict of Δ(full-abl) mean/CI/p for skew, cvar1, uw_cvar1 (paired-origin)."""
-    n_orig = full_raw.shape[0]
-    full_ret = [full_raw[i].ravel() for i in range(n_orig)]
-    abl_ret = [abl_raw[i].ravel() for i in range(n_orig)]
-    full_uw = list(underwater(full_raw))
-    abl_uw = list(underwater(abl_raw))
-    # point estimate (all origins)
-    base_full = stats_from_origins(full_ret, full_uw, np.arange(n_orig))
-    base_abl = stats_from_origins(abl_ret, abl_uw, np.arange(n_orig))
-    d_point = tuple(f - a for f, a in zip(base_full, base_abl))
-    d_boot = np.empty((N_BOOT, 3))
+def metrics(P, idx):
+    """주어진 origin idx 에서 모델·실제 지표 + cov."""
+    mret = P["ret"][idx].ravel(); aret = P["a_ret"][idx].ravel()
+    muw = P["uw"][idx].ravel(); auw = P["a_uw"][idx].ravel()
+    lo80, hi80 = np.percentile(mret, [10, 90]); lo95, hi95 = np.percentile(mret, [2.5, 97.5])
+    return dict(
+        cov80=float(((aret >= lo80) & (aret <= hi80)).mean()),
+        cov95=float(((aret >= lo95) & (aret <= hi95)).mean()),
+        skew=(_skew(mret), _skew(aret)),
+        uw_mean=(float(muw.mean()), float(auw.mean())),
+        uw_cvar1=(compute_cvar(muw, 0.01), compute_cvar(auw, 0.01)),
+    )
+
+
+def paired_err_bootstrap(Pf, Pa, rng):
+    """full(Pf) vs ablation(Pa), 같은 origin 가정.  Δerror=|full-actual|-|abl-actual|."""
+    n = Pf["n"]
+    out = {k: np.empty(N_BOOT) for k in METRICS_ERR}
     for b in range(N_BOOT):
-        idx = rng.integers(0, n_orig, n_orig)
-        sf = stats_from_origins(full_ret, full_uw, idx)
-        sa = stats_from_origins(abl_ret, abl_uw, idx)
-        d_boot[b] = [f - a for f, a in zip(sf, sa)]
+        idx = rng.integers(0, n, n)
+        mf = metrics(Pf, idx); ma = metrics(Pa, idx)
+        for k in METRICS_ERR:
+            ef = abs(mf[k][0] - mf[k][1]); ea = abs(ma[k][0] - ma[k][1])
+            out[k][b] = ef - ea
     res = {}
-    for j, key in enumerate(("skew", "cvar1", "uw_cvar1")):
-        col = d_boot[:, j]
-        lo, hi = np.percentile(col, [2.5, 97.5])
+    for k in METRICS_ERR:
+        col = out[k]; lo, hi = np.percentile(col, [2.5, 97.5])
         p = 2.0 * min((col > 0).mean(), (col < 0).mean())
-        res[key] = dict(d=float(d_point[j]), lo=float(lo), hi=float(hi), p=float(p),
-                        full=float(base_full[j]), abl=float(base_abl[j]))
+        res[k] = dict(d=float(col.mean()), lo=float(lo), hi=float(hi), p=float(p))
     return res
+
+
+def print_point_table(label, points):
+    """points: dict name->metrics(all-origin).  actual 값은 full 기준."""
+    print(f"\n  [{label}] cov80 / cov95 / skew / uw_mean / uw_cvar1  (skew·uw 는 model 값)")
+    for name in ORDER:
+        if name not in points:
+            continue
+        m = points[name]
+        print(f"    {name:<11} {m['cov80']:.3f}  {m['cov95']:.3f}  "
+              f"{m['skew'][0]:+.3f}  {m['uw_mean'][0]:+.4f}  {m['uw_cvar1'][0]:+.4f}")
+    a = points["full"]
+    print(f"    {'actual':<11} {'—':>5}  {'—':>5}  "
+          f"{a['skew'][1]:+.3f}  {a['uw_mean'][1]:+.4f}  {a['uw_cvar1'][1]:+.4f}")
+    # 실제에 가장 가까운 모델 (skew·uw_mean·uw_cvar1)
+    for k in METRICS_ERR:
+        errs = {nm: abs(points[nm][k][0] - points[nm][k][1]) for nm in ORDER if nm in points}
+        best = min(errs, key=errs.get)
+        es = "  ".join(f"{nm}={errs[nm]:.4f}" for nm in ORDER if nm in points)
+        print(f"      |{k}−actual|  {es}   → 가장 가까움: {best}")
 
 
 def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print("#" * 100)
-    print(f"# §4.3.3 paired-origin bootstrap — full vs maskall/metab_drop (device={device}, B={N_BOOT})")
-    print(f"#  Δ = full − ablation (음수 = full 이 더 깊음).  seeds={SEEDS} pool, N_SIM={N_SIM}")
-    print("#" * 100)
-
+    print("#" * 104)
+    print(f"# §4.3.3 actual 재현도 — full/metab_drop/maskall (device={device}, B={N_BOOT}, seeds={SEEDS})")
+    print("#  지표 cov80·cov95·skew·uw_mean·uw_cvar1.  유의성=|model−actual| (Δerr<0 & p<0.05 = full 이 실제에 더 가까움)")
+    print("#" * 104)
     rng = np.random.default_rng(2026)
-    pool_full_ret, pool_full_uw = [], []
-    pool_abl_ret = {"maskall": [], "metab_drop": []}
-    pool_abl_uw = {"maskall": [], "metab_drop": []}
+
+    pool = {nm: dict(ret=[], uw=[], a_ret=[], a_uw=[]) for nm in ORDER}
 
     for fold in FOLDS:
         print(f"\n=== {LABELS[fold]} [{fold}] " + "=" * 50)
-        full_raw = pooled_sims("full", fold, device)
-        if full_raw is None:
-            print("  [skip] full 없음"); continue
-        for abl in ("maskall", "metab_drop"):
-            abl_raw = pooled_sims(abl, fold, device)
-            if abl_raw is None:
-                print(f"  [skip] {abl} 없음"); continue
-            if abl_raw.shape[0] != full_raw.shape[0]:
-                print(f"  [WARN] origin 수 불일치 full={full_raw.shape[0]} {abl}={abl_raw.shape[0]} → skip")
-                continue
-            res = paired_bootstrap(full_raw, abl_raw, rng)
-            print(f"  full vs {abl}:")
-            for key in ("skew", "cvar1", "uw_cvar1"):
-                r = res[key]
-                sig = "*" if r["p"] < 0.05 else " "
-                print(f"    {key:<9} full={r['full']:+.4f} {abl}={r['abl']:+.4f}  "
-                      f"Δ={r['d']:+.4f}  95%CI[{r['lo']:+.4f},{r['hi']:+.4f}]  p={r['p']:.3f} {sig}")
-            # accumulate pooled (origin-level), once per abl
-            if abl == "maskall":
-                for i in range(full_raw.shape[0]):
-                    pool_full_ret.append(full_raw[i].ravel())
-                pool_full_uw.extend(list(underwater(full_raw)))
-            for i in range(abl_raw.shape[0]):
-                pool_abl_ret[abl].append(abl_raw[i].ravel())
-            pool_abl_uw[abl].extend(list(underwater(abl_raw)))
+        P = {}
+        for nm in ORDER:
+            r = pooled_sims(nm, fold, device)
+            if r is None:
+                print(f"  [skip] {nm} 없음"); continue
+            P[nm] = prep(r[0], r[1])
+        if "full" not in P:
+            print("  [skip fold] full 없음"); continue
+        points = {nm: metrics(P[nm], np.arange(P[nm]["n"])) for nm in P}
+        print_point_table("point", points)
 
-    # pooled across folds (origin-level paired)
-    print("\n" + "=" * 100)
-    print("[POOLED across 4 folds] paired-origin bootstrap")
-    for abl in ("maskall", "metab_drop"):
-        if not pool_abl_ret[abl] or not pool_full_ret:
-            print(f"  [skip pooled {abl}]"); continue
-        n = min(len(pool_full_ret), len(pool_abl_ret[abl]))
-        fr, fu = pool_full_ret[:n], pool_full_uw[:n]
-        ar, au = pool_abl_ret[abl][:n], pool_abl_uw[abl][:n]
-        base_f = stats_from_origins(fr, fu, np.arange(n))
-        base_a = stats_from_origins(ar, au, np.arange(n))
-        dpt = tuple(f - a for f, a in zip(base_f, base_a))
-        db = np.empty((N_BOOT, 3))
-        for b in range(N_BOOT):
-            idx = rng.integers(0, n, n)
-            sf = stats_from_origins(fr, fu, idx); sa = stats_from_origins(ar, au, idx)
-            db[b] = [f - a for f, a in zip(sf, sa)]
-        print(f"  full vs {abl} (n_orig={n}):")
-        for j, key in enumerate(("skew", "cvar1", "uw_cvar1")):
-            col = db[:, j]; lo, hi = np.percentile(col, [2.5, 97.5])
-            p = 2.0 * min((col > 0).mean(), (col < 0).mean())
-            sig = "*" if p < 0.05 else " "
-            print(f"    Δ{key:<9} = {dpt[j]:+.4f}  95%CI[{lo:+.4f},{hi:+.4f}]  p={p:.3f} {sig}")
-    print("\n[판정] Δ<0 & p<0.05 = ablation 제거 시 좌꼬리가 유의하게 얕아짐(=full 이 깊음) → 경로/유동성 기여 유의.")
+        # 유의성: full vs maskall (같은 origin), full vs metab_drop (origin 같을 때만)
+        for abl in ("maskall", "metab_drop"):
+            if abl not in P:
+                continue
+            if P[abl]["n"] != P["full"]["n"]:
+                print(f"  [유의성 full vs {abl}] origin 수 불일치({P['full']['n']} vs {P[abl]['n']}) → 점 비교만")
+                continue
+            res = paired_err_bootstrap(P["full"], P[abl], rng)
+            print(f"  [유의성 full vs {abl}] Δerr=|full−act|−|{abl}−act|  (음수=full 더 가까움)")
+            for k in METRICS_ERR:
+                rr = res[k]; sig = "*" if rr["p"] < 0.05 else " "
+                print(f"    Δerr {k:<9} = {rr['d']:+.4f}  95%CI[{rr['lo']:+.4f},{rr['hi']:+.4f}]  p={rr['p']:.3f} {sig}")
+
+        # pooled 누적
+        for nm in P:
+            for i in range(P[nm]["n"]):
+                pool[nm]["ret"].append(P[nm]["ret"][i])
+                pool[nm]["uw"].append(P[nm]["uw"][i])
+                pool[nm]["a_ret"].append(P[nm]["a_ret"][i])
+                pool[nm]["a_uw"].append(P[nm]["a_uw"][i])
+
+    # ── pooled across folds ──
+    print("\n" + "=" * 104)
+    print("[POOLED across 4 folds]  (주의: fold 스케일 차이로 극단 fold 가 지배)")
+    Pp = {}
+    for nm in ORDER:
+        if not pool[nm]["ret"]:
+            continue
+        Pp[nm] = dict(ret=np.stack(pool[nm]["ret"]), uw=np.stack(pool[nm]["uw"]),
+                      a_ret=np.stack(pool[nm]["a_ret"]), a_uw=np.stack(pool[nm]["a_uw"]),
+                      n=len(pool[nm]["ret"]))
+    if "full" in Pp:
+        points = {nm: metrics(Pp[nm], np.arange(Pp[nm]["n"])) for nm in Pp}
+        print_point_table("pooled point", points)
+        for abl in ("maskall", "metab_drop"):
+            if abl not in Pp:
+                continue
+            if Pp[abl]["n"] != Pp["full"]["n"]:
+                print(f"  [유의성 pooled full vs {abl}] origin 수 불일치 → 점 비교만")
+                continue
+            res = paired_err_bootstrap(Pp["full"], Pp[abl], rng)
+            print(f"  [유의성 pooled full vs {abl}] Δerr (음수=full 더 가까움)")
+            for k in METRICS_ERR:
+                rr = res[k]; sig = "*" if rr["p"] < 0.05 else " "
+                print(f"    Δerr {k:<9} = {rr['d']:+.4f}  95%CI[{rr['lo']:+.4f},{rr['hi']:+.4f}]  p={rr['p']:.3f} {sig}")
+    print("\n[판정] Δerr<0 & p<0.05 = 그 ablation 제거분(경로/유동성)이 실제 꼬리 재현에 유의 기여.")
 
 
 if __name__ == "__main__":
