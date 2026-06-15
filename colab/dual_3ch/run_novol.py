@@ -34,6 +34,7 @@ FOLDS_DIR = os.path.join(ROOT, "data", "folds_v33_vix_expanding")
 ALL_FOLDS = ["F_gfc", "F_long_A", "F_long_B_origin", "F_long"]
 FOLDS = [f for f in os.environ.get("NOVOL_FOLDS", ",".join(ALL_FOLDS)).split(",") if f.strip()]
 SEEDS = [int(s) for s in os.environ.get("NOVOL_SEEDS", "2026").split(",") if s.strip()]
+MASKALL = os.environ.get("NOVOL_MASKALL", "0") == "1"   # 1=maskall+sp_std제거 (거시 통로 차단)
 
 ENC_FULL = ["sp_return", "tbill_wr", "ads_lag", "wti_wr", "metab_13w"]
 
@@ -59,15 +60,23 @@ def set_cond_cols(cols, rate_col):
 
 
 def main():
+    _mode = "novol_maskall(미래거시 없음 + sp_std 없음)" if MASKALL else "novol(full + sp_std 없음)"
     print("#" * 96)
-    print("# no-vol 진단 — full LOCKED, extra_context 에서 sp_std_13w 제거(sp_skew_13w 유지)")
-    print(f"#  ENC={ENC_FULL}  unmask=[metab_13w]  mask_tbill=False  seeds={SEEDS}  folds={FOLDS}")
+    print(f"# {_mode} — LOCKED, extra_context 에서 sp_std_13w 제거(sp_skew_13w 유지)")
+    print(f"#  ENC={ENC_FULL}  maskall={MASKALL}  seeds={SEEDS}  folds={FOLDS}")
     print("#  ※ σ(스케일)는 여전히 rolling std — 명시적 vol feature 만 제거")
     print("#" * 96)
 
     set_cond_cols(ENC_FULL, "tbill_wr")
-    T.MASK_FUTURE_TBILL = False
-    T.FUTURE_UNMASK_MACRO_COLS = ["metab_13w"]
+    if MASKALL:
+        # maskall + sp_std 제거: 미래 거시 없음 + 명시 vol 없음 → 레짐 복원 통로 차단
+        T.MASK_FUTURE_TBILL = True
+        T.FUTURE_UNMASK_MACRO_COLS = []
+        _tagbase = "novol_maskall"
+    else:
+        T.MASK_FUTURE_TBILL = False
+        T.FUTURE_UNMASK_MACRO_COLS = ["metab_13w"]
+        _tagbase = "novol"
     T.ENCODER_MASK_SP = False
 
     for fold in FOLDS:
@@ -75,7 +84,7 @@ def main():
                    for s in ("train", "val", "test")):
             print(f"  [skip {fold}] fold CSV 없음"); continue
         for seed in SEEDS:
-            tag = f"rvAbl_novol_s{seed}"
+            tag = f"rvAbl_{_tagbase}_s{seed}"
             sp = os.path.join(RESULT_DIR, f"garch_flow_ar_{tag}_{fold}_summary.json")
             if os.path.exists(sp):
                 print(f"  [skip] {os.path.basename(sp)}"); continue
