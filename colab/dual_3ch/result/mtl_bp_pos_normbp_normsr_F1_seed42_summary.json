@@ -1,0 +1,52 @@
+{
+  "stage": "mtl_bp2_normbp_normsr_F1",
+  "fold": "F1",
+  "seed": 42,
+  "no_liq": false,
+  "normalize_sp": true,
+  "stats_targets_all": {
+    "1": {
+      "mean": 0.00866815634071827,
+      "std": 0.01697895372045994,
+      "channel": 1,
+      "channel_name": "bondpp_13w_lag"
+    },
+    "0": {
+      "mean": 0.0011221845634281635,
+      "std": 0.024108580069074632,
+      "channel": 0,
+      "channel_name": "sp_return"
+    }
+  },
+  "cond_cols": [
+    "tbill_wr",
+    "m2_yoy_lag",
+    "gdp_yoy_lag",
+    "cpi_yoy_lag"
+  ],
+  "target_cols": [
+    "sp_return",
+    "bondpp_13w_lag"
+  ],
+  "mask_future_ch": [
+    1,
+    2,
+    3
+  ],
+  "normalize_bondpp": true,
+  "target_stats_train": {
+    "mean": 0.00866815634071827,
+    "std": 0.01697895372045994,
+    "channel": 1,
+    "channel_name": "bondpp_13w_lag"
+  },
+  "best_epoch": 14,
+  "val": 0.937208354473114,
+  "test": 0.7612266540527344,
+  "test_per_channel": {
+    "sp_return": 1.6125764846801758,
+    "bondpp_13w_lag": -0.09012322872877121
+  },
+  "n_params": 549000,
+  "device": "cpu"
+}

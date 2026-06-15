@@ -201,7 +201,8 @@ def paired_bootstrap(full_raw, abl_raw, rng):
         col = d_boot[:, j]
         lo, hi = np.percentile(col, [2.5, 97.5])
         p = 2.0 * min((col > 0).mean(), (col < 0).mean())
-        res[key] = dict(d=float(d_point[j]), lo=float(lo), hi=float(hi), p=float(p))
+        res[key] = dict(d=float(d_point[j]), lo=float(lo), hi=float(hi), p=float(p),
+                        full=float(base_full[j]), abl=float(base_abl[j]))
     return res
 
 
@@ -234,7 +235,8 @@ def main():
             for key in ("skew", "cvar1", "uw_cvar1"):
                 r = res[key]
                 sig = "*" if r["p"] < 0.05 else " "
-                print(f"    Δ{key:<9} = {r['d']:+.4f}  95%CI[{r['lo']:+.4f},{r['hi']:+.4f}]  p={r['p']:.3f} {sig}")
+                print(f"    {key:<9} full={r['full']:+.4f} {abl}={r['abl']:+.4f}  "
+                      f"Δ={r['d']:+.4f}  95%CI[{r['lo']:+.4f},{r['hi']:+.4f}]  p={r['p']:.3f} {sig}")
             # accumulate pooled (origin-level), once per abl
             if abl == "maskall":
                 for i in range(full_raw.shape[0]):

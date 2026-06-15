@@ -1,13 +1,19 @@
 *제목 : 
-Stock Market Scenario Generation via Multi-Target Learning in Purchasing-Power Debasement Embedding  
+Stock Market Tail-Risks Scenario Generator: A Macro-Conditional Flow Architecture guided by Monetary Debasement
 
 *논문의 key
  -방법론 : 
-  -  화폐금융현상을 mtl(multi target learning)로 Flow model에 반영하여 주가인덱스 시계열 예측
- -의미 :
-   - mtl의 target으로 활용하여 지표의 tail risk 예측 효용성 확인
-   - 화폐가치절하/절상의 경제효과를 활용한 주가 시나리오 산출 시스템 구현
-     (금리 시나리오 만으로 초과유동성 및 주가시나리오 생성)
+  -  거시경제/화폐금융 현상을 Marco-Conditional Mamba-Flow model에 반영하여 금리 데이터로 주가 시나리오를 생성하는 아키텍처 제안
+      
+ -의의 :
+   - 거시경제지표를 mamba model로 embedding한 Macro-Conditional Mamba-Flow 시나리오 생성기 제안
+    -> Mamba-Flow의 성능이 NLL/EMD 기준으로 단순 regression 모델 대비 우위에 있으며,
+       금융시장의 tail risk를 보다 잘 표현할 수 있음을 CVAR등의 비교를 통해 발견
+   - Monetary Debasement-Adjusted Market Index 제안하고 해당피쳐를 Conditional Flow모델에서 Direct Conditioning하여 주가설명능력 입증
+   - 금리시나리오만으로 주가경로를 시뮬레이션할 수 있는 실무적 생성기로 활용가능한 아키텍처 제안
+
+* key paper
+ -Brana, S., & Prat, S. (2016). The effects of global excess liquidity on emerging stock market returns: Evidence from a panel threshold model. Economic Modelling,
 
 *실험
  -워크포워드 설계

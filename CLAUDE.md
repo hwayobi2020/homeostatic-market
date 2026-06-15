@@ -1,130 +1,178 @@
-# Homeostatic-Market Project — Claude 운영 컨텍스트
+# Homeostatic-Market — Claude 운영 컨텍스트
 
-> **현재 paradigm (2026-05-25 ~ )**: **NF-GARCH + macroenc**.  GARCH(1,1)-t 가 σ_t 를 빼서 표준화 잔차 z_t 만 남기고, **1D Conditional Normalizing Spline Flow** 가 z_t 의 조건부 분포를 생성한다.  인코더 = **MLP per-step (미래 시점별 거시) + 과거 Mamba 요약 (d=64, 1층, origin-frozen broadcast)**.  flow head 직접입력 = prevret(직전 z_t) + volDC(GARCH σ_origin).  미래 tbill·metab_13w 경로 unmask = 조건부 시나리오.  **σ 누수 수정** (eval 에서 미래 σ 를 filtered → forward GARCH recursion 으로) 으로 look-ahead 없는 평가.  **좌측 skew 학습 확정** (F_gfc sim −0.55, F_long_A −0.84, 4 fold z_t skew 다 음수).
->
-> 페이퍼 제목 (확정): *Monetary Debasement and Equity Tail-Risk: A Short-Rate Path Conditional Mamba-Flow Approach*
+> **현재 paradigm (2026-05-31 ~ )**: **Raw-vol + 13w skew context + MLP encoder**.
+> GARCH 표준화 제거하고 raw 13주 rolling std 로 표준화한 z 시계열을 1D Conditional Normalizing Spline Flow 가 학습.
+> 인코더 = **per-step MLP** (4채널 시변 거시 + 과거 요약).
+> Flow context = `[h_τ, past_summary, prevret(z_{τ−1}), sp_std_13w, sp_skew_13w]`.
+> ✅ **모델·hyperparameter LOCKED = `rvP2mainMlp_pd64_fl4_fh128`** (raw-vol 재튜닝 완료, §4 전부 이 config 산출). "전면 재튜닝"은 끝남 — 더 이상 next 아님.
 
----
-
-## 🚨 긴급과제 (Urgent)
-
-**macroenc-garch 4 fold 확정 + 튜닝.**
-
-- **현재 상태 (2026-05-25)**: 2 fold 좌측 skew 잡힘 (F_gfc sim −0.55 vs actual −0.83, F_long_A sim −0.84 vs −0.42).  F_long_B / F_long eval 미완(F_long_B AR rollout 진행 중 끊김).  z_t 자체 skew 4 fold 다 음수 (−0.27/−0.34/−0.46/−0.42) = 신호 있었음 + **학습 됨 확정**.  과거 Mamba 요약(d=64,1층) 경량화로 과적합 잡고 좌측 skew 회복(d=128·3층은 851K params 과적합이었음).
-- **할 일**:
-  1. F_long_B / F_long eval 마저 받아 **4 fold 전체 skew 확정** (전부 좌측이면 본선).
-  2. **exkurt 과장 튜닝** (F_gfc sim 27.76 vs actual 5.49 = 5배). base df↑ 또는 추가 정규화로 꼬리 누르기.
-  3. **DM 비교** (`dm_gen_compare.py` 의 garch_flow prefix 를 `garch_flow_ar_macroenc_s2026` 로 맞춰서) — VAE/GAN/GARCH-FHS 대비 유의미 입증.
-  4. **VAE/GAN 도 macroenc 입력 구조로** 통일해 공정비교.
-
-> 옛 긴급과제(INDPRO 9채널)는 macroenc-garch 에서 metab_13w(합산)·indpro 직접 입력으로 confound 해소됨 — 별도 9채널 ablation 불필요.
+> 논문 제목: *Monetary Debasement and Equity Tail-Risk: A Macro-Path-Conditional Counterfactual Scenario Generation*
 
 ---
 
-## 1. 현재 모델
+## 🚨 과제
+1. **§4 경로/반사실 본문 작성** — §4.1.2 model-on-realized·realized-anchored 경로실험 *완료(2026-06-11)*. 핵심: **금리=트렌드 성감대 / 유동성=skew(레벨)·IHL(레짐상대) / 긴축 baseline flip**. binned(관찰) vs path(통제) framing 분리 필수, §4.1.2 "제현"→"재현".
+2. **CondVAE / CondGAN baseline 결정** — 학습 진행 또는 *향후 과제* 명시.
+3. **옛 표 숫자 갱신** — §2.2 encoder 비교·§3.6 Table 3.7이 NF-GARCH 시점 옛값이면 locked config(`rvP2mainMlp_pd64_fl4_fh128`)로 재산출.
 
-- **인코더**: 4종 공정 비교 (LSTM / MLP / Transformer / Mamba). **main = Mamba** (Tail-Risk thesis 정합 — CVaR/coverage best).
-  - Mamba best: `d_model=128, n_layers=3, d_state=16, d_conv=4, expand=2`
-- **Flow head**: 1D Conditional NSF (`MaskedPiecewiseRationalQuadraticAutoregressive`), `n_flow_blocks=2, n_flow_bins=16, tail_bound=10.0`
-  - Flow Heavy: `n_flow_layers=6, hidden=64, weight_decay=0.5` / Light: `2, 32, 0.1`
-- **생성**: AR rollout (13 step). teacher-forced 학습 → inference 시 step 별 sample.
-- **학습 고정**: AdamW, lr=1e-4, batch=32, max_epoch=60, patience=30.
+---
 
-### 1.1 데이터 / window
+## 1. 현재 모형 (MAC-Flow)
+
+- **표준화 (raw-vol 모드)**: `z = (r − μ_train) / sp_std_13w_raw` (13주 롤링 raw std로 표준화). 역변환 시 σ는 origin 시점 13주 std로 상수(forward 변동성 동학 미적용). ⚠ **"origin-frozen σ가 꼬리 크기를 묶는다/제한한다"는 해석은 틀림** — σ는 origin별 상수 배율일 뿐, 꼬리 크기는 flow가 생성하는 z 분포가 좌우하고 거시 경로는 그 z 분포를 reshape해 꼬리에 영향을 준다.
+- **메인 인코더**: per-step MLP — 매 시점 채널 벡터를 독립 변환 (시변 거시 path 흡수)
+- **과거 요약 압축기**: MLP flatten bottleneck, hidden=16, d=64 (≈54K params), origin-frozen
+- **Flow head**: RQ-NSF (Durkan et al. 2019, NeurIPS) + Skew Student-t base (Hansen 1994, *Int. Econ. Rev.*)
+  - **4 layers × 128 hidden** × 16 spline bins × 2 transform blocks (raw-vol 튜닝 LOCKED `fl4_fh128`; bins·blocks는 미확인)
+- **AR rollout**: 학습 = teacher-forcing 실측 z, 시뮬 = AR sample → 13주 sequential
+- **외생 거시 path 흡수**: `tbill_wr`, `metab_13w` 미래 13주 unmask → 매 시점 메인 인코더 입력
+
+### 1.1 데이터 / 채널
+
 | 항목 | 값 |
 |---|---|
-| 기간 | **1971 ~ 2025** (`extend_to_1971.py`, INDPRO 버전) |
+| 기간 | 1971-01 ~ 2025 (S&P500 주간 로그 수익률) |
 | past_len / future_len / L | 52 / 13 / 65 |
-| input (실험된 base) | **8채널**: `sp_return, tbill_wr, m2_13w_cum_lag, ads_lag, cpi_13w_cum_lag, sp_std_13w, wti_wr, sp_log_std_13w` |
-| future unmask 채널 | `tbill_wr` 만 (= 정책금리 경로) |
-| fold (3-fold expanding, gap 15w) | F_long_A (test 2011–15) / F_long_B_origin (test 2016–20, COVID) / F_long (test 2021–25, 인플레) |
+| 모형 입력 채널 (N_CH=5) | `sp_return` (목표), `tbill_wr`, `metab_13w`, `ads_lag`, `wti_wr` |
+| Flow context 보조 | `sp_std_13w` (origin-frozen), `sp_skew_13w` (rolling 13주 왜도) |
+| 미래 unmask | `tbill_wr` + `metab_13w` (시나리오 조건) |
+| 4 fold (expanding window) | F_gfc (2006-10) / F_long_A (2011-15) / F_long_B_origin (2016-20) / F_long (2021-25) |
 
-> input 은 코드상 현재 9채널(indpro 추가)이나 **실험된 결과는 모두 8채널**. 위 긴급과제 참조.
+### 1.2 화폐가치 절하 산식 (모델 외부, 결정적)
 
-### 1.2 화폐가치절하 산식 (모델 외부, 결정적)
 ```
-metab_13w   = m2_13w_cum_lag − indpro_13w_pct_lag − cpi_13w_cum_lag   (BIS, 모두 13w log% 단위)
-bondpp_13w  = log( (1 + tbill_13w_cum) / (1 + metab_13w) )
-stockpp_13w = log( (1 + sp_13w_cum)    / (1 + metab_13w) )
+metab_13w = m2_13w_cum_lag − indpro_13w_pct_lag − cpi_13w_cum_lag    (BIS 형태, 13w log% 단위)
 ```
-- INDPRO(산업생산 13w log diff) = GDP 성장 proxy (GDP 는 분기 발표라 주별 부적합).
-- **ADS** (Aruoba-Diebold-Scotti 경기지수) 는 z-score 단위라 metab 산식(% 합산)에 못 들어감 → embedding cond 채널로만 사용. metab 의 경기 항은 INDPRO.
+
+INDPRO = 산업생산 (GDP proxy, 주별 빈도). ADS Business Conditions Index는 z-score 단위라 metab 산식 외부 — 보조 cond 채널로만.
+
+### 1.3 학습 공통
+
+AdamW · lr=1e-4 · weight_decay=0.5 · dropout=0.2 · batch=32 · max_epoch=60 · patience=30 · seeds={2026, 2027, 2028, 2029, 2030}
 
 ---
 
-## 2. 결과 (8채널 base 기준)
+## 2. 가용 결과 (LOCKED config — 2026-06-12 `agg_section4.py` 집계)
 
-### 2.1 Clean Run Phase 2 — encoder 비교 (5 seed × 3 fold = 15 run pooled, test NLL/week 낮을수록 좋음)
-| encoder | spec | test NLL | EMD | CVaR5Δ | cov80 (=.80) |
-|---|---|---:|---:|---:|---:|
-| MLP | hd128_nl4_dr0.2 Heavy | **1.2919** | 0.00397 | +0.00135 | 0.798 |
-| Mamba ★ | dm128_nl3_dr0.2 Heavy | 1.3385 | 0.00426 | **+0.00067** | **0.815** |
-| LSTM | hd128_nl2_dr0.1 Heavy | 1.3220 | **0.00363** | +0.00967 | 0.730 |
-| Transformer | dm128_nh8_nl3_dr0.2 Light | 1.3715 | 0.00463 | +0.00822 | 0.725 |
-| **HAR-Ridge AR** (baseline) | — | **1.4920** | 0.00544 | +0.00842 | 0.875 |
+> 본모형 = LOCKED `rvP2mainMlp_pd64_fl4_fh128` (raw-vol). §2.1·§2.2는 이 집계 **실값**. §2.3·§2.4는 옛 paradigm 변형이라 §4.3.1 feature ablation(metab_drop/maskall/fedrate)이 정본. §2.5는 model-free라 유효. (집계기는 JSON-only, 학습 0)
 
-- **Flow(모든 Mamba variant) > HAR**: NLL/EMD/calibration 전부 (특히 fold F_long_B 에서 격차). 단 4-encoder × multi-seed **DM/Vuong test 미실행**.
-- main encoder 로 **Mamba** 선택 (NLL 은 MLP 가 best 이나, CVaR/cov80 = tail thesis 정합은 Mamba).
+### 2.1 본모형 LOCKED — fold별 5-seed (rvP2mainMlp_pd64_fl4_fh128)
 
-### 2.2 Feature ablation (Mamba 고정, 6 variant × 5 seed × 3 fold = 90 run, 8채널 base)
-- variant 간 NLL noise (~0.001, std 0.11). bondpp 가 약간 나아 보였으나 R² 분석 결과 **adjustment 효과가 아니라 INDPRO missing-feature 효과** 와 confound (bondpp+INDPRO R² 0.997).  → macroenc-garch 에서 metab_13w·indpro 직접 입력으로 해소됨.
+| fold | NLL/wk | CRPS | CVaR1% | skew | cov80 | cov95 |
+|---|---:|---:|---:|---:|---:|---:|
+| 금융위기 | 1.525 | 0.0194 | −0.137 | −0.42 | 0.744 | 0.936 |
+| 회복기 | 1.437 | 0.0094 | −0.072 | −0.43 | 0.800 | 0.967 |
+| 코로나 | 1.531 | 0.0144 | −0.137 | **−2.07** | 0.796 | 0.949 |
+| 긴축 | 1.352 | 0.0127 | −0.100 | −0.44 | 0.825 | 0.965 |
 
-### 2.3 macroenc-garch (2026-05-25, NF-GARCH + 과거 Mamba 요약) — 좌측 skew 돌파
+cov 명목수준 근접(§4.1.1 표 4.1과 일치). 코로나 skew −2.07 = 위기 좌꼬리 강하게 재현.
 
-| fold | skew act/sim | exkurt a/s | CRPS | cov 80 | params |
-|---|---|---|---:|---:|---:|
-| F_gfc       | −0.83 / **−0.55** | 5.49 / 27.76 | 0.0196 | 0.67 | 456K |
-| F_long_A    | −0.42 / **−0.84** | 0.86 / 7.55  | 0.0090 | 0.75 | 456K |
-| F_long_B_origin | (eval 미완) | | | | |
-| F_long      | (미완)      | | | | |
+### 2.2 Encoder ablation (raw-vol, 5seed×3fold pooled, n15) + 채택 근거
 
-- **핵심 발견**: MLP per-step 인코더는 과거 시퀀스를 못 봐서 (각 시점 독립 변환, 시점 mixing 없음) 좌측 skew(과거 하락 패턴 필요)를 학습 못 함.  이전 garch-flow skew −0.85 는 **filtered σ look-ahead 아티팩트**였음.  σ 누수 제거 후 sim skew 우측(+0.94) 으로 뒤집힘.
-- **해법**: `MambaFlowAR.use_past_summary=True` — 과거 past_len 주(주가+거시 5채널)를 별도 가벼운 Mamba(d=64, 1층)로 누적해 origin 요약 벡터 → flow context 에 origin-frozen broadcast.  d_model 통째(128, 3층)는 851K params 과적합 → 64·1층(456K)로 잡음.
-- **결과**: 4 fold z_t skew 다 음수(−0.27~−0.46) **= 신호 있었음**.  과거 정보 통로 생기니 flow 가 좌측 skew 잡음.  거시 4채널+sp+volDC(GARCH σ)+prevret+미래거시 unmask 의 종합으로 "Mamba-Flow"가 실제로 일함.
+| encoder | NLL/wk | CRPS | CVaR1% | skew | cov95 |
+|---|---:|---:|---:|---:|---:|
+| **MLP (채택)** | 1.4312 | 0.0121 | −0.097 | **−0.779** | 0.958 |
+| LSTM | 1.4383 | 0.0123 | −0.090 | −0.179 | 0.956 |
+| Mamba | 1.4397 | 0.0121 | −0.096 | −0.642 | 0.959 |
+| Transformer | 1.5654 | 0.0156 | −0.122 | +0.523 | 0.961 |
+
+**채택 근거 (정직 — §3.6/§2.2에 명시 필요)**: 단일-seed val NLL 1등은 **LSTM(1.4104)**, MLP는 2등(1.4303). 그러나 5-seed pooled에서 NLL은 MLP·LSTM·Mamba가 거의 동률이고 **좌꼬리 skew는 MLP(−0.78)가 압도**(LSTM −0.18) → **MLP 채택** (결정타=skew, NLL 아님). LOCKED flow `fl4/fh128` = MLP 압축기 위 flow 재튜닝 best(val 1.4159).
+
+### 2.3 금리 구간별 CRPS (self-stat MAC-Flow 변형 vs GARCH-N)
+
+| 금리 구간 | n | self-stat | GARCH-N | diff |
+|---|---:|---:|---:|---:|
+| 전체 | 182 | 0.01880 | 0.01844 | +0.00035 |
+| 인하 | 62 | 0.02294 | 0.02278 | +0.00016 |
+| **인상 (Flow 우위)** | 8 | 0.01480 | 0.01490 | −0.00009 |
+
+### 2.4 화폐 신호 ablation (3 fold pooled, MLP encoder)
+
+| 구성 | n run | CRPS | cov_95 |
+|---|---:|---:|---:|
+| ch6_mlp (metab 없음) | 15 | 0.0118 ± 0.002 | — |
+| metab_both (시점별 metab) | 3 | 0.0121 ± 0.003 | 0.946 ± 0.053 |
+
+→ 평균 CRPS 거의 동률, **cov_95 안정성** 차원에서 metab 효용.
+
+### 2.5 거시-꼬리위험 동행성 (model-free benchmark, project_homeostatic_market 메모리)
+
+- `|Δmetab| → std` contemporaneous: p<0.001 (강함)
+- `Level → std` correlation: 0.51 (강함)
+- predictive (과거 → 미래) Pearson: r ≈ 0.18 (약함)
+- → **metab 은 예측 변수가 아니라 *조건부 시나리오 변수***
+
+### 2.6 기타 §4 LOCKED 결과 (2026-06-12 `agg_section4` — 핵심만)
+
+- **§4.1.1 vs GARCH-ST(past)** (동일정보·미래경로 미사용): flow가 좌꼬리 skew 압도(코로나 −0.79 vs GARCH +0.01), CRPS·cov는 유사 → 생성 head 자체 우위.
+- **§4.1.2 vs Cond VAE/GAN**: cov95 MAC-Flow 0.94~0.97 vs VAE 0.54~0.64 / GAN 0.75~0.83 → **보정(calibration) 압도**.
+- **§4.3.1 feature ablation** (maskall=미래경로 제거 / metab_drop / fedrate): NLL은 거의 불변이나 **좌꼬리 skew 약화**(코로나 −2.07 → maskall −0.79 / metab_drop −1.48) → 미래 거시경로·metab이 좌꼬리에 기여(NLL엔 안 잡힘).
+- §4.3.3 window(13/26/52w)·§4.3.4 encoder(§2.2)·§4.3.5 per-τ gate(τ1≈τ13 → exposure bias 아님, scheduled sampling 불요)도 집계 완료. 상세 수치 원본은 2026-06-12 세션 기록(agg 출력) 참조.
 
 ---
 
-## 3. 미결 / 한계 (정직)
+## 3. 논문 작성 진행 (2026-06-09 갱신)
 
-- **macroenc-garch 4 fold 미완** (F_long_B/F_long eval) — 긴급과제 1.
-- **exkurt 과장** (F_gfc sim 27.76 vs actual 5.49) — skew 살리면서 꼬리가 과도해짐. base df↑/정규화로 튜닝 영역.
-- **skew 크기 들쭉**: F_gfc 언더(−0.55<−0.83), F_long_A 오버(−0.84>−0.42). 방향은 일관 좌측.
-- **DM 비교 미실행** — `dm_gen_compare.py` 의 prefix 를 `garch_flow_ar_macroenc_s2026` 로 맞춰서 4 fold 확정 후.
-- **VAE/GAN macroenc 입력 미적용** — 공정비교 위해 macroenc 입력 구조로 통일 필요.
-- **GARCH baseline (GARCH-N/X/FHS) 일부 실행됨** (`train_garch_x.py`, `train_garch_fhs.py`). σ 누수 수정 후 fair 비교 재실행 + DM 필요.
-- **CVaR 신뢰도**: test fold 당 ~182 obs → CVaR 1% sample 1개(신뢰 불가). tail 평가는 **coverage / CRPS / skew** 중심이 정직.
-- **train_flow_seq.py 6채널 로컬 변경 미커밋** (m2/cpi/indpro 제거 ablation). macroenc 는 `set_cond_cols` 로 COND_COLS monkey-patch 라 무관.
+| 절 | 상태 |
+|---|---|
+| Abstract | **확정 (2026-06-09 재작성)** — 공백 서술("금융 deep-gen=합성/예측, 반사실이어도 경로의존성 ✗") + Past/Per-step encoder + 경로별 intra-horizon loss |
+| §1 Introduction | **확정 (2026-06-09 재작성)** — GARCH(분산·경직)/deep-gen(유연하나 경로 ✗) bridge + 기여 2개. "one-shot" 주장 제거. Lucas critique는 "의미 있다(완벽 X)" 수위 |
+| §2 Literature Review | **2.3·2.4 재작성·확정 (2026-06-09)** — 6축 비교표(Table 2.x) + 3분할(생성/예측/반사실), MAC-Flow=전부 ✓ 유일행. (옛 "one-shot/TempFlow" 서술 폐기) |
+| §3 Methodology | 진행 중 — 본문 작성 완료, §3.5 학습 절차·§3.8 반사실 시나리오 폐기·일부 절 비어있음. *추가 예정*: exact우도→상대 반사실 정당성 / 인과 분리 아닌 상대해석 scope 문장 |
+| §3.6 Hyperparameter | Table 3.7 작성됨 — *재튜닝 후 갱신 대기* |
+| §4 Results | **§4.1.1 coverage(표4.1)·§4.1.2 model-on-realized(표4.2 유동성/4.3 금리)·§경로 realized-anchored 실험 완료(2026-06-11)**. 옛 LEVEL 9-grid 삭제. 본문 draft·CondVAE/GAN/DM/Permutation [TBD]. 상세 `memory/project_macflow_thesis.md` §4 |
+| §5 Conclusion | 미작성 |
+
+- 산출 docx 위치 + **핵심 framing 결정 7개**(one-shot 폐기, Rasul 관계, diffusion 선택근거, MARCD/MacroVAE 판정, exact우도, Lucas scope)는 `memory/project_macflow_thesis.md` 참조.
+- 2026-06-09 텍스트 산출물 원본: `~/.claude/projects/d--projects/chat/session_2026-06-09_thesis-text-artifacts.md` (초록·§1·§2.3·§2.4·6축표 최종본).
+- **미결**: Table 2.x 캡션+유일성 1문단 / SVAR §2.2 vs §2.4 중복 / diffusion baseline 현재 raw-vol 셋업 재실행(검증 수치는 옛 paradigm·당시 GARCH 1등).
 
 ---
 
-## 4. 코드 / 데이터 위치
+## 4. 한계 / 정직 보고
+
+- **경로실험 realized-anchored 재설계(2026-06-11)**: 옛 flat-injection(9-grid)은 *entry-jump* confound라 폐기 → 실현 마지막값 flat 연속 + zero-start shape로 점프 제거. 발견: **방향·크기 지배(13주내 타이밍/형태 부차), 금리=트렌드 의존, 유동성 IHL=레짐상대(긴축 baseline 음수→flip)**. 단 k=3는 OOD 외삽, **binned(관찰)≠path(통제)** 방향(긴축 metab→IHL) — 두 섹션 framing 분리.
+- **F_gfc OOD 한계**: train(1971-1999)이 OOD 인 fold라 actual 꼬리 진폭 다 못 잡음.
+- **CVaR_1% 신뢰도**: test fold 당 ~182 obs → tail 1% sample 1개. tail 평가는 coverage·CRPS·skew 중심이 정직.
+- **13주 horizon 제약**: forward guidance / path factor 학술 흐름 (Gürkaynak-Sack-Swanson 2005) 의 시간 척도 = FOMC 2~3회 분량. 본 연구 scope의 범위 명시 필요.
+- **인상 구간 Flow 우위 n=8**: 표본 작아 통계 유의성 검정 별도 (§5 한계).
+
+---
+
+## 5. 코드 / 데이터 위치
 
 ```
 homeostatic-market/colab/dual_3ch/
-├── train_garch_flow.py       # ★ 현재 메인 (NF-GARCH + macroenc + 과거 Mamba 요약, use_past_summary)
-├── run_garch_macroenc.py     # ★ macroenc-garch 러너 (encoder=거시+sp, 과거 Mamba 요약, 미래 unmask)
-├── train_garch_x.py          # GARCH(1,1)-X-t baseline (거시 외생항)
-├── train_garch_fhs.py        # GARCH-FHS (filtered historical sim) baseline
-├── train_vae_gan_baseline.py # cond-VAE / cond-WGAN (σ 누수 수정 적용)
-├── dm_gen_compare.py         # Diebold-Mariano (garch-flow vs VAE/GAN/FHS, HAC)
-├── train_mamba_flow_ar.py    # 옛 메인 (Mamba+Flow, σ 누수 있던 버전, 옛 paradigm)
-├── train_flow_seq.py         # COND_COLS 정의 (committed 9채널; 로컬 6채널 미커밋)
-├── best_specs.py             # encoder 별 BEST_SPECS (MLP best NLL, Mamba main encoder)
-├── baseline_har_ar.py        # HAR-Ridge AR baseline
-├── run_phase{1,2}_clean.py / run_ablation_features.py  # 옛 paradigm runner
-└── dm_vuong_compare.py       # 옛 DM (large/small/HAR 전용)
+├── rawvol_helpers.py           # ★ raw-vol 모드 monkey-patch (현재 paradigm)
+├── run_rawvol_macroenc.py      # ★ 본 모형 러너 (raw-vol + 13w skew + MLP, 4 fold × 5 seed)
+├── train_garch_flow.py         # 메인 학습 코드 (rawvol_helpers 로 monkey-patch 됨)
+├── run_garch_macroenc.py       # 이전 NF-GARCH 시점 러너 (비교용)
+├── best_specs.py               # encoder 별 hyperparameter (NF-GARCH 시점, 재튜닝 대상)
+├── dm_gen_compare.py           # Diebold-Mariano 비교 (실행 결과 미가용)
+├── train_vae_gan_baseline.py   # CondVAE / CondGAN baseline (학습 진행 여부 미확정)
+├── analyze_pathshape_rawvol.py # ★ §4 공통: load_fold_seed / sim_metrics / PCTLS·절대레벨 앵커
+├── model_on_realized_rawvol.py # §4.1.2 model-on-realized (실현 미래경로 주입 → 절대레벨 binning)
+├── marginal_axis_rawvol.py     # §4.1.2 단일축 marginal (캐시 재집계, 추론 0)
+├── pathshape_realized_anchored_rawvol.py # ★ §경로 realized-anchored jump-free (k=1 리만/k=3 OOD)
+├── sensitivity_midmid_rawvol.py # (드롭) mid,mid ±Δ 민감도
+├── compare_level_factual_vs_model.py / check_level_cell_coverage.py # 옛 LEVEL 대조 (섹션 삭제됨)
+└── (옛) train_mamba_flow_ar.py, run_phase{1,2}_clean.py — 과거 paradigm
 
 homeostatic-market/data/
-├── extend_to_1971.py         # 1971~ 데이터 빌드 (INDPRO, ADS, metab/bondpp/stockpp)
-└── folds_v33_vix_expanding/  # fold csv (Drive — local 미보존)
+├── extend_to_1971.py           # FOLD_SPLITS 정의 (1971~ 데이터 빌드)
+└── folds_v33_vix_expanding/    # fold csv (Colab/Drive — 로컬 미보존)
 ```
 
-- 실행: Colab `%cd '/content/drive/MyDrive/Colab Notebooks/homeostatic-market'` → `!git pull` → 스크립트.
-- 결과 summary.json: `result/mamba_flow_ar_*_summary.json` (train + test_eval), `result/baseline_har_ar_*_summary.json`.
+실행: Colab `%cd '/content/drive/MyDrive/Colab Notebooks/homeostatic-market'` → `!git pull` → 스크립트.
+
+결과 summary: `result/garch_flow_ar_rawvol_macroenc_*_summary.json`.
 
 ---
 
-## 5. 과거 paradigm (참조용, 현재 작업 시 무시)
+## 6. 과거 paradigm (참조용, 현재 작업 시 무시)
 
-- **Phase 1~14 (RL + Mamba weight learner)** + **Phase 15 (Conditional Flow 도입)** + **MTL 2ch Transformer (~2026-05)** + **vol pilot 3M (변동성 예측)** 의 기록은 [`docs/pastexperiment.md`](docs/pastexperiment.md), `chat/summaries/` 참조.
-- 현재 paradigm 작업은 `colab/dual_3ch/` 의 `train_mamba_flow_ar.py` / `train_flow_seq.py` / `run_*_clean.py` / `run_ablation_features.py` 라인 안에서 진행.
+- **2026-05-25 NF-GARCH + macroenc + 과거 Mamba 요약** — GARCH(1,1)-t 가 σ_t 빼서 표준화 잔차 z_t 만 남기고 Conditional NF 가 학습. main encoder = Mamba. *raw-vol 전환으로 폐기*.
+- **2026-05-22 Mamba-SSM AR + 1D Conditional NSF** — End-to-End 분포 생성. *macroenc-garch 로 발전*.
+- **Phase 1~14 RL + Mamba weight learner / Phase 15 Conditional Flow / MTL bondpp / vol pilot 3M**: 기록 `docs/pastexperiment.md`, `chat/summaries/` 참조.
+
+상세 내역은 `memory/project_homeostatic_market.md` 의 옛 paradigm 섹션 참조.
