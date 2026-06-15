@@ -195,8 +195,14 @@ def metrics_seed(sim_raw, actual):
 
 
 def get_metrics(nm, fold, seed, device):
-    """캐시된 per-seed metrics (없으면 추론 후 캐시) — 지표 변경 시 재샘플 회피."""
-    cp = os.path.join(CACHE_DIR, f"{nm}_{fold}_s{seed}.json")
+    """캐시된 per-seed metrics (없으면 추론 후 캐시) — 지표 변경 시 재샘플 회피.
+
+    ★ fpath 계열(full_fpath/summary_only)은 FUTURE_SUMMARY_DIM 에 따라 *다른 모델*이므로
+      캐시키에 dim 을 포함한다(없으면 dim 스윕이 stale 캐시히트로 같은 값 반환 = 버그).
+    """
+    suffix = (f"_d{fpath_model.FUTURE_SUMMARY_DIM}"
+              if nm in ("full_fpath", "summary_only") else "")
+    cp = os.path.join(CACHE_DIR, f"{nm}{suffix}_{fold}_s{seed}.json")
     if os.path.exists(cp):
         return json.load(open(cp))
     r = sample_config(nm, fold, seed, device)
