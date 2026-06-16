@@ -150,7 +150,12 @@ homeostatic-market/colab/dual_3ch/
 ├── best_specs.py               # encoder 별 hyperparameter (NF-GARCH 시점, 재튜닝 대상)
 ├── dm_gen_compare.py           # Diebold-Mariano 비교 (실행 결과 미가용)
 ├── train_vae_gan_baseline.py   # CondVAE / CondGAN baseline (학습 진행 여부 미확정)
-├── analyze_pathshape_rawvol.py # ★ §4 공통: load_fold_seed / sim_metrics / PCTLS·절대레벨 앵커
+├── analyze_pathshape_rawvol.py # ★ §4 공통: load_fold_seed / sim_metrics / PCTLS·절대레벨 앵커 (PS.SEEDS=5)
+├── fpath_model.py              # ★ 미래경로 요약 변형 (MambaFlowAR 서브클래스+FutureMLPSummary, train_garch_flow 무수정 monkeypatch 격리)
+├── run_full_fpath.py           # fpath 변형 러너 (env FPATH_DIM/FPATH_SUMMARY_ONLY/FPATH_NOVOL/FPATH_SEEDS) — full_fpath/summary_only/fpath_novol
+├── run_novol.py                # no-vol 진단 (sp_std_13w 제거; env NOVOL_MASKALL/NOVOL_SEEDS/NOVOL_FOLDS)
+├── tail_ablation_bootstrap.py  # ★ §4.3.3 IHL 재현도 비교 (full/fpath_novol/maskall/metab_drop; env TAIL_SEEDS/FPATH_DIM, extra_context는 meta 기반)
+├── run_ablations_rawvol.py     # §4.3 ablation 재학습 (env ABL_SEEDS/ABL_ONLY)
 ├── model_on_realized_rawvol.py # §4.1.2 model-on-realized (실현 미래경로 주입 → 절대레벨 binning)
 ├── marginal_axis_rawvol.py     # §4.1.2 단일축 marginal (캐시 재집계, 추론 0)
 ├── pathshape_realized_anchored_rawvol.py # ★ §경로 realized-anchored jump-free (k=1 리만/k=3 OOD)
@@ -176,3 +181,27 @@ homeostatic-market/data/
 - **Phase 1~14 RL + Mamba weight learner / Phase 15 Conditional Flow / MTL bondpp / vol pilot 3M**: 기록 `docs/pastexperiment.md`, `chat/summaries/` 참조.
 
 상세 내역은 `memory/project_homeostatic_market.md` 의 옛 paradigm 섹션 참조.
+
+---
+
+## 7. 변경 이력 (git push, master)
+
+> 코드 변경 요약(날짜·내용). 상세 결론은 `memory/project_macflow_novol_channel.md`.
+
+### 2026-06-16
+- `777de81` **fpath_novol 조합**(no-vol + per-step + 미래 2dim 코드) + tail_ablation `extra_context`를 `meta.extra_cond_cols` 로 일반화(dim 가변 로드, novol=1ch).
+
+### 2026-06-15 — §4.12 5시드화 + 미래경로 조건화 변형 탐색
+- `53f6da7` §4.12(agg_section4 feature ablation) 5시드: `run_ablations_rawvol` 에 `ABL_SEEDS`/`ABL_ONLY` env (metab_drop·maskall 누락 시드 추가학습). full 은 이미 5시드.
+- `26d4ab1` `analyze_pathshape_rawvol` `PS.SEEDS` 3→5 (full 만 쓰는 표 5시드 통일, 재추론).
+- `b90954f`,`e917c55`,`42415db`,`28d16c0` **미래경로 변형 신설**: `fpath_model.py`(서브클래스·격리 monkeypatch) — `full_fpath`(per-step+요약)/`summary_only`(per-step마스킹+코드만), `run_full_fpath.py`. tail_ablation IHL 비교 배선 + dim 을 tag/캐시키에 포함, `TAIL_SEEDS` env.
+- `913cc45` **fix**: tail_ablation 캐시키 dim 누락 stale 버그(dim 스윕이 무효 캐시히트였음) 수정.
+- `ddf0e7e`,`3218f6b` **no-vol 진단**: `run_novol.py`(sp_std_13w 제거, σ는 rolling std 유지; `NOVOL_MASKALL` env).
+
+### 2026-06-14~15 — §4.3.2 / §4.3.3 셋업
+- §4.3.2 permutation 중요도를 NLL→꼬리지표(uw_cvar1/skew)로 개정(표 4.11; sp_std_13w 압도).
+- §4.3.3 full vs maskall/metab_drop paired-origin bootstrap, `realized_return_stats`(실현 13주 수익률 통계).
+- §4.3.3 집계 정정: seed pool→**per-seed 평균**(혼합 skew왜곡 제거), IHL 1%→**10% robust**(실측 1점 회피), 표 4.2/4.3 재작성(origin pooled·seed평균·uw_mean+IHL10%).
+
+### 이 세션 핵심 결론
+거시=**변동성 채널**로 작동(기초통계 강·permutation 약·ablation 약 = 한 frame) / **sp_std redundant**(과거압축기가 vol 복원, no-vol 성능 유지) / **full>maskall 3/4**(조건화 효과 성립) / **fpath_novol(=no-vol+미래 2dim코드)=5시드 robust 최고**(uw_mean 4/4·IHL10 3/4, OOD 포함). → `memory/project_macflow_novol_channel.md`.
