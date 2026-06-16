@@ -73,7 +73,12 @@ TUNE_SEED = 2026
 
 # raw-vol 채널 구성 (run_rawvol_macroenc.py 와 동일)
 ENC_COLS = ["sp_return", "tbill_wr", "ads_lag", "wti_wr", "metab_13w"]
-DC_COLS = "sp_std_13w,sp_skew_13w"
+# no-vol 토글: extra_context 에서 sp_std 제거 → 압축기 비교를 본모형(fpath_novol)과 일관.
+#   결과 tag 도 분리(rvP1aNovol_)해 기존 with-sp_std rvP1a 와 안 섞이게.  MASTER_PHASE=1a → 1a 만.
+NOVOL = os.environ.get("MASTER_NOVOL", "0") == "1"
+DC_COLS = "sp_skew_13w" if NOVOL else "sp_std_13w,sp_skew_13w"
+P1A_TAG = "rvP1aNovol" if NOVOL else "rvP1a"
+ONLY_1A = os.environ.get("MASTER_PHASE", "") == "1a"
 MASK_FUTURE_TBILL = False
 FUTURE_UNMASK_MACRO_COLS = ["metab_13w"]
 
@@ -191,7 +196,7 @@ def phase1a():
     print("=" * 80)
     i = 0
     for pet, pd, dr in specs:
-        tag = f"rvP1a_{pet}_pd{pd}_dr{dr}"
+        tag = f"{P1A_TAG}_{pet}_pd{pd}_dr{dr}"
         ov = dict(FLOW_HEAVY)
         ov.update(past_encoder_type=pet, past_summary_dim=pd, dropout=dr)
         for fold in FOLDS_TUNE:
@@ -207,7 +212,7 @@ def select_1a():
     for pet in P1A_PAST_ENC:
         for pd in P1A_PAST_DIM:
             for dr in P1A_DROPOUT:
-                tag = f"rvP1a_{pet}_pd{pd}_dr{dr}"
+                tag = f"{P1A_TAG}_{pet}_pd{pd}_dr{dr}"
                 for fold in FOLDS_TUNE:
                     v = read_val_nll(tag, fold)
                     if v is not None:
@@ -352,6 +357,12 @@ def main():
 
     phase1a()
     type_winner, main_pet = select_1a()
+
+    if ONLY_1A:
+        dt = time.time() - t0
+        print(f"\n[ONLY 1a 완료] {dt/60:.1f} min — 압축기 sweep(no-vol={NOVOL}, context={DC_COLS}) 끝. "
+              f"tag={P1A_TAG}_*.  Phase 1b/2 생략.")
+        return
 
     phase1b(main_pet, type_winner)
     best_flow = select_1b()
