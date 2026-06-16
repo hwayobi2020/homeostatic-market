@@ -7,6 +7,8 @@
 > ✅ **모델·hyperparameter LOCKED = `rvP2mainMlp_pd64_fl4_fh128`** (raw-vol 재튜닝 완료, §4 전부 이 config 산출). "전면 재튜닝"은 끝남 — 더 이상 next 아님.
 
 > 논문 제목: *Monetary Debasement and Equity Tail-Risk: A Macro-Path-Conditional Counterfactual Scenario Generation*
+>
+> **정체성 (2026-06-16)**: 이건 **독립 저널 논문 = 연구실적**이고 타겟 = **ESWA (Expert Systems with Applications, Elsevier Q1 응용 AI)**. **학위논문/졸업논문 아님** — 졸업논문은 별개로 이미 완료. 따라서 §1–§5는 dissertation 챕터가 아니라 ESWA 논문 본문. ESWA critical path = ① 본모형 A/B 결정 → ② baseline(CondVAE/GAN/Diffusion) 현 raw-vol 셋업 재실행 → §4 정식화.
 
 ---
 

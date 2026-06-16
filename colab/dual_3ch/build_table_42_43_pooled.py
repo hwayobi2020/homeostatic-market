@@ -36,7 +36,7 @@ import model_on_realized_rawvol as MR                                 # noqa: E4
 
 RESULT_DIR = PS.RESULT_DIR
 FOLDS_DIR = PS.FOLDS_DIR
-CACHE_DIR = os.path.join(RESULT_DIR, "table4243_pooled_cache")
+CACHE_DIR = os.path.join(RESULT_DIR, f"table4243_pooled_cache{PS.CACHE_SUFFIX}")
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 FOLDS = PS.FOLDS
@@ -110,7 +110,7 @@ def model_fold_seed(fold, seed, device):
 
 # ── 실측: fold → 축·bin 별 pooled metric (seed 무관) ──
 def factual_fold(fold, device):
-    bp = os.path.join(RESULT_DIR, f"garch_flow_ar_rvP2mainMlp_pd64_fl4_fh128_s{SEEDS[0]}_{fold}_best.pt")
+    bp = os.path.join(RESULT_DIR, f"garch_flow_ar_{PS.TAG_PREFIX}_s{SEEDS[0]}_{fold}_best.pt")
     if not os.path.exists(bp):
         return None
     cond_stats = torch.load(bp, map_location="cpu")["meta"]["cond_stats"]

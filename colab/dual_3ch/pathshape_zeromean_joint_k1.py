@@ -40,7 +40,7 @@ sys.path.insert(0, HERE)
 import analyze_pathshape_rawvol as PS                                   # noqa: E402
 import pathshape_zeromean_anchored_rawvol as ZM                         # noqa: E402
 
-CACHE_DIR = os.path.join(PS.RESULT_DIR, "pathshape_zeromean_joint_k1_cache")
+CACHE_DIR = os.path.join(PS.RESULT_DIR, f"pathshape_zeromean_joint_k1_cache{PS.CACHE_SUFFIX}")
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 FOLDS = PS.FOLDS

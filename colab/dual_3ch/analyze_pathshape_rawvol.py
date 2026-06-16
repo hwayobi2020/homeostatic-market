@@ -50,20 +50,39 @@ from train_garch_flow import (                                      # noqa: E402
 
 RESULT_DIR = os.path.join(HERE, "result")
 FOLDS_DIR = os.path.join(ROOT, "data", "folds_v33_vix_expanding")
-CACHE_DIR = os.path.join(RESULT_DIR, "pathshape_test_cache")   # ★ test origin(OOS) 재실행 캐시 (옛 train 캐시 pathshape_full_cache 와 분리 — 재사용 방지)
-os.makedirs(CACHE_DIR, exist_ok=True)
 
 ENC_COLS = ["sp_return", "tbill_wr", "ads_lag", "wti_wr", "metab_13w"]
-DC_COLS_LIST = ["sp_std_13w", "sp_skew_13w"]      # LOCKED extra context (2채널)
 
-# LOCKED 본모형 hyperparameter
+# ── 본모형 선택 (env PS_BASE): "full"(LOCKED rvP2mainMlp, 기본) | "fpath_novol"(미래경로 요약 d2 + sp_std 제거) ──
+#   fpath_novol = full LOCKED spec 위에 (1) 미래경로 전체 요약 broadcast(MambaFlowARFpath, dim=FPATH_DIM)
+#                 + (2) flow extra context 에서 sp_std_13w 제거(sp_skew_13w 1채널만).  표준화 σ 는 유지.
+BASE_MODEL = os.environ.get("PS_BASE", "full")
+FPATH_DIM = int(os.environ.get("FPATH_DIM", "2"))
+
+# LOCKED 본모형 hyperparameter (두 모드 공통)
 LK_D_MODEL = 128
 LK_MLP_LAYERS = 4
 LK_FLOW_LAYERS = 4
 LK_FLOW_HIDDEN = 128
 LK_PD = 64
 LK_DROPOUT = 0.2
-TAG_PREFIX = f"rvP2mainMlp_pd{LK_PD}_fl{LK_FLOW_LAYERS}_fh{LK_FLOW_HIDDEN}"
+
+if BASE_MODEL == "fpath_novol":
+    import fpath_model                                              # noqa: E402
+    fpath_model.FUTURE_SUMMARY_DIM = FPATH_DIM
+    fpath_model.FUTURE_SUMMARY_HIDDEN = int(os.environ.get("FPATH_HIDDEN", "16"))
+    fpath_model.FPATH_SUMMARY_ONLY = False
+    DC_COLS_LIST = ["sp_skew_13w"]                                  # novol: sp_std 제거 (1채널)
+    TAG_PREFIX = f"rvAbl_full_fpath_novol_d{FPATH_DIM}"             # ckpt: garch_flow_ar_{TAG_PREFIX}_s{seed}_{fold}_best.pt
+    CACHE_SUFFIX = f"_fpath_novol_d{FPATH_DIM}"
+else:
+    DC_COLS_LIST = ["sp_std_13w", "sp_skew_13w"]                    # LOCKED extra context (2채널)
+    TAG_PREFIX = f"rvP2mainMlp_pd{LK_PD}_fl{LK_FLOW_LAYERS}_fh{LK_FLOW_HIDDEN}"
+    CACHE_SUFFIX = ""
+
+# ★ 하류 §4 스크립트들도 자기 CACHE_DIR 에 PS.CACHE_SUFFIX 를 붙여 모델별 캐시 분리(stale hit 방지).
+CACHE_DIR = os.path.join(RESULT_DIR, f"pathshape_test_cache{CACHE_SUFFIX}")
+os.makedirs(CACHE_DIR, exist_ok=True)
 
 FOLDS = ["F_gfc", "F_long_A", "F_long_B_origin", "F_long"]
 SEEDS = [2026, 2027, 2028, 2029, 2030]   # 5시드 통일 (full ckpt 5시드 보유 → 재추론만)
@@ -141,7 +160,8 @@ def _exkurt(a):
 
 
 def rebuild_model(ckpt, device):
-    model = MambaFlowAR(
+    cls = fpath_model.MambaFlowARFpath if BASE_MODEL == "fpath_novol" else MambaFlowAR
+    model = cls(
         d_input=len(ENC_COLS), d_model=LK_D_MODEL,
         n_flow_layers=LK_FLOW_LAYERS, n_flow_hidden=LK_FLOW_HIDDEN,
         dropout=LK_DROPOUT, extra_context_dim=len(DC_COLS_LIST),

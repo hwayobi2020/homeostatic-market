@@ -30,7 +30,7 @@ sys.path.insert(0, HERE)
 
 import analyze_pathshape_rawvol as PS                                # noqa: E402
 
-CACHE_DIR = os.path.join(PS.RESULT_DIR, "model_realized_cache")
+CACHE_DIR = os.path.join(PS.RESULT_DIR, f"model_realized_cache{PS.CACHE_SUFFIX}")
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 FOLDS = PS.FOLDS                       # ["F_gfc", "F_long_A", "F_long_B_origin", "F_long"] (문자열)

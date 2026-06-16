@@ -51,7 +51,7 @@ sys.path.insert(0, HERE)
 import analyze_pathshape_rawvol as PS                                 # noqa: E402
 
 RESULT_DIR = PS.RESULT_DIR
-CACHE_DIR = os.path.join(RESULT_DIR, "feat_importance_tail_cache")
+CACHE_DIR = os.path.join(RESULT_DIR, f"feat_importance_tail_cache{PS.CACHE_SUFFIX}")
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 FOLDS = PS.FOLDS
@@ -65,14 +65,14 @@ FUTURE_LEN = PS.FUTURE_LEN
 N_PERM = 3                                  # 셔플 반복(샘플링 비용 큼; 노이즈는 mean±std 로 노출)
 
 # (feature, kind) — kind: "enc"=인코더 채널(Xte), "extra"=extra context 열
+# extra 항목은 PS.DC_COLS_LIST 에 실제 존재하는 채널만 셔플(fpath_novol 본모형은 sp_std_13w 없음 → 자동 제외).
 PERMUTE = [
     ("tbill_wr", "enc"),
     ("metab_13w", "enc"),
     ("ads_lag", "enc"),
     ("wti_wr", "enc"),
-    ("sp_std_13w", "extra"),
-    ("sp_skew_13w", "extra"),
 ]
+PERMUTE += [(c, "extra") for c in ("sp_std_13w", "sp_skew_13w") if c in PS.DC_COLS_LIST]
 METRIC_KEYS = ["uw_cvar1", "cvar1", "skew"]      # 1차 uw_cvar1, 보조 cvar1/skew
 
 

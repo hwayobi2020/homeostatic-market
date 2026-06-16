@@ -45,7 +45,7 @@ RESULT_DIR = os.path.join(HERE, "result")
 FOLDS = ["F_gfc", "F_long_A", "F_long_B_origin", "F_long"]
 FOLDS_TUNE = ["F_long_A", "F_long_B_origin", "F_long"]      # encoder ablation 은 3 fold
 
-MAIN_TAG = "rvP2mainMlp_pd64_fl4_fh128"                     # 본모형 (LOCKED)
+MAIN_TAG = os.environ.get("MAIN_TAG", "rvP2mainMlp_pd64_fl4_fh128")   # 본모형. fpath_novol 집계 시 env MAIN_TAG=rvAbl_full_fpath_novol_d2
 ENCODERS = ["mlp", "lstm", "transformer", "mamba"]
 
 PATHSHAPE_CACHE = os.path.join(RESULT_DIR, "pathshape_full_cache")
