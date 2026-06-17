@@ -290,6 +290,7 @@ def sim_metrics(sim_z, rescale):
     return dict(std=float(f.std(ddof=1)), skew=_skew(f), exkurt=_exkurt(f),
                 cvar5=compute_cvar(f, 0.05), cvar1=compute_cvar(f, 0.01),
                 uw_mean=float(underw.mean()), uw_cvar1=compute_cvar(underw, 0.01),
+                uw_cvar5=compute_cvar(underw, 0.05), uw_cvar10=compute_cvar(underw, 0.10),
                 mdd_mean=float(mdd.mean()), mdd_cvar1=compute_cvar(mdd, 0.01),
                 term_mean=float(term.mean()), term_cvar1=compute_cvar(term, 0.01))
 

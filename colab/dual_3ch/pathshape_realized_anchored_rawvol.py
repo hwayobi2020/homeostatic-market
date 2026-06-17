@@ -18,7 +18,7 @@
   · ramp↑/↓, step↑/↓ : 시작 같으나 끝 변위 → 상승 vs 하강 *방향* 효과(보조).
   · flat : 양 축 마지막값 flat = "현 상태 지속" baseline (양 축 공통, 1회 계산).
 
-지표: skew / uw_mean / uw_cvar1(intra-horizon loss 1%).  seed 평균(paired: shape간 동일 난수).
+지표: skew / uw_mean / uw_cvar10(intra-horizon loss 10%).  seed 평균(paired: shape간 동일 난수).
 모델 추론 필요 (Colab GPU).  캐시: result/pathshape_anchored_k1k3_cache/.
 
 Usage (Colab):
@@ -116,7 +116,7 @@ def compute_fold_seed(fold, seed, device):
 
     def metr(sim):
         m = PS.sim_metrics(sim, rescale)
-        return {"skew": m["skew"], "uw_mean": m["uw_mean"], "uw_cvar1": m["uw_cvar1"]}
+        return {"skew": m["skew"], "uw_mean": m["uw_mean"], "uw_cvar10": m["uw_cvar10"]}
 
     res = {"flat": {}, "shape_tbill": {}, "shape_metab": {}}
     # 공통 baseline: 양 축 마지막값 flat ("현 상태 지속")
@@ -138,7 +138,7 @@ def main():
     print("#" * 114)
     print(f"# §4 PATH (realized-anchored, jump-free) — LOCKED {PS.TAG_PREFIX}, device={device}, n_sim={N_SIM}")
     print(f"#   진입=실현 마지막값 flat 연속, shape=zero-start.  진폭 k={K_LIST} (1=리만/in-support, 3=리만×3/OOD)")
-    print(f"#   한 축 shape, 다른 축 마지막값 flat.  지표 = skew / uw_mean / uw_cvar1(IHL 1%)")
+    print(f"#   한 축 shape, 다른 축 마지막값 flat.  지표 = skew / uw_mean / uw_cvar10(IHL 10%)")
     print("#" * 114)
 
     for fold in FOLDS:
@@ -163,7 +163,7 @@ def _agg(vals):
 
 def _summarize():
     print("\n" + "=" * 114)
-    print("[집계] fold × seed 평균  (값 = skew / uw_mean / uw_cvar1).  flat=양축 마지막값 지속 baseline")
+    print("[집계] fold × seed 평균  (값 = skew / uw_mean / uw_cvar10).  flat=양축 마지막값 지속 baseline")
     for fold in FOLDS:
         label = LABELS.get(fold, fold)
         paths = [os.path.join(CACHE_DIR, f"{fold}_s{s}.json") for s in SEEDS]
@@ -173,8 +173,8 @@ def _summarize():
         print(f"\n=== {label} [{fold}]  ({len(loaded)} seed) " + "=" * 50)
         fsk = _agg([d["flat"]["skew"] for d in loaded])
         fum = _agg([d["flat"]["uw_mean"] for d in loaded])
-        fuc = _agg([d["flat"]["uw_cvar1"] for d in loaded])
-        print(f"  flat baseline (양축 마지막값 지속):  skew={fsk:+.3f}  uw_mean={fum:+.4f}  uw_cvar1={fuc:+.4f}")
+        fuc = _agg([d["flat"]["uw_cvar10"] for d in loaded])
+        print(f"  flat baseline (양축 마지막값 지속):  skew={fsk:+.3f}  uw_mean={fum:+.4f}  uw_cvar10={fuc:+.4f}")
 
         for var, head in (("shape_tbill", "금리(tbill) 경로 (metab flat)"),
                           ("shape_metab", "유동성(metab) 경로 (tbill flat)")):
@@ -182,18 +182,18 @@ def _summarize():
             for K in K_LIST:
                 tag = "리만급/in-support" if K == 1 else f"리만×{K}/OOD"
                 kk = f"k{K}"
-                print(f"    k={K} ({tag})    {'shape':>10} {'fσ':>5} {'skew':>9} {'uw_mean':>10} {'uw_cvar1':>10}")
+                print(f"    k={K} ({tag})    {'shape':>10} {'fσ':>5} {'skew':>9} {'uw_mean':>10} {'uw_cvar10':>10}")
                 for name in NONFLAT:
                     sk = _agg([d[var][kk][name]["skew"] for d in loaded])
                     um = _agg([d[var][kk][name]["uw_mean"] for d in loaded])
-                    uc = _agg([d[var][kk][name]["uw_cvar1"] for d in loaded])
+                    uc = _agg([d[var][kk][name]["uw_cvar10"] for d in loaded])
                     print(f"    {'':>17}{name:>10} {SHAPE_STD[name]:>5.2f} {sk:>+9.3f} {um:>+10.4f} {uc:>+10.4f}")
-                # 순서/방향 효과 (uw_cvar1)
+                # 순서/방향 효과 (uw_cvar10)
                 pairs = [("hump", "trough", "순서∩∪"), ("step_up", "step_down", "방향step"),
                          ("ramp_up", "ramp_down", "방향ramp")]
                 for a, b, tagp in pairs:
-                    ua = _agg([d[var][kk][a]["uw_cvar1"] for d in loaded])
-                    ub = _agg([d[var][kk][b]["uw_cvar1"] for d in loaded])
+                    ua = _agg([d[var][kk][a]["uw_cvar10"] for d in loaded])
+                    ub = _agg([d[var][kk][b]["uw_cvar10"] for d in loaded])
                     deeper = a if ua < ub else b
                     print(f"    {'':>17}[{tagp}] {a}={ua:+.4f} vs {b}={ub:+.4f} → {deeper} 더 깊음")
     print("\n[읽는 법] 모든 shape 진입=실현 마지막값(연속) → entry-jump 없음.")
