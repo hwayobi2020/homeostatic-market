@@ -7,10 +7,10 @@ NLL 은 분포 *몸통(중심·스케일)* 밀도 적합도라 변동성 스케�
 
 본 스크립트는 각 입력 채널을 origin 간 셔플(관계 파괴)한 뒤 *실제로 path 를 샘플링*하여,
 sim_metrics 의 꼬리/시나리오 지표 변화(Δ)를 중요도로 측정한다.
-  · 1차 지표: uw_cvar1 (intra-horizon loss 1%, 경로의존 꼬리) — 논문 핵심 위험지표.
+  · 1차 지표: uw_cvar10 (intra-horizon loss 10%, 경로의존 꼬리) — 논문 핵심 위험지표.
   · 보조:     cvar1 (per-step 수익률 1% 꼬리), skew (좌꼬리 비대칭).
   ΔX = metric(shuffled X) − metric(base).
-  uw_cvar1·cvar1·skew 모두 음수(깊을수록 −) → ΔX > 0 = 셔플 시 꼬리가 *얕아짐*
+  uw_cvar10·cvar1·skew 모두 음수(깊을수록 −) → ΔX > 0 = 셔플 시 꼬리가 *얕아짐*
   = 그 입력이 깊은 꼬리/비대칭에 기여했음(중요).  |ΔX| 클수록 그 지표를 좌우.
 
 샘플링: analyze_pathshape_rawvol.load_fold_seed 로 origin별 실현 미래경로
@@ -73,7 +73,7 @@ PERMUTE = [
     ("wti_wr", "enc"),
 ]
 PERMUTE += [(c, "extra") for c in ("sp_std_13w", "sp_skew_13w") if c in PS.DC_COLS_LIST]
-METRIC_KEYS = ["uw_cvar1", "cvar1", "skew"]      # 1차 uw_cvar1, 보조 cvar1/skew
+METRIC_KEYS = ["uw_cvar10", "cvar1", "skew"]      # 1차 uw_cvar10, 보조 cvar1/skew
 
 
 @torch.no_grad()
@@ -152,7 +152,7 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print("#" * 100)
     print(f"# §4.3.2 (개정) Permutation Importance — 꼬리/시나리오 지표 Δ (LOCKED {PS.TAG_PREFIX}, n_perm={N_PERM})")
-    print("#  지표: uw_cvar1(IHL,1차) / cvar1 / skew.  ΔX>0 = 셔플 시 꼬리 얕아짐 = 그 입력이 깊은 꼬리에 기여(중요)")
+    print("#  지표: uw_cvar10(IHL,1차) / cvar1 / skew.  ΔX>0 = 셔플 시 꼬리 얕아짐 = 그 입력이 깊은 꼬리에 기여(중요)")
     print(f"#  device={device}, N_SIM={N_SIM}, origins≤{PS.N_ORIGIN_MAX}")
     print("#" * 100)
 
@@ -165,7 +165,7 @@ def main():
             if r is None:
                 continue
             json.dump(r, open(c, "w"), indent=2)
-            print(f"[done] {fold} s{seed}  base uw_cvar1={r['base']['uw_cvar1']:+.4f} "
+            print(f"[done] {fold} s{seed}  base uw_cvar10={r['base']['uw_cvar10']:+.4f} "
                   f"cvar1={r['base']['cvar1']:+.4f} skew={r['base']['skew']:+.3f}")
 
     _summarize()
@@ -200,7 +200,7 @@ def _summarize():
         for f in rank:
             m = np.mean(pooled[k][f]); sd = np.std(pooled[k][f])
             print(f"    {f:>14}: Δ={m:+.4f} ± {sd:.4f}")
-    print("\n[판정] tbill_wr·metab_13w 가 uw_cvar1/skew 에서 |Δ| 상위면, NLL 에선 묻혔던")
+    print("\n[판정] tbill_wr·metab_13w 가 uw_cvar10/skew 에서 |Δ| 상위면, NLL 에선 묻혔던")
     print("  거시 입력의 *꼬리/경로* 기여가 드러나는 것 (§4.1·§4.3.1 ablation 과 정합).")
 
 
