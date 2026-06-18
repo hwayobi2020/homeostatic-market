@@ -25,7 +25,7 @@ sim_metrics 의 꼬리/시나리오 지표 변화(Δ)를 중요도로 측정한�
   sp_std_13w/sp_skew_13w : extra_context 열
   (sp_return = 목표/AR seed → 제외)
 
-n_perm 평균(셔플 노이즈), 4 fold × 3 seed.  json 캐시로 재진입.
+n_perm 평균(셔플 노이즈), 4 fold × 5 seed.  json 캐시로 재진입.
 
 Usage (Colab):
     %cd '/content/drive/MyDrive/Colab Notebooks/homeostatic-market'
@@ -174,7 +174,7 @@ def main():
 def _summarize():
     feats = [nm for nm, _ in PERMUTE]
     print("\n" + "=" * 100)
-    print("[집계] Permutation Δ — 4 fold × 3 seed 평균.  (ΔX>0 = 셔플 시 꼬리 얕아짐 = 중요)")
+    print("[집계] Permutation Δ — 4 fold × 5 seed 평균.  (ΔX>0 = 셔플 시 꼬리 얕아짐 = 중요)")
 
     pooled = {k: {f: [] for f in feats} for k in METRIC_KEYS}
     for k in METRIC_KEYS:
