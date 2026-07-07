@@ -1,6 +1,0 @@
-device=cpu
-[favar_v34_K2_heur_nophys_best.pt]
-  P(m+|sp+)=77.4%, P(m-|sp-)=14.8%
-  sp_mean=-0.811, sp_std=0.916
-  margin_mean=+1.063, margin_std=0.880
-  sp+ share=14.3%

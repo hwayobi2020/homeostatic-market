@@ -1,28 +1,69 @@
+# ── Python ──────────────────────────────────────────────
 __pycache__/
 *.pyc
-models/*.zip
-models/*.pt
-plots/*.png
 *.egg-info/
 .env
-~$*
 
-# Dual-Mamba result artifacts (large binaries excluded, csv/json/log included)
-colab/dual_mamba/result/*.pt
-colab/dual_mamba/result/*.pth
-colab/dual_mamba/result/*.npz
-
-# Dual-3ch result artifacts (same policy — keep csv/json/log, drop binaries)
-colab/dual_3ch/result/*.pt
-colab/dual_3ch/result/*.pth
-colab/dual_3ch/result/*.npz
-
-# chat/ folder is local-only (per CLAUDE.md rule)
+# ── Local-only folders (kept on disk, not in the public repo) ──
 chat/
-
-# Temporary archives & extracted result bundles
-result/*.zip
-result/unzipped_*/
-
-# Drive backup folders (timestamp-named)
+.backup/
+sim/
+analysis/
+models/
 models-20*/
+colab_v34/
+env/
+news/
+docs/
+plots/
+colab/dual_mamba/
+colab/k2_104/
+
+# ── Legacy scripts outside the paper set (preserved in branch archive-20260707) ──
+# New paper files must be added explicitly with `git add -f`.
+colab/*.py
+colab/*.ipynb
+colab/*.csv
+colab/*.json
+colab/dual_3ch/*.py
+colab/dual_3ch/*.ipynb
+colab/dual_3ch/data/
+colab/dual_3ch/result/
+data/*.py
+data/*.csv
+data/*.xlsx
+data/folds*/
+
+# ── Results: commit paper caches explicitly with `git add -f result/<cache>` ──
+result/
+*.pt
+*.pth
+*.npz
+
+# ── Office / media / working files ──
+*.docx
+*.xlsx
+*.pdf
+*.jpg
+*.jpeg
+*.png
+*.zip
+*.tmp
+~WRL*
+~$*
+paper_plan.txt
+.continue.txt
+CLAUDE.md
+
+# ── Remaining local working files (root strays) ──
+_make_paper_table_xlsx.py
+_print_paper_table.py
+make_section4_docx.py
+run_v33_pinn_sweep.py
+translate_v08.py
+result_paper_final_colab.csv
+agent/
+keypaper/
+data/fred/
+data/*.xls
+data/*.json

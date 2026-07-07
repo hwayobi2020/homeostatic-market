@@ -1,7 +1,0 @@
-premium_pct,return_pct,vol_pct,sharpe,sortino,mdd_pct,weight_mean,weight_min,weight_max,note
-0,9.8,9.6,1.02,0.97,-9.2,0.59,0.00,1.00,HWM fixed at 1.0 (no update)
-1,9.8,9.5,1.04,0.92,-9.2,0.57,0.00,1.00,HWM fixed at 1.0 (no update)
-2,9.3,9.8,0.96,0.84,-9.2,0.65,0.00,1.00,HWM fixed at 1.0 (no update)
-3,12.8,10.8,1.17,1.04,-8.6,0.73,0.00,1.00,HWM fixed at 1.0 (no update)
-4,11.5,15.0,0.81,0.75,-24.8,1.00,1.00,1.00,collapsed to B&H
-5,11.5,15.0,0.81,0.75,-24.8,1.00,1.00,1.00,collapsed to B&H

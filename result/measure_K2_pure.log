@@ -1,6 +1,0 @@
-device=cpu
-[favar_v34_K2_pure_best.pt]
-  P(m+|sp+)=50.7%, P(m-|sp-)=64.1%
-  sp_mean=+0.286, sp_std=0.302
-  margin_mean=-0.023, margin_std=0.379
-  sp+ share=83.9%
