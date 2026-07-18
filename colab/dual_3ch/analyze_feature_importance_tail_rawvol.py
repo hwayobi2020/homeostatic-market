@@ -25,12 +25,24 @@ sim_metrics 의 꼬리/시나리오 지표 변화(Δ)를 중요도로 측정한�
   sp_std_13w/sp_skew_13w : extra_context 열
   (sp_return = 목표/AR seed → 제외)
 
+past-only 모드 (PERM_PAST_ONLY=1, §4.4.2 b안):
+  tbill_wr·metab_13w 도 *과거 채널만* 셔플하고 미래 경로 교환은 생략 → §4.4.2 본문 정의
+  ("과거 52주 입력 채널의 중요도, 미래 조건과는 별도")와 측정이 일치.
+  기본 재산출 대상은 통째 셔플과 결과가 달라지는 tbill_wr·metab_13w 두 행뿐이며
+  (ads_lag/wti_wr/extra 행은 원래 과거·보조 입력만 셔플이므로 기존 캐시 그대로 유효),
+  PERM_FEATS="a,b,..." 로 대상을 명시 지정할 수도 있다.
+  캐시는 별도 디렉토리(..._pastonly)에 저장되어 기존(통째 셔플) 결과를 덮어쓰지 않는다.
+
 n_perm 평균(셔플 노이즈), 4 fold × 5 seed.  json 캐시로 재진입.
 
 Usage (Colab):
     %cd '/content/drive/MyDrive/Colab Notebooks/homeostatic-market'
     !git pull
     !python colab/dual_3ch/analyze_feature_importance_tail_rawvol.py
+
+    # §4.4.2 b안 — tbill·metab 두 행을 과거 채널만 셔플로 재산출 (추론만, 재학습 없음):
+    !PS_BASE=fpath_novol FPATH_DIM=2 PERM_PAST_ONLY=1 \
+        python colab/dual_3ch/analyze_feature_importance_tail_rawvol.py
 """
 import json
 import os
@@ -51,7 +63,12 @@ sys.path.insert(0, HERE)
 import analyze_pathshape_rawvol as PS                                 # noqa: E402
 
 RESULT_DIR = PS.RESULT_DIR
-CACHE_DIR = os.path.join(RESULT_DIR, f"feat_importance_tail_cache{PS.CACHE_SUFFIX}")
+
+# §4.4.2 b안 (2026-07-18): PERM_PAST_ONLY=1 → tbill_wr·metab_13w 도 과거 채널만 셔플
+# (미래 경로 교환 생략). 캐시 디렉토리를 분리해 기존(통째 셔플) 결과를 보존한다.
+PAST_ONLY = os.environ.get("PERM_PAST_ONLY", "0") == "1"
+_CACHE_TAG = "_pastonly" if PAST_ONLY else ""
+CACHE_DIR = os.path.join(RESULT_DIR, f"feat_importance_tail_cache{PS.CACHE_SUFFIX}{_CACHE_TAG}")
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 FOLDS = PS.FOLDS
@@ -73,6 +90,19 @@ PERMUTE = [
     ("wti_wr", "enc"),
 ]
 PERMUTE += [(c, "extra") for c in ("sp_std_13w", "sp_skew_13w") if c in PS.DC_COLS_LIST]
+
+# past-only 모드 기본 재산출 대상 = 통째 셔플과 결과가 달라지는 두 채널만.
+# (ads_lag/wti_wr/extra 행은 두 모드에서 동일 → 기존 캐시 유효, 재산출 불필요)
+# PERM_FEATS="tbill_wr,metab_13w,..." 로 어느 모드에서든 명시 지정 가능.
+_feats_env = os.environ.get("PERM_FEATS", "tbill_wr,metab_13w" if PAST_ONLY else "")
+if _feats_env:
+    _keep = {s.strip() for s in _feats_env.split(",") if s.strip()}
+    _unknown = _keep - {nm for nm, _ in PERMUTE}
+    if _unknown:
+        raise SystemExit(f"PERM_FEATS 에 알 수 없는 채널: {sorted(_unknown)} "
+                         f"(가능: {[nm for nm, _ in PERMUTE]})")
+    PERMUTE = [(nm, k) for nm, k in PERMUTE if nm in _keep]
+
 METRIC_KEYS = ["uw_cvar10", "cvar1", "skew"]      # 1차 uw_cvar10, 보조 cvar1/skew
 
 
@@ -129,9 +159,10 @@ def run_fold_seed(fold, seed, device):
             if kind == "enc":
                 ci = enc_idx[name]
                 Xp[:, :, ci] = Xte[perm][:, :, ci]           # 과거 채널 셔플
-                if name == "tbill_wr":
+                # past-only(b안) 모드에선 미래 경로 교환 생략 → 과거 채널 효과만 분리
+                if name == "tbill_wr" and not PAST_ONLY:
                     ftb = fut_tb0[perm]                       # 미래 금리경로 동일 perm
-                elif name == "metab_13w":
+                elif name == "metab_13w" and not PAST_ONLY:
                     fmb = fut_mb0[perm]                       # 미래 유동성경로 동일 perm
             else:
                 j = extra_idx[name]
@@ -150,9 +181,13 @@ def run_fold_seed(fold, seed, device):
 
 def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    mode = ("past-only(과거 채널만 셔플, §4.4.2 b안)" if PAST_ONLY
+            else "통째(tbill·metab 은 과거+미래 동일 perm)")
     print("#" * 100)
     print(f"# §4.3.2 (개정) Permutation Importance — 꼬리/시나리오 지표 Δ (LOCKED {PS.TAG_PREFIX}, n_perm={N_PERM})")
     print("#  지표: uw_cvar10(IHL,1차) / cvar1 / skew.  ΔX>0 = 셔플 시 꼬리 얕아짐 = 그 입력이 깊은 꼬리에 기여(중요)")
+    print(f"#  셔플 모드: {mode}  대상: {[nm for nm, _ in PERMUTE]}")
+    print(f"#  캐시: {CACHE_DIR}")
     print(f"#  device={device}, N_SIM={N_SIM}, origins≤{PS.N_ORIGIN_MAX}")
     print("#" * 100)
 
