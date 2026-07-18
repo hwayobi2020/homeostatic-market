@@ -19,36 +19,9 @@ result/             caches produced by the analysis scripts (committed selective
 
 Legacy research code from earlier project phases is preserved in the branch **`archive-20260707`** and is not part of the paper.
 
-## Core files
-
-| File | Role |
-|---|---|
-| `train_garch_flow.py` + `rawvol_helpers.py` | Base model: per-step encoder, past-context encoder, RQ-NSF flow head, AR rollout |
-| `fpath_model.py` | Future Context Encoder (global broadcast) — the dual-conditioning variant used as the main model |
-| `run_full_fpath.py` | Main-model runner (`FPATH_NOVOL=1 FPATH_DIM=2`, 4 folds × 5 seeds) |
-| `train_vae_gan_baseline.py`, `run_vae_gan_all.py` | Conditional VAE / WGAN-GP baselines |
-| `train_garch_xpast.py` (+ `train_garch_x.py`) | GARCH-skew-t baseline |
-| `data/extend_to_1971.py` | Builds the 1971–2025 weekly dataset and walk-forward folds |
-
-## Paper table → script map
-
-| Paper item | Script (`colab/dual_3ch/`) |
-|---|---|
-| Table 3.9 (hyperparameter tuning) | `run_master_rawvol_tuning.py` |
-| Table 4.1 (out-of-sample coverage) | `agg_section4.py` |
-| Tables 4.2 / 4.3 (model-on-realized, level validation) | `model_on_realized_rawvol.py`, `marginal_axis_rawvol.py`, `build_table_42_43_pooled.py` |
-| Tables 4.4.x (liquidity paths, moment-matched) | `pathshape_zeromean_anchored_rawvol.py` |
-| Tables 4.5.x (short-rate paths, same start/end) | `pathshape_realized_anchored_rawvol.py` |
-| Table 4.7 (combined paths) | `pathshape_joint_ratestep_metabmm_k1.py` |
-| Table 4.8 (vs GARCH-skew-t) | `train_garch_xpast.py` |
-| Table 4.9 (vs Conditional VAE / GAN) | `run_vae_gan_all.py` |
-| Table 4.10 (counterfactual-condition ablation) | `run_ablations_rawvol.py`, `run_novol.py`, `tail_ablation_bootstrap.py` |
-| Table 4.11 (permutation importance) | `analyze_feature_importance_tail_rawvol.py` |
-| Table 4.12 (past-encoder ablation) | `run_rawvol_macroenc.py`, `agg_section4.py` |
-
-The main-model analysis scripts are switched to the dual-conditioning model with environment variables: `PS_BASE=fpath_novol FPATH_DIM=2`.
-
 ## Reproducing the paper (`notebooks/`)
+
+To reproduce all paper tables, run `notebooks/01_reproduce_tables.ipynb` (aggregates from the committed caches, no GPU needed). For a full retraining from scratch, run `03_train_macflow.ipynb`.
 
 | Notebook | What it does | Needs |
 |---|---|---|
