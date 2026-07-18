@@ -17,8 +17,6 @@ notebooks/          Colab notebooks to reproduce the paper (see below)
 result/             caches produced by the analysis scripts (committed selectively)
 ```
 
-Legacy research code from earlier project phases is preserved in the branch **`archive-20260707`** and is not part of the paper.
-
 ## Reproducing the paper (`notebooks/`)
 
 To reproduce all paper tables, run `notebooks/01_reproduce_tables.ipynb` (aggregates from the committed caches, no GPU needed). For a full retraining from scratch, run `03_train_macflow.ipynb`.
