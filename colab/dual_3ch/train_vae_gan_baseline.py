@@ -80,10 +80,15 @@ class CtxEncoder(nn.Module):
         #   last : 원점의 마지막 관측값(x[:, PAST_LEN-1, :])을 미래 구간 유지
         x = x.clone()
         keep_tbill = x[:, PAST_LEN:, TBILL_CH].clone()
+        x[:, PAST_LEN:, :] = 0.0
         if MASK_FUTURE_FILL == "last":
-            x[:, PAST_LEN:, :] = x[:, PAST_LEN - 1:PAST_LEN, :]
-        else:
-            x[:, PAST_LEN:, :] = 0.0
+            # train_garch_flow 와 채널 범위를 맞춘다: macro 채널만 마지막값 유지.
+            # SP 채널은 1칸 shift 돼 있어 x[:, PAST_LEN-1] 이 원점 주가 아니라
+            # 그 전 주 값이므로 채우지 않고 0(=학습기간 평균)으로 둔다.
+            for _ch in range(x.shape[-1]):
+                if _ch == SP_CH:
+                    continue
+                x[:, PAST_LEN:, _ch] = x[:, PAST_LEN - 1:PAST_LEN, _ch]
         x[:, PAST_LEN:, TBILL_CH] = keep_tbill
         return self.net(x)
 
@@ -317,6 +322,8 @@ def run_fold(model_kind, fold, args, device):
     # 공정 비교용.  τ=1 에서는 미래 경로에서 주입되는 값이 첫 점 하나뿐이라
     # MAC-Flow / VAE·GAN / GARCH-ST 가 받는 미래 정보가 같아진다.  마스킹 같은
     # 인위적 제약이 필요 없고, 원점 간 중첩도 없어 관측치가 서로 독립이다.
+    # 구간은 13주 지표와 동일하게 *전역 풀링* 으로 잡는다.  τ=1 로 잘라도 전역/원점별
+    # 선택은 남는 문제이며, 여기서는 세 모델의 정의를 맞추는 쪽을 택했다.
     a1 = actual_raw[:, 0].ravel(); s1 = sim_paths_raw[:, :, 0].ravel()
     crps1_m, _ = crps_pooled(sim_paths_raw[:, :, 0:1], actual_raw[:, 0:1])
     cov1 = {}
