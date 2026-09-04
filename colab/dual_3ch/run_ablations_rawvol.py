@@ -142,7 +142,9 @@ def main():
                 if "fedfunds_wr" not in cols0:
                     print(f"  [skip {fold}] fedfunds_wr 없음 → prep_fedfunds_column.py 먼저"); continue
             for seed in SEEDS:
-                tag = f"rvAbl_{name}_s{seed}"
+                # MASK_FUTURE_FILL=last 로 돌린 결과는 태그를 분리해 기존 zero 결과를 보존한다.
+                _fill = "" if T.MASK_FUTURE_FILL == "zero" else f"_fill{T.MASK_FUTURE_FILL}"
+                tag = f"rvAbl_{name}{_fill}_s{seed}"
                 sp = os.path.join(RESULT_DIR, f"garch_flow_ar_{tag}_{fold}_summary.json")
                 if os.path.exists(sp):
                     print(f"  [skip] {os.path.basename(sp)}"); continue

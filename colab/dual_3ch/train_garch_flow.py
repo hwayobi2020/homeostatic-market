@@ -247,6 +247,10 @@ _DATA_CACHE = {}
 # future short-rate path conditioning.  Default False = current behaviour
 # ("short-rate path conditional" thesis: future tbill unmasked).
 MASK_FUTURE_TBILL = False
+# 마스킹된 미래 거시 채널을 무엇으로 채울지.  "zero" | "last"  (env MASK_FUTURE_FILL)
+#   zero : 0 = z-score 기준 학습기간 평균.  원점 마지막값에서 평균으로 점프한다.
+#   last : 원점의 마지막 관측값을 13주 유지 (§4.3 flat 기준선과 동일 의미).
+MASK_FUTURE_FILL = os.environ.get("MASK_FUTURE_FILL", "zero")
 ENCODER_MASK_SP = False   # True 면 encoder 가 sp_return 채널을 무시 (Flow head 의 prevret/teacher
                           #   forcing 은 그대로 유지). 거시만 encoder 로 보내는 ablation 용.
 FUTURE_UNMASK_MACRO_COLS = []   # 미래 구간에 실제값을 유지(unmask)할 MACRO 채널명 리스트.
@@ -391,19 +395,27 @@ def load_windows_seq(csv_path, past_len=PAST_LEN, future_len=FUTURE_LEN,
         sp_col = x[:, SP_CH].copy()
         x[1:, SP_CH] = sp_col[:-1]
         x[0,  SP_CH] = 0.0       # BOS padding (loss masks tau < PAST_LEN)
-        # Zero-mask macro channels in the future portion [PAST_LEN, L),
+        # Mask macro channels in the future portion [PAST_LEN, L),
         # 단 FUTURE_UNMASK_MACRO_COLS 채널은 미래 실제값 유지 (조건부 시나리오 입력).
+        #
+        # 채움값은 MASK_FUTURE_FILL 로 고른다.
+        #   "zero" : 0 (= z-score 기준 학습기간 평균).  원점의 마지막 관측값에서
+        #            평균으로 점프하므로 "미래 정보 없음"이 아니라 "평균으로 이동"이다.
+        #   "last" : 원점의 마지막 관측값(x[past_len-1])을 13주 유지.  §4.3 의 flat
+        #            기준선(pathshape_zeromean_anchored_rawvol.py:116-119, 실현 마지막값
+        #            앵커)과 같은 의미이며, 정보를 빼되 수준은 유지한다.
         _keep = {COND_COLS.index(c) for c in FUTURE_UNMASK_MACRO_COLS if c in COND_COLS}
+        _hold = (MASK_FUTURE_FILL == "last")
         for ch in MACRO_CH:
             if ch in _keep:
                 continue
-            x[past_len:, ch] = 0.0
+            x[past_len:, ch] = x[past_len - 1, ch] if _hold else 0.0
         # Ablation: optionally mask the future tbill path too (remove the
         # short-rate path conditioning) -- tests whether the future rate
         # scenario helps at all.  Propagates to AR inference because
         # evaluate_test reads future_tbill from this masked Xte.
         if MASK_FUTURE_TBILL:
-            x[past_len:, TBILL_CH] = 0.0
+            x[past_len:, TBILL_CH] = x[past_len - 1, TBILL_CH] if _hold else 0.0
         # NOTE: For training, x[past_len:, SP_CH] currently holds shifted
         # real sp values (teacher forcing).  At inference these positions
         # are overwritten with sampled values (see MambaFlowAR.ar_sample).

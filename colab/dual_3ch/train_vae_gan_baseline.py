@@ -35,7 +35,7 @@ sys.path.insert(0, HERE)
 # train_garch_flow uses -- guarantees an apples-to-apples comparison.
 from train_garch_flow import (  # noqa: E402
     garch_preprocess_fold, compute_valid_mask, cached_load_windows_seq,
-    COND_COLS, TBILL_CH, PAST_LEN, FUTURE_LEN, SP_CH,
+    COND_COLS, TBILL_CH, PAST_LEN, FUTURE_LEN, SP_CH, MASK_FUTURE_FILL,
     crps_pooled, crps_ensemble_sample, compute_var, compute_cvar, compute_emd_1d,
     forward_garch_rescale,
 )
@@ -75,9 +75,15 @@ class CtxEncoder(nn.Module):
         # hold (shifted) future ACTUAL returns.  A non-causal MLP would read the
         # target straight off the context.  Mask ALL future positions except the
         # tbill scenario path (the only legitimate future conditioning).
+        # 채움값은 MASK_FUTURE_FILL 로 고른다 (train_garch_flow 와 동일 규약).
+        #   zero : 0 = z-score 기준 학습기간 평균 (원점 마지막값에서 평균으로 점프)
+        #   last : 원점의 마지막 관측값(x[:, PAST_LEN-1, :])을 미래 구간 유지
         x = x.clone()
         keep_tbill = x[:, PAST_LEN:, TBILL_CH].clone()
-        x[:, PAST_LEN:, :] = 0.0
+        if MASK_FUTURE_FILL == "last":
+            x[:, PAST_LEN:, :] = x[:, PAST_LEN - 1:PAST_LEN, :]
+        else:
+            x[:, PAST_LEN:, :] = 0.0
         x[:, PAST_LEN:, TBILL_CH] = keep_tbill
         return self.net(x)
 
@@ -298,10 +304,13 @@ def run_fold(model_kind, fold, args, device):
         a = np.asarray(a, float); m = a.mean(); s = a.std() + 1e-12
         return float(np.mean(((a - m) / s) ** 4) - 3.0)
 
+    # 커버리지: MAC-Flow(train_garch_flow.evaluate_test) 와 동일하게 *전역 풀링* 구간.
+    #   전 origin × 전 sim × 전 시점을 합친 분포에서 백분위 한 쌍을 뽑아 전부를 판정한다.
+    #   (이전에는 axis=1 원점별이라 MAC-Flow 와 정의가 달랐다.)
     cov = {}
     for lvl, lo, hi in [(50, 25, 75), (80, 10, 90), (95, 2.5, 97.5)]:
-        L_, H_ = np.percentile(sim_paths_raw, lo, axis=1), np.percentile(sim_paths_raw, hi, axis=1)
-        cov[lvl] = float(((actual_raw >= L_) & (actual_raw <= H_)).mean())
+        L_, H_ = np.percentile(sf, lo), np.percentile(sf, hi)
+        cov[lvl] = float(((af >= L_) & (af <= H_)).mean())
     cv1a, cv1s = compute_cvar(af, 0.01), compute_cvar(sf, 0.01)
 
     print(f"\n[{model_kind.upper()}]  fold={fold}  (n_sim={args.n_sim})")

@@ -218,10 +218,13 @@ def run_fold(fold):
     kurt_a, kurt_s = _ek(af), _ek(sf)
     cv5a, cv5s = cvar(af, .05), cvar(sf, .05)
     cv1a, cv1s = cvar(af, .01), cvar(sf, .01)
+    # 커버리지: MAC-Flow(train_garch_flow.evaluate_test) 와 동일하게 *전역 풀링* 구간.
+    #   전 origin × 전 sim × 전 시점을 합친 분포에서 백분위 한 쌍을 뽑아 전부를 판정한다.
+    #   (이전에는 axis=1 원점별이라 MAC-Flow 와 정의가 달랐다.)
     cov = {}
     for lvl, lo, hi in [(50, 25, 75), (80, 10, 90), (95, 2.5, 97.5)]:
-        L = np.percentile(sim, lo, axis=1); H = np.percentile(sim, hi, axis=1)
-        cov[lvl] = float(((act >= L) & (act <= H)).mean())
+        L = np.percentile(sf, lo); H = np.percentile(sf, hi)
+        cov[lvl] = float(((af >= L) & (af <= H)).mean())
     print(f"  CRPS={crps_m:.5f}  std a/s/ratio={std_a:.5f}/{std_s:.5f}/{std_s/std_a:.3f}  "
           f"cov 50/80/95={cov[50]:.3f}/{cov[80]:.3f}/{cov[95]:.3f}")
     print(f"  skew a/s={skew_a:+.4f}/{skew_s:+.4f}  exkurt a/s={kurt_a:+.4f}/{kurt_s:+.4f}  "
