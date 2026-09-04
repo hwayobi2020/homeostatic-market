@@ -79,17 +79,18 @@ class CtxEncoder(nn.Module):
         #   zero : 0 = z-score 기준 학습기간 평균 (원점 마지막값에서 평균으로 점프)
         #   last : 원점의 마지막 관측값(x[:, PAST_LEN-1, :])을 미래 구간 유지
         x = x.clone()
-        keep_tbill = x[:, PAST_LEN:, TBILL_CH].clone()
-        x[:, PAST_LEN:, :] = 0.0
         if MASK_FUTURE_FILL == "last":
-            # train_garch_flow 와 채널 범위를 맞춘다: macro 채널만 마지막값 유지.
+            # 미래를 전혀 쓰지 않는 조건.  tbill 도 실현 경로를 되돌리지 않고
+            # 원점의 마지막 관측값을 유지한다 (네 모델 조건 일치용).
             # SP 채널은 1칸 shift 돼 있어 x[:, PAST_LEN-1] 이 원점 주가 아니라
             # 그 전 주 값이므로 채우지 않고 0(=학습기간 평균)으로 둔다.
-            for _ch in range(x.shape[-1]):
-                if _ch == SP_CH:
-                    continue
-                x[:, PAST_LEN:, _ch] = x[:, PAST_LEN - 1:PAST_LEN, _ch]
-        x[:, PAST_LEN:, TBILL_CH] = keep_tbill
+            last = x[:, PAST_LEN - 1:PAST_LEN, :].clone()
+            x[:, PAST_LEN:, :] = last
+            x[:, PAST_LEN:, SP_CH] = 0.0
+        else:
+            keep_tbill = x[:, PAST_LEN:, TBILL_CH].clone()
+            x[:, PAST_LEN:, :] = 0.0
+            x[:, PAST_LEN:, TBILL_CH] = keep_tbill
         return self.net(x)
 
 
