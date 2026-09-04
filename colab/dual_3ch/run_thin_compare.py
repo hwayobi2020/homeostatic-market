@@ -10,13 +10,14 @@
 STRIDE(=13) 간격으로 솎으면 예측 구간이 겹치지 않는다.  지평은 13주 그대로
 두므로 모델 설정을 바꾸지 않는다.
 
-미래 조건 (네 모델 동일)
-------------------------
-원점의 **마지막 관측값을 13주 유지**(flat).  누구도 미래를 보지 않는다.
-  · MAC-Flow  : tbill·metab 을 flat 경로로 주입
-  · CondVAE/GAN: MASK_FUTURE_FILL="last" — 미래 tbill 도 실현 경로를 되돌리지 않음
-  · GARCH-ST  : 원래부터 origin 값 고정 (train_garch_xpast.py:154)
-0 을 채우면 z-score 기준 학습기간 평균으로 점프해 원점 수준과 단절되므로 쓰지 않는다.
+미래 조건
+---------
+조건부 생성 모형끼리는 **같은 조건을 주고 구조 차이만 남긴다**.
+  · MAC-Flow   : 실현 거시 경로(tbill·metab) 주입 — 전역 요약 + 스텝별 재주입
+  · CondVAE/GAN: 원래 세팅 그대로, 미래 tbill 실현 경로를 맥락 벡터로 받음
+조건부 모델에서 조건을 빼면 비교가 성립하지 않으므로 flat 으로 막지 않는다.
+GARCH-ST 는 구조상 미래 경로를 못 받아 이 비교에서 제외한다
+(별도 실행 결과로 이미 확보돼 있고 조건이 바뀌지 않았다).
 
 구간은 네 모델 모두 전역 풀링(train_garch_flow.evaluate_test 와 동일 정의).
 
@@ -50,12 +51,12 @@ patch_rawvol()                                   # MAC-Flow 와 동일 파이프
 import analyze_pathshape_rawvol as PS                                    # noqa: E402
 import pathshape_zeromean_anchored_rawvol as ZM                          # noqa: E402
 import train_garch_flow as T                                             # noqa: E402
-import train_garch_xpast as GX                                           # noqa: E402
 import train_vae_gan_baseline as VG                                      # noqa: E402
 
 VG.garch_preprocess_fold = rawstd_preprocess_fold   # import-bound 이름 교체
 VG.forward_garch_rescale = forward_rawvol_rescale
-VG.MASK_FUTURE_FILL = "last"                        # 미래 tbill 도 flat 유지
+# VAE/GAN 은 원래 세팅(else 분기) 그대로 — 미래 tbill 실현 경로를 받는다.
+# 조건부 모델에서 조건을 빼면 비교 자체가 성립하지 않으므로 flat 으로 막지 않는다.
 
 STRIDE = 13
 FOLDS = PS.FOLDS
@@ -111,9 +112,8 @@ def align(models):
     """모델별 pred_start(예측 첫 주의 test CSV 행)로 교집합을 잡아 행을 맞춘다.
 
     GARCH-ST 는 train_garch_xpast.py:197-199 규칙, 나머지 셋은
-    train_garch_flow.py:496-498 규칙으로 원점을 고르므로 개수가 다르다(181 vs 182).
-    같은 정수 인덱스에 STRIDE 를 걸면 서로 다른 주를 가리키게 되므로,
-    교집합을 잡은 뒤 같은 주에 대해서만 비교한다.
+    train_garch_flow.py:496-498 규칙으로 원점을 고른다.  세 모델은 같은 규칙이지만
+    안전을 위해 교집합을 잡은 뒤 같은 주에 대해서만 비교한다.
     """
     common = None
     for d in models.values():
@@ -144,7 +144,7 @@ def _restore_summary(path, bak):
 
 
 def macflow_arrays(fold, seed, device):
-    """저장된 ckpt 로 재추론.  미래 조건 = 과거 52주의 마지막 관측값 flat 유지."""
+    """저장된 ckpt 로 재추론.  미래 조건 = 실현된 거시 경로 (VAE/GAN 과 동일 정보)."""
     ctx = PS.load_fold_seed(fold, seed, device)
     if ctx is None:
         return None
@@ -159,14 +159,9 @@ def macflow_arrays(fold, seed, device):
         gp["test"], cond_stats=cond_stats, target_stats=target_stats)
     valid_mask, z_te, df_te = T.compute_valid_mask(gp["test"], cond_stats)
 
-    # 앵커 = 과거 52주의 마지막 관측 행 (w + PAST_LEN - 1).
-    #   real_*_fut[:, 0] 은 미래 첫 주이므로 쓰지 않는다.
-    n_w = z_te.shape[0] - T.PAST_LEN - T.FUTURE_LEN + 1
-    last = z_te[T.PAST_LEN - 1: T.PAST_LEN - 1 + n_w][valid_mask]       # (n_orig, N_CH)
-    tb_flat = last[:, ctx["ti"]:ctx["ti"] + 1] + np.zeros((1, T.FUTURE_LEN))
-    mb_flat = last[:, ctx["mi"]:ctx["mi"] + 1] + np.zeros((1, T.FUTURE_LEN))
-
-    sim_z = ZM.rollout_paths(ctx, tb_flat, mb_flat, seed, device)
+    # 미래 조건 = 실현된 거시 경로 (VAE/GAN 과 동일 정보).
+    #   조건부 모델끼리는 같은 조건을 주고 그 조건을 쓰는 *구조* 차이만 남긴다.
+    sim_z = ZM.rollout_paths(ctx, ctx["real_tb_fut"], ctx["real_mb_fut"], seed, device)
     r = ctx["rescale"]
     sim_raw = PS.forward_garch_rescale(sim_z * r["tsd"] + r["tmu"], r["s2"], r["e2"],
                                        r["om"], r["al"], r["be"], r["mu"])
@@ -192,7 +187,7 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print("#" * 112)
     print(f"# 비중첩 비교 — 원점 STRIDE={STRIDE}(오프셋 {STRIDE}개 평균), 지평 13주,")
-    print(f"#   미래 조건=원점 마지막값 flat (네 모델 공통), 구간=전역 풀링, 원점=교집합")
+    print(f"#   미래 조건=실현 거시 경로 (세 모델 공통), 구간=전역 풀링, 원점=교집합")
     print(f"# device={device}  n_sim={N_SIM}  MAC-Flow={PS.TAG_PREFIX} ({len(SEEDS)} seed)")
     print("#" * 112)
 
@@ -200,14 +195,6 @@ def main():
     for fold in FOLDS:
         print(f"\n===== {fold}")
         raw = {}
-
-        try:
-            sp = os.path.join(GX.RESULT_DIR, f"garch_xpast_{fold}_summary.json")
-            bak = _keep_summary(sp)
-            raw["GARCH-ST"] = GX.run_fold(fold)
-            _restore_summary(sp, bak)
-        except Exception as e:
-            print(f"  [FAIL GARCH-ST] {e!r}")
 
         for mk in ("vae", "gan"):
             try:
@@ -255,7 +242,7 @@ def main():
             m["n_seed"] = len(per_seed)
             out[fold]["MAC-Flow"] = m
 
-        for name in ("MAC-Flow", "GARCH-ST", "CondVAE", "CondGAN"):
+        for name in ("MAC-Flow", "CondVAE", "CondGAN"):
             if name in out[fold]:
                 r = out[fold][name]
                 print(f"  [{name:<9}] 부분표본 원점 {r['n_origin']:.1f} × "
@@ -264,12 +251,12 @@ def main():
     json.dump(out, open(OUT, "w"), indent=2)
     print(f"\nsaved {OUT}")
 
-    order = ["MAC-Flow", "GARCH-ST", "CondVAE", "CondGAN"]
+    order = ["MAC-Flow", "CondVAE", "CondGAN"]
     cols = [("n_origin", "원점"), ("crps", "CRPS"),
             ("cov50", "cov50"), ("cov80", "cov80"), ("cov95", "cov95"),
             ("skew_actual", "skew실측"), ("skew_sim", "skew모형")]
     print(f"\n{'='*104}")
-    print(f"[요약]  STRIDE={STRIDE} 오프셋 평균 · 지평 13주 · 미래=원점 마지막값 flat · 원점 교집합")
+    print(f"[요약]  STRIDE={STRIDE} 오프셋 평균 · 지평 13주 · 미래=실현 경로 · 원점 교집합")
     print("=" * 104)
     print(f"{'fold':<18}{'model':<11}" + "".join(f"{c[1]:>11}" for c in cols))
     for fold in FOLDS:
