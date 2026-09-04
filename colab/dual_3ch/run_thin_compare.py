@@ -85,14 +85,17 @@ def thin(sim, act):
 
 
 def macflow_arrays(fold, seed, device):
-    """저장된 ckpt 로 실현 거시 경로 조건 재추론 → (sim_raw, actual_raw)."""
+    """저장된 ckpt 로 재추론 → (sim_raw, actual_raw).
+
+    미래 조건 = **원점의 마지막 관측값을 13주 유지**(flat).  실현 경로를 주면
+    MAC-Flow 만 미래 정보를 갖게 되어 비교가 불공정해지고, 0 을 넣으면 z-score
+    기준 학습기간 평균으로 점프시켜 원점 수준과 단절된다.  과거 52주를 주는
+    이상 그 마지막 값이 이어지는 것이 자연스럽다.
+    §4.3 flat 기준선(pathshape_zeromean_anchored_rawvol.py:116-119)과 같은 방식.
+    """
     ctx = PS.load_fold_seed(fold, seed, device)
     if ctx is None:
         return None, None
-    sim_z = ZM.rollout_paths(ctx, ctx["real_tb_fut"], ctx["real_mb_fut"], seed, device)
-    r = ctx["rescale"]
-    sim_raw = PS.forward_garch_rescale(sim_z * r["tsd"] + r["tmu"], r["s2"], r["e2"],
-                                       r["om"], r["al"], r["be"], r["mu"])
 
     ckpt = torch.load(os.path.join(
         PS.RESULT_DIR, f"garch_flow_ar_{PS.TAG_PREFIX}_s{seed}_{fold}_best.pt"),
@@ -102,7 +105,22 @@ def macflow_arrays(fold, seed, device):
     gp = T.garch_preprocess_fold(PS.FOLDS_DIR, fold, PS.RESULT_DIR)
     _, Yte, _, _, _ = T.cached_load_windows_seq(
         gp["test"], cond_stats=cond_stats, target_stats=target_stats)
-    valid_mask, _, df_te = T.compute_valid_mask(gp["test"], cond_stats)
+    valid_mask, z_te, df_te = T.compute_valid_mask(gp["test"], cond_stats)
+
+    # 앵커 = 과거 52주의 *마지막* 관측값 (행 w+PAST_LEN-1).  미래 첫 주가 아니다.
+    #   (§4.3 의 pathshape 코드는 real_*_fut[:, 0] = 미래 첫 주를 앵커로 쓴다.
+    #    주간 거시는 거의 안 움직여 값 차이는 미미하나, 여기서는 미래를 전혀
+    #    쓰지 않는 쪽으로 엄격하게 잡는다.)
+    n_w = z_te.shape[0] - T.PAST_LEN - T.FUTURE_LEN + 1
+    _last = z_te[T.PAST_LEN - 1: T.PAST_LEN - 1 + n_w][valid_mask]      # (n_orig, N_CH)
+    anc_tb = _last[:, ctx["ti"]:ctx["ti"] + 1]
+    anc_mb = _last[:, ctx["mi"]:ctx["mi"] + 1]
+    tb_flat = anc_tb + np.zeros((1, T.FUTURE_LEN))
+    mb_flat = anc_mb + np.zeros((1, T.FUTURE_LEN))
+    sim_z = ZM.rollout_paths(ctx, tb_flat, mb_flat, seed, device)
+    r = ctx["rescale"]
+    sim_raw = PS.forward_garch_rescale(sim_z * r["tsd"] + r["tmu"], r["s2"], r["e2"],
+                                       r["om"], r["al"], r["be"], r["mu"])
     tmu, tsd = float(target_stats["mean"]), float(target_stats["std"])
     gsig = df_te["garch_sigma"].to_numpy(float)
     gmu = df_te["garch_mu"].to_numpy(float)
