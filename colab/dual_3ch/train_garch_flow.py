@@ -1371,6 +1371,17 @@ def evaluate_test(model, best_state, test_csv, cond_stats, target_stats,
     lo50, hi50 = np.percentile(sim_flat, [25.0, 75.0])
     cov50 = float(((actual_flat >= lo50) & (actual_flat <= hi50)).mean())
 
+    # ── τ=1 (1주 앞) 지표 ────────────────────────────────────────────────
+    # 공정 비교용.  τ=1 에서는 미래 경로에서 주입되는 값이 첫 점 하나뿐이라
+    # MAC-Flow / VAE·GAN / GARCH-ST 가 받는 미래 정보가 같아진다.  마스킹 같은
+    # 인위적 제약이 필요 없고, 원점 간 중첩도 없어 관측치가 서로 독립이다.
+    a1 = actual_raw[:, 0].ravel(); s1 = sim_paths_raw[:, :, 0].ravel()
+    crps1_m, crps1_s = crps_pooled(sim_paths_raw[:, :, 0:1], actual_raw[:, 0:1])
+    cov1 = {}
+    for _lvl, _lo, _hi in [(50, 25.0, 75.0), (80, 10.0, 90.0), (95, 2.5, 97.5)]:
+        _L, _H = np.percentile(s1, _lo), np.percentile(s1, _hi)
+        cov1[_lvl] = float(((a1 >= _L) & (a1 <= _H)).mean())
+
     print(f"    CRPS pooled       = {crps_m:.5f}  (std {crps_s:.5f})")
     print(f"    EMD               = {emd:.6f}")
     print(f"    std act/sim/ratio = {std_a:.5f} / {std_s:.5f} / {std_ratio:.3f}")
@@ -1388,6 +1399,9 @@ def evaluate_test(model, best_state, test_csv, cond_stats, target_stats,
     print(f"    CVaR1  act/sim/D  = {cv1_a:+.5f} / {cv1_s:+.5f} / "
           f"{cv1_s - cv1_a:+.5f}")
     print(f"    cov 50 / 80 / 95  = {cov50:.3f} / {cov80:.3f} / {cov95:.3f}")
+    print(f"    [τ=1] n={a1.size}  CRPS={crps1_m:.5f}  "
+          f"cov 50/80/95={cov1[50]:.3f}/{cov1[80]:.3f}/{cov1[95]:.3f}  "
+          f"skew a/s={_skew(a1):+.4f}/{_skew(s1):+.4f}")
 
     # Plots
     print(f"\n[8] Plots")
@@ -1461,6 +1475,14 @@ def evaluate_test(model, best_state, test_csv, cond_stats, target_stats,
         coverage_50      = cov50,
         coverage_80      = cov80,
         coverage_95      = cov95,
+        tau1_crps_pooled = crps1_m, tau1_crps_std = crps1_s,
+        tau1_coverage_50 = cov1[50],
+        tau1_coverage_80 = cov1[80],
+        tau1_coverage_95 = cov1[95],
+        tau1_std_actual  = float(a1.std(ddof=1)),
+        tau1_std_sim     = float(s1.std(ddof=1)),
+        tau1_skew_actual = _skew(a1), tau1_skew_sim = _skew(s1),
+        tau1_n           = int(a1.size),
         skew_actual      = skew_a, skew_sim   = skew_s,
         exkurt_actual    = kurt_a, exkurt_sim = kurt_s,
         skewt_lambda     = _lam,

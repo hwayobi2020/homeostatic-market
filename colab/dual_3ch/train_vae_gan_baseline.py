@@ -313,6 +313,17 @@ def run_fold(model_kind, fold, args, device):
         cov[lvl] = float(((af >= L_) & (af <= H_)).mean())
     cv1a, cv1s = compute_cvar(af, 0.01), compute_cvar(sf, 0.01)
 
+    # ── τ=1 (1주 앞) 지표 ────────────────────────────────────────────────
+    # 공정 비교용.  τ=1 에서는 미래 경로에서 주입되는 값이 첫 점 하나뿐이라
+    # MAC-Flow / VAE·GAN / GARCH-ST 가 받는 미래 정보가 같아진다.  마스킹 같은
+    # 인위적 제약이 필요 없고, 원점 간 중첩도 없어 관측치가 서로 독립이다.
+    a1 = actual_raw[:, 0].ravel(); s1 = sim_paths_raw[:, :, 0].ravel()
+    crps1_m, _ = crps_pooled(sim_paths_raw[:, :, 0:1], actual_raw[:, 0:1])
+    cov1 = {}
+    for lvl, lo, hi in [(50, 25, 75), (80, 10, 90), (95, 2.5, 97.5)]:
+        L1, H1 = np.percentile(s1, lo), np.percentile(s1, hi)
+        cov1[lvl] = float(((a1 >= L1) & (a1 <= H1)).mean())
+
     print(f"\n[{model_kind.upper()}]  fold={fold}  (n_sim={args.n_sim})")
     print(f"    CRPS pooled       = {crps_m:.5f}")
     print(f"    EMD               = {emd:.6f}")
@@ -321,6 +332,9 @@ def run_fold(model_kind, fold, args, device):
     print(f"    exkurt act/sim    = {_ek(af):+.4f} / {_ek(sf):+.4f}")
     print(f"    CVaR1 act/sim/D   = {cv1a:+.5f} / {cv1s:+.5f} / {cv1s - cv1a:+.5f}")
     print(f"    cov 50/80/95      = {cov[50]:.3f} / {cov[80]:.3f} / {cov[95]:.3f}")
+    print(f"    [τ=1] n={a1.size}  CRPS={crps1_m:.5f}  "
+          f"cov 50/80/95={cov1[50]:.3f}/{cov1[80]:.3f}/{cov1[95]:.3f}  "
+          f"skew a/s={_sk(a1):+.4f}/{_sk(s1):+.4f}")
 
     # per-(origin,step) CRPS for paired DM test vs garch-flow (same origins/order)
     per_oc = np.array([[crps_ensemble_sample(sim_paths_raw[i, :, t], actual_raw[i, t])
@@ -334,7 +348,14 @@ def run_fold(model_kind, fold, args, device):
                                coverage_50=cov[50], coverage_80=cov[80],
                                coverage_95=cov[95], cvar_1pct_diff=cv1s - cv1a,
                                skew_actual=_sk(af), skew_sim=_sk(sf),
-                               exkurt_actual=_ek(af), exkurt_sim=_ek(sf)))
+                               exkurt_actual=_ek(af), exkurt_sim=_ek(sf),
+                               tau1_crps_pooled=crps1_m,
+                               tau1_coverage_50=cov1[50], tau1_coverage_80=cov1[80],
+                               tau1_coverage_95=cov1[95],
+                               tau1_std_actual=float(a1.std(ddof=1)),
+                               tau1_std_sim=float(s1.std(ddof=1)),
+                               tau1_skew_actual=_sk(a1), tau1_skew_sim=_sk(s1),
+                               tau1_n=int(a1.size)))
     os.makedirs(args.out_dir, exist_ok=True)
     sp = os.path.join(args.out_dir, f"{model_kind}_baseline_{fold}_summary.json")
     json.dump(summ, open(sp, "w"), indent=2, default=str)

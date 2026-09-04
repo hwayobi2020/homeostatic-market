@@ -208,6 +208,17 @@ def run_fold(fold):
     af = act.ravel(); sf = sim.ravel()
     std_a = float(af.std(ddof=1)); std_s = float(sf.std(ddof=1))
 
+    # ── τ=1 (1주 앞) 지표 ────────────────────────────────────────────────
+    # 공정 비교용.  τ=1 에서는 미래 경로에서 주입되는 값이 첫 점 하나뿐이라
+    # MAC-Flow / VAE·GAN / GARCH-ST 가 받는 미래 정보가 같아진다.  마스킹 같은
+    # 인위적 제약이 필요 없고, 원점 간 중첩도 없어 관측치가 서로 독립이다.
+    a1 = act[:, 0].ravel(); s1 = sim[:, :, 0].ravel()
+    crps1_m, crps1_s = crps_pooled(sim[:, :, 0:1], act[:, 0:1])
+    cov1 = {}
+    for lvl, lo, hi in [(50, 25, 75), (80, 10, 90), (95, 2.5, 97.5)]:
+        L1 = np.percentile(s1, lo); H1 = np.percentile(s1, hi)
+        cov1[lvl] = float(((a1 >= L1) & (a1 <= H1)).mean())
+
     def _sk(a):
         a = np.asarray(a, float); return float(np.mean(((a - a.mean()) / (a.std() + 1e-12)) ** 3))
 
@@ -229,6 +240,9 @@ def run_fold(fold):
           f"cov 50/80/95={cov[50]:.3f}/{cov[80]:.3f}/{cov[95]:.3f}")
     print(f"  skew a/s={skew_a:+.4f}/{skew_s:+.4f}  exkurt a/s={kurt_a:+.4f}/{kurt_s:+.4f}  "
           f"(skew-t λ={lam:+.3f} → sim skew 는 *고정* 비대칭)")
+    print(f"  [τ=1] n={a1.size}  CRPS={crps1_m:.5f}  "
+          f"cov 50/80/95={cov1[50]:.3f}/{cov1[80]:.3f}/{cov1[95]:.3f}  "
+          f"skew a/s={_sk(a1):+.4f}/{_sk(s1):+.4f}")
 
     summ = dict(fold=fold, model="GARCH-X(past)-skewt (과거 거시, 미래경로 배제, Hansen skew-t)",
                 params=dict(mu=mu, omega=om, alpha=al, beta=be,
@@ -241,7 +255,14 @@ def run_fold(fold):
                                cvar_5pct_diff=cv5s - cv5a, cvar_1pct_diff=cv1s - cv1a,
                                var_1pct_diff=var_q(sf, .01) - var_q(af, .01),
                                skew_actual=skew_a, skew_sim=skew_s,
-                               exkurt_actual=kurt_a, exkurt_sim=kurt_s))
+                               exkurt_actual=kurt_a, exkurt_sim=kurt_s,
+                               tau1_crps_pooled=crps1_m, tau1_crps_std=crps1_s,
+                               tau1_coverage_50=cov1[50], tau1_coverage_80=cov1[80],
+                               tau1_coverage_95=cov1[95],
+                               tau1_std_actual=float(a1.std(ddof=1)),
+                               tau1_std_sim=float(s1.std(ddof=1)),
+                               tau1_skew_actual=_sk(a1), tau1_skew_sim=_sk(s1),
+                               tau1_n=int(a1.size)))
     os.makedirs(RESULT_DIR, exist_ok=True)
     json.dump(summ, open(sp, "w"), indent=2, default=str)
     print(f"  saved {os.path.basename(sp)}")
