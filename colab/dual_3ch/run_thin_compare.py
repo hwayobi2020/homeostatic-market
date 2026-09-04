@@ -44,6 +44,18 @@ except Exception:
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
+# 논문 본모형(fpath_novol d2) 을 쓰도록 PS import 전에 지정한다.
+#   기본값 PS_BASE="full" 이면 TAG_PREFIX 가 rvP2mainMlp_* 가 되어 다른 모델을 읽는다.
+os.environ.setdefault("PS_BASE", "fpath_novol")
+os.environ.setdefault("FPATH_DIM", "2")
+
+# VAE/GAN 의 원래 조건 채널(6개)을 PS import 전에 확보해 둔다.
+#   analyze_pathshape_rawvol 은 import 시점에 set_cond_cols(ENC_COLS) 로
+#   train_garch_flow.COND_COLS 를 5채널(metab 포함)로 덮어쓴다.  그 뒤 import 되는
+#   train_vae_gan_baseline 이 그 값을 읽으면 원래 세팅과 다른 모델이 만들어진다.
+import train_flow_seq as _TFS                                            # noqa: E402
+VG_COND_COLS = list(_TFS.COND_COLS)
+
 from rawvol_helpers import (patch_rawvol, rawstd_preprocess_fold,        # noqa: E402
                             forward_rawvol_rescale)
 patch_rawvol()                                   # MAC-Flow 와 동일 파이프라인
@@ -202,7 +214,15 @@ def main():
                 bakv = _keep_summary(spv)
                 args = SimpleNamespace(model=mk, fold=fold, folds_dir=PS.FOLDS_DIR,
                                        out_dir=PS.RESULT_DIR, n_sim=N_SIM, seed=VG_SEED)
-                raw[f"Cond{mk.upper()}"] = VG.run_fold(mk, fold, args, device)
+                _saved = list(T.COND_COLS)
+                PS.set_cond_cols(VG_COND_COLS)      # VAE/GAN 원래 6채널로 복원
+                VG.COND_COLS = list(T.COND_COLS)
+                VG.N_CH = len(VG.COND_COLS)
+                VG.SP_CH, VG.TBILL_CH = T.SP_CH, T.TBILL_CH
+                try:
+                    raw[f"Cond{mk.upper()}"] = VG.run_fold(mk, fold, args, device)
+                finally:
+                    PS.set_cond_cols(_saved)        # MAC-Flow 5채널로 되돌림
                 _restore_summary(spv, bakv)
             except Exception as e:
                 print(f"  [FAIL {mk}] {e!r}")
