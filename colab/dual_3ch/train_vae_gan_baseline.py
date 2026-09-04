@@ -367,6 +367,7 @@ def run_fold(model_kind, fold, args, device):
     sp = os.path.join(args.out_dir, f"{model_kind}_baseline_{fold}_summary.json")
     json.dump(summ, open(sp, "w"), indent=2, default=str)
     print(f"    saved {os.path.basename(sp)}")
+    return dict(sim=sim_paths_raw, act=actual_raw)   # 드라이버 재사용
 
 
 def main():

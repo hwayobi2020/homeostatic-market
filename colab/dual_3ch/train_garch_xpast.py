@@ -268,6 +268,7 @@ def run_fold(fold):
     os.makedirs(RESULT_DIR, exist_ok=True)
     json.dump(summ, open(sp, "w"), indent=2, default=str)
     print(f"  saved {os.path.basename(sp)}")
+    return dict(sim=sim, act=act)   # (n_orig, N_SIM, FUT), (n_orig, FUT)  — 드라이버 재사용
 
 
 def main():
