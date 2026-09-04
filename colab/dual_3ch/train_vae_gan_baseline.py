@@ -368,7 +368,9 @@ def run_fold(model_kind, fold, args, device):
     sp = os.path.join(args.out_dir, f"{model_kind}_baseline_{fold}_summary.json")
     json.dump(summ, open(sp, "w"), indent=2, default=str)
     print(f"    saved {os.path.basename(sp)}")
-    return dict(sim=sim_paths_raw, act=actual_raw)   # 드라이버 재사용
+    # pred_start = 예측 대상 첫 주의 test CSV 행 번호 (창 w 의 past 52 주 다음).
+    return dict(sim=sim_paths_raw, act=actual_raw,
+                pred_start=oidx + PAST_LEN)
 
 
 def main():

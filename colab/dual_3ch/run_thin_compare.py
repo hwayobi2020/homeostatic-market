@@ -85,9 +85,48 @@ def metrics(sim, act):
                 std_actual=float(af.std(ddof=1)), std_sim=float(sf.std(ddof=1)))
 
 
-def thin(sim, act):
-    idx = np.arange(0, np.shape(act)[0], STRIDE)
-    return np.asarray(sim)[idx], np.asarray(act)[idx], idx
+def thin_all_offsets(sim, act):
+    """STRIDE 간격 부분표본을 오프셋 0..STRIDE-1 전부 만들어 지표를 평균한다.
+
+    오프셋 0 만 쓰면 원점 14 개짜리 부분표본 하나로 판정하게 되어 어느 14 개를
+    골랐느냐에 결과가 좌우된다.  13 개 오프셋을 모두 돌려 평균하면 그 임의성이
+    사라지고, 각 부분표본 안에서는 예측 구간이 겹치지 않는다는 성질도 유지된다.
+    """
+    n = np.shape(act)[0]
+    per = []
+    for off in range(STRIDE):
+        idx = np.arange(off, n, STRIDE)
+        if idx.size < 2:
+            continue
+        per.append(metrics(np.asarray(sim)[idx], np.asarray(act)[idx]))
+    keys = [k for k in per[0] if k not in ("n_origin", "n_obs")]
+    m = {k: float(np.mean([r[k] for r in per])) for k in keys}
+    m["n_origin"] = float(np.mean([r["n_origin"] for r in per]))
+    m["n_obs"] = float(np.mean([r["n_obs"] for r in per]))
+    m["n_offset"] = len(per)
+    return m
+
+
+def align(models):
+    """모델별 pred_start(예측 첫 주의 test CSV 행)로 교집합을 잡아 행을 맞춘다.
+
+    GARCH-ST 는 train_garch_xpast.py:197-199 규칙, 나머지 셋은
+    train_garch_flow.py:496-498 규칙으로 원점을 고르므로 개수가 다르다(181 vs 182).
+    같은 정수 인덱스에 STRIDE 를 걸면 서로 다른 주를 가리키게 되므로,
+    교집합을 잡은 뒤 같은 주에 대해서만 비교한다.
+    """
+    common = None
+    for d in models.values():
+        s = set(int(x) for x in d["pred_start"])
+        common = s if common is None else (common & s)
+    common = np.array(sorted(common), dtype=int)
+    out = {}
+    for name, d in models.items():
+        ps = np.asarray(d["pred_start"], dtype=int)
+        pos = {int(v): i for i, v in enumerate(ps)}
+        sel = np.array([pos[v] for v in common], dtype=int)
+        out[name] = dict(sim=np.asarray(d["sim"])[sel], act=np.asarray(d["act"])[sel])
+    return out, common
 
 
 def _keep_summary(path):
@@ -108,7 +147,7 @@ def macflow_arrays(fold, seed, device):
     """저장된 ckpt 로 재추론.  미래 조건 = 과거 52주의 마지막 관측값 flat 유지."""
     ctx = PS.load_fold_seed(fold, seed, device)
     if ctx is None:
-        return None, None
+        return None
 
     ckpt = torch.load(os.path.join(
         PS.RESULT_DIR, f"garch_flow_ar_{PS.TAG_PREFIX}_s{seed}_{fold}_best.pt"),
@@ -146,75 +185,92 @@ def macflow_arrays(fold, seed, device):
     if actual_raw.shape[0] != sim_raw.shape[0]:
         sys.exit(f"[FATAL] origin 수 불일치 {fold} s{seed}: "
                  f"actual {actual_raw.shape[0]} vs sim {sim_raw.shape[0]}")
-    return sim_raw, actual_raw
+    return dict(sim=sim_raw, act=actual_raw, pred_start=oidx + T.PAST_LEN)
 
 
 def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print("#" * 108)
-    print(f"# 비중첩 비교 — 원점 STRIDE={STRIDE}, 지평 13주, 미래 조건=원점 마지막값 flat")
+    print("#" * 112)
+    print(f"# 비중첩 비교 — 원점 STRIDE={STRIDE}(오프셋 {STRIDE}개 평균), 지평 13주,")
+    print(f"#   미래 조건=원점 마지막값 flat (네 모델 공통), 구간=전역 풀링, 원점=교집합")
     print(f"# device={device}  n_sim={N_SIM}  MAC-Flow={PS.TAG_PREFIX} ({len(SEEDS)} seed)")
-    print("#" * 108)
+    print("#" * 112)
 
     out = {f: {} for f in FOLDS}
     for fold in FOLDS:
         print(f"\n===== {fold}")
+        raw = {}
 
-        # ── GARCH-ST (CPU 적합+시뮬).  미래 거시는 원래부터 origin 값 고정.
         try:
             sp = os.path.join(GX.RESULT_DIR, f"garch_xpast_{fold}_summary.json")
             bak = _keep_summary(sp)
-            a = GX.run_fold(fold)
+            raw["GARCH-ST"] = GX.run_fold(fold)
             _restore_summary(sp, bak)
-            s, ac, idx = thin(a["sim"], a["act"])
-            out[fold]["GARCH-ST"] = metrics(s, ac)
-            print(f"  [GARCH-ST] 원점 {a['act'].shape[0]} → {len(idx)}")
         except Exception as e:
             print(f"  [FAIL GARCH-ST] {e!r}")
 
-        # ── CondVAE / CondGAN (학습 포함).  MASK_FUTURE_FILL=last 적용됨.
         for mk in ("vae", "gan"):
             try:
                 spv = os.path.join(PS.RESULT_DIR, f"{mk}_baseline_{fold}_summary.json")
                 bakv = _keep_summary(spv)
                 args = SimpleNamespace(model=mk, fold=fold, folds_dir=PS.FOLDS_DIR,
                                        out_dir=PS.RESULT_DIR, n_sim=N_SIM, seed=VG_SEED)
-                a = VG.run_fold(mk, fold, args, device)
+                raw[f"Cond{mk.upper()}"] = VG.run_fold(mk, fold, args, device)
                 _restore_summary(spv, bakv)
-                s, ac, idx = thin(a["sim"], a["act"])
-                out[fold][f"Cond{mk.upper()}"] = metrics(s, ac)
-                print(f"  [Cond{mk.upper()}] 원점 {a['act'].shape[0]} → {len(idx)}")
             except Exception as e:
                 print(f"  [FAIL {mk}] {e!r}")
 
-        # ── MAC-Flow (ckpt 재추론, 시드 평균)
-        per_seed = []
+        mac = []
         for seed in SEEDS:
             try:
-                sim, act = macflow_arrays(fold, seed, device)
-                if sim is None:
-                    continue
-                s, ac, _ = thin(sim, act)
-                per_seed.append(metrics(s, ac))
+                d = macflow_arrays(fold, seed, device)
+                if d is not None:
+                    mac.append(d)
             except Exception as e:
                 print(f"  [FAIL MAC-Flow s{seed}] {e!r}")
-        if per_seed:
-            keys = [k for k in per_seed[0] if k not in ("n_origin", "n_obs")]
+        if mac:
+            raw["MAC-Flow"] = mac[0]          # 정렬용 대표 (pred_start 는 시드 공통)
+
+        if len(raw) < 2:
+            print("  [skip] 정렬할 모델이 부족하다"); continue
+
+        aligned, common = align(raw)
+        print(f"  원점 교집합 {len(common)} 개 " +
+              " ".join(f"{k}:{len(v['pred_start'])}" for k, v in raw.items()))
+
+        for name, d in aligned.items():
+            if name == "MAC-Flow":
+                continue
+            out[fold][name] = thin_all_offsets(d["sim"], d["act"])
+
+        # MAC-Flow: 시드별로 같은 교집합 행을 뽑아 지표를 낸 뒤 시드 평균
+        if mac:
+            ps = np.asarray(mac[0]["pred_start"], dtype=int)
+            pos = {int(v): i for i, v in enumerate(ps)}
+            sel = np.array([pos[v] for v in common], dtype=int)
+            per_seed = [thin_all_offsets(np.asarray(d["sim"])[sel],
+                                         np.asarray(d["act"])[sel]) for d in mac]
+            keys = list(per_seed[0].keys())
             m = {k: float(np.mean([r[k] for r in per_seed])) for k in keys}
-            m["n_origin"] = per_seed[0]["n_origin"]
-            m["n_obs"] = per_seed[0]["n_obs"]
             m["n_seed"] = len(per_seed)
             out[fold]["MAC-Flow"] = m
-            print(f"  [MAC-Flow] 원점 {m['n_origin']}  ({len(per_seed)} seed 평균)")
+
+        for name in ("MAC-Flow", "GARCH-ST", "CondVAE", "CondGAN"):
+            if name in out[fold]:
+                r = out[fold][name]
+                print(f"  [{name:<9}] 부분표본 원점 {r['n_origin']:.1f} × "
+                      f"오프셋 {int(r['n_offset'])}")
 
     json.dump(out, open(OUT, "w"), indent=2)
     print(f"\nsaved {OUT}")
 
     order = ["MAC-Flow", "GARCH-ST", "CondVAE", "CondGAN"]
-    cols = [("n_origin", "원점"), ("n_obs", "관측"), ("crps", "CRPS"),
+    cols = [("n_origin", "원점"), ("crps", "CRPS"),
             ("cov50", "cov50"), ("cov80", "cov80"), ("cov95", "cov95"),
             ("skew_actual", "skew실측"), ("skew_sim", "skew모형")]
-    print(f"\n{'='*112}\n[요약]  STRIDE={STRIDE} · 지평 13주 · 미래=원점 마지막값 flat · 전역 풀링\n{'='*112}")
+    print(f"\n{'='*104}")
+    print(f"[요약]  STRIDE={STRIDE} 오프셋 평균 · 지평 13주 · 미래=원점 마지막값 flat · 원점 교집합")
+    print("=" * 104)
     print(f"{'fold':<18}{'model':<11}" + "".join(f"{c[1]:>11}" for c in cols))
     for fold in FOLDS:
         for name in order:
@@ -224,7 +280,7 @@ def main():
             cells = []
             for k, _ in cols:
                 v = r[k]
-                cells.append(f"{int(v):>11d}" if k in ("n_origin", "n_obs")
+                cells.append(f"{v:>11.1f}" if k == "n_origin"
                              else f"{v:>11.5f}" if k == "crps" else f"{v:>11.4f}")
             print(f"{fold:<18}{name:<11}" + "".join(cells))
         print()

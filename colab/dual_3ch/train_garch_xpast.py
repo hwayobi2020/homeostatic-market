@@ -268,7 +268,9 @@ def run_fold(fold):
     os.makedirs(RESULT_DIR, exist_ok=True)
     json.dump(summ, open(sp, "w"), indent=2, default=str)
     print(f"  saved {os.path.basename(sp)}")
-    return dict(sim=sim, act=act)   # (n_orig, N_SIM, FUT), (n_orig, FUT)  — 드라이버 재사용
+    # pred_start = 예측 대상 첫 주의 test CSV 행 번호 (origin t 의 다음 주).
+    return dict(sim=sim, act=act,
+                pred_start=np.asarray(origins, dtype=int) + 1)
 
 
 def main():
