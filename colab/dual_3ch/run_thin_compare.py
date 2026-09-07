@@ -63,6 +63,7 @@ patch_rawvol()                                   # MAC-Flow 와 동일 파이프
 import analyze_pathshape_rawvol as PS                                    # noqa: E402
 import pathshape_zeromean_anchored_rawvol as ZM                          # noqa: E402
 import train_garch_flow as T                                             # noqa: E402
+import train_garch_xpast as GX                                           # noqa: E402
 import train_vae_gan_baseline as VG                                      # noqa: E402
 
 VG.garch_preprocess_fold = rawstd_preprocess_fold   # import-bound 이름 교체
@@ -74,8 +75,10 @@ STRIDE = 13
 FOLDS = PS.FOLDS
 SEEDS = PS.SEEDS
 N_SIM = PS.N_SIM
-VG_SEED = 2026
-OUT = os.path.join(PS.RESULT_DIR, f"thin{STRIDE}_compare{PS.CACHE_SUFFIX}.json")
+DM_LAG = 12             # 13주 지평 → 최대 12주 겹침
+# 세 모델 모두 같은 시드 집합을 쓴다.  한쪽만 여러 시드를 평균하면 그쪽 학습
+# 잡음이 √k 배 줄어 차이 d 의 분산이 과소평가되고 유의성이 과장된다.
+OUT = os.path.join(PS.RESULT_DIR, f"dm_compare{PS.CACHE_SUFFIX}.json")
 
 
 def metrics(sim, act):
@@ -216,136 +219,123 @@ def macflow_arrays(fold, seed, device):
 def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print("#" * 112)
-    print(f"# 비중첩 비교 — 원점 STRIDE={STRIDE}(오프셋 {STRIDE}개 평균), 지평 13주,")
-    print(f"#   미래 조건=실현 거시 경로 (세 모델 공통), 구간=전역 풀링, 원점=교집합")
-    print(f"# device={device}  n_sim={N_SIM}  MAC-Flow={PS.TAG_PREFIX} ({len(SEEDS)} seed)")
+    print(f"# 원점 전수(시간순) · 지평 13주 · 미래=실현 거시 경로 · 구간=전역 풀링")
+    print(f"# 세 모델 모두 시드 {SEEDS} (시드 비대칭 제거).  DM 검정 HAC lag={DM_LAG}")
+    print(f"# device={device}  n_sim={N_SIM}  MAC-Flow={PS.TAG_PREFIX}")
     print("#" * 112)
 
+    import dm_test as DM
     out = {f: {} for f in FOLDS}
+    dm_out = {f: {} for f in FOLDS}
+
     for fold in FOLDS:
         print(f"\n===== {fold}")
-        raw = {}
+        # 모델별 시드별 배열 수집
+        per_model = {}
 
         for mk in ("vae", "gan"):
-            try:
-                spv = os.path.join(PS.RESULT_DIR, f"{mk}_baseline_{fold}_summary.json")
-                bakv = _keep_summary(spv)
-                args = SimpleNamespace(model=mk, fold=fold, folds_dir=PS.FOLDS_DIR,
-                                       out_dir=PS.RESULT_DIR, n_sim=N_SIM, seed=VG_SEED)
-                _saved = list(T.COND_COLS)
-                PS.set_cond_cols(VG_COND_COLS)      # VAE/GAN 원래 6채널로 복원
-                VG.COND_COLS = list(T.COND_COLS)
-                VG.N_CH = len(VG.COND_COLS)
-                VG.SP_CH, VG.TBILL_CH = T.SP_CH, T.TBILL_CH
+            runs = []
+            for sd in SEEDS:
                 try:
-                    raw[f"Cond{mk.upper()}"] = VG.run_fold(mk, fold, args, device)
-                finally:
-                    PS.set_cond_cols(_saved)        # MAC-Flow 5채널로 되돌림
-                _restore_summary(spv, bakv)
-            except Exception as e:
-                print(f"  [FAIL {mk}] {e!r}")
+                    spv = os.path.join(PS.RESULT_DIR, f"{mk}_baseline_{fold}_summary.json")
+                    bakv = _keep_summary(spv)
+                    args = SimpleNamespace(model=mk, fold=fold, folds_dir=PS.FOLDS_DIR,
+                                           out_dir=PS.RESULT_DIR, n_sim=N_SIM, seed=sd)
+                    _saved = list(T.COND_COLS)
+                    PS.set_cond_cols(VG_COND_COLS)
+                    VG.COND_COLS = list(T.COND_COLS); VG.N_CH = len(VG.COND_COLS)
+                    VG.SP_CH, VG.TBILL_CH = T.SP_CH, T.TBILL_CH
+                    try:
+                        runs.append(VG.run_fold(mk, fold, args, device))
+                    finally:
+                        PS.set_cond_cols(_saved)
+                    _restore_summary(spv, bakv)
+                except Exception as e:
+                    print(f"  [FAIL {mk} s{sd}] {e!r}")
+            if runs:
+                per_model[f"Cond{mk.upper()}"] = runs
 
-        mac = []
-        for seed in SEEDS:
+        runs = []
+        for sd in SEEDS:
             try:
-                d = macflow_arrays(fold, seed, device)
+                d = macflow_arrays(fold, sd, device)
                 if d is not None:
-                    mac.append(d)
+                    runs.append(d)
             except Exception as e:
-                print(f"  [FAIL MAC-Flow s{seed}] {e!r}")
-        if mac:
-            raw["MAC-Flow"] = mac[0]          # 정렬용 대표 (pred_start 는 시드 공통)
+                print(f"  [FAIL MAC-Flow s{sd}] {e!r}")
+        if runs:
+            per_model["MAC-Flow"] = runs
 
-        if len(raw) < 2:
-            print("  [skip] 정렬할 모델이 부족하다"); continue
+        if "MAC-Flow" not in per_model or len(per_model) < 2:
+            print("  [skip] 모델 부족"); continue
 
-        aligned, common = align(raw)
-        print(f"  원점 교집합 {len(common)} 개 " +
-              " ".join(f"{k}:{len(v['pred_start'])}" for k, v in raw.items()))
+        # 원점 교집합 (시드 무관, 대표 1개로 잡음)
+        rep = {k: v[0] for k, v in per_model.items()}
+        _, common = align(rep)
+        order = np.argsort(common)
+        print(f"  원점 교집합 {len(common)} 개  " +
+              " ".join(f"{k}:{len(v)}시드" for k, v in per_model.items()))
 
-        for name, d in aligned.items():
-            if name == "MAC-Flow":
-                continue
-            out[fold][name] = thin_all_offsets(d["sim"], d["act"])
+        # 시드별 원점 CRPS → 시드 평균 (세 모델 동일 처리)
+        loss = {}
+        for name, runs in per_model.items():
+            per_seed = []
+            for d in runs:
+                ps = np.asarray(d["pred_start"], int)
+                pos = {int(v): i for i, v in enumerate(ps)}
+                sel = np.array([pos[v] for v in common], int)
+                per_seed.append(crps_per_origin(np.asarray(d["sim"])[sel],
+                                                np.asarray(d["act"])[sel]))
+            loss[name] = np.mean(per_seed, axis=0)[order]
 
-        # MAC-Flow: 시드별로 같은 교집합 행을 뽑아 지표를 낸 뒤 시드 평균
-        if mac:
-            ps = np.asarray(mac[0]["pred_start"], dtype=int)
-            pos = {int(v): i for i, v in enumerate(ps)}
-            sel = np.array([pos[v] for v in common], dtype=int)
-            per_seed = [thin_all_offsets(np.asarray(d["sim"])[sel],
-                                         np.asarray(d["act"])[sel]) for d in mac]
-            keys = [k for k in per_seed[0] if k != "crps_per_origin"]
-            m = {k: float(np.mean([r[k] for r in per_seed])) for k in keys}
-            # 시드별 원점 CRPS 를 원점 위치마다 평균 (짝 구조 유지)
-            m["crps_per_origin"] = list(np.mean(
-                [r["crps_per_origin"] for r in per_seed], axis=0))
-            m["n_seed"] = len(per_seed)
-            out[fold]["MAC-Flow"] = m
+        # 요약 지표 (시드 평균, 전 원점)
+        for name, runs in per_model.items():
+            ms = []
+            for d in runs:
+                ps = np.asarray(d["pred_start"], int)
+                pos = {int(v): i for i, v in enumerate(ps)}
+                sel = np.array([pos[v] for v in common], int)
+                ms.append(metrics(np.asarray(d["sim"])[sel], np.asarray(d["act"])[sel]))
+            keys = [k for k in ms[0] if k != "crps_per_origin"]
+            m = {k: float(np.mean([r[k] for r in ms])) for k in keys}
+            m["n_seed"] = len(ms)
+            out[fold][name] = m
 
-        for name in ("MAC-Flow", "CondVAE", "CondGAN"):
-            if name in out[fold]:
-                r = out[fold][name]
-                print(f"  [{name:<9}] 부분표본 원점 {r['n_origin']:.1f} × "
-                      f"오프셋 {int(r['n_offset'])}")
+        # DM 검정
+        base = loss["MAC-Flow"]
+        for name in ("CondVAE", "CondGAN"):
+            if name in loss:
+                dm_out[fold][name] = DM.dm_test(loss[name], base, DM_LAG)
 
-    json.dump(out, open(OUT, "w"), indent=2)
+    json.dump(dict(summary=out, dm=dm_out), open(OUT, "w"), indent=2, default=str)
     print(f"\nsaved {OUT}")
 
-    order = ["MAC-Flow", "CondVAE", "CondGAN"]
-    cols = [("n_origin", "원점"), ("crps", "CRPS"),
-            ("cov50", "cov50"), ("cov80", "cov80"), ("cov95", "cov95"),
+    order_m = ["MAC-Flow", "CondVAE", "CondGAN"]
+    cols = [("n_origin", "원점"), ("crps", "CRPS"), ("cov50", "cov50"),
+            ("cov80", "cov80"), ("cov95", "cov95"),
             ("skew_actual", "skew실측"), ("skew_sim", "skew모형")]
-    print(f"\n{'='*104}")
-    print(f"[요약]  STRIDE={STRIDE} 오프셋 평균 · 지평 13주 · 미래=실현 경로 · 원점 교집합")
-    print("=" * 104)
+    print(f"\n{'='*104}\n[요약] 원점 전수 · 시드 {len(SEEDS)}개 평균 · 미래=실현 경로\n{'='*104}")
     print(f"{'fold':<18}{'model':<11}" + "".join(f"{c[1]:>11}" for c in cols))
     for fold in FOLDS:
-        for name in order:
+        for name in order_m:
             r = out[fold].get(name)
             if r is None:
                 continue
-            cells = []
-            for k, _ in cols:
-                v = r[k]
-                cells.append(f"{v:>11.1f}" if k == "n_origin"
-                             else f"{v:>11.5f}" if k == "crps" else f"{v:>11.4f}")
+            cells = [f"{r[k]:>11.1f}" if k == "n_origin"
+                     else f"{r[k]:>11.5f}" if k == "crps" else f"{r[k]:>11.4f}"
+                     for k, _ in cols]
             print(f"{fold:<18}{name:<11}" + "".join(cells))
         print()
-    print("[읽는 법] cov 는 명목 0.50/0.80/0.95 에 가까울수록, skew 는 실측과 부호·크기가 "
-          "맞을수록, CRPS 는 낮을수록 좋다.")
 
-    # ── 원점별 CRPS 짝지은 검정 (4 폴드 전 원점 통합) ─────────────────────
-    #   표본 단위 = 원점.  같은 원점에서 두 모델의 CRPS 차이를 보므로 짝지은 비교다.
-    #   비중첩으로 솎았으므로 원점 간 예측 구간이 겹치지 않는다.
-    try:
-        from scipy import stats
-    except ImportError:
-        print("\n[검정 생략] scipy 없음"); return
-
-    pool = {}
+    print(f"{'='*104}\n[DM 검정] 원점 시간순 · HAC lag={DM_LAG} · HLN 보정 · 양측\n{'='*104}")
+    print(f"{'fold':<18}{'비교':<24}{'n':>5}{'mean diff':>12}{'HAC se':>11}"
+          f"{'DM(HLN)':>10}{'p':>9}")
     for fold in FOLDS:
-        for name, r in out[fold].items():
-            pool.setdefault(name, []).extend(r.get("crps_per_origin", []))
-
-    if "MAC-Flow" in pool:
-        print(f"\n{'='*104}")
-        print("[원점별 CRPS 짝지은 t-검정]  표본=원점, 4 폴드 통합, 양측")
-        print("=" * 104)
-        base = np.asarray(pool["MAC-Flow"], float)
-        for name in ("CondVAE", "CondGAN"):
-            if name not in pool:
-                continue
-            oth = np.asarray(pool[name], float)
-            if oth.size != base.size:
-                print(f"  {name}: 표본 수 불일치 {base.size} vs {oth.size} — 생략"); continue
-            d = oth - base                       # 양수 = MAC-Flow 가 낮음(우위)
-            tv, p = stats.ttest_rel(oth, base)
-            w = stats.wilcoxon(oth, base).pvalue if d.size >= 10 else float("nan")
-            print(f"  MAC-Flow vs {name:<9} n={d.size:>4}  mean diff={d.mean():+.5f}  "
-                  f"sd={d.std(ddof=1):.5f}  t={tv:+.3f}  p={p:.4f}  "
-                  f"Wilcoxon p={w:.4f}  MAC 우위 {int((d > 0).sum())}/{d.size}")
-        print("  (mean diff > 0 이면 MAC-Flow 의 CRPS 가 낮다 = 우위)")
+        for name, r in dm_out[fold].items():
+            print(f"{fold:<18}{'MAC-Flow vs ' + name:<24}{r['n']:>5}"
+                  f"{r['d_mean']:>12.5f}{r['se']:>11.5f}"
+                  f"{r['dm_hln']:>10.3f}{r['p_two_sided']:>9.4f}")
+    print("  (mean diff > 0 이면 MAC-Flow 의 CRPS 가 낮다 = 우위)")
 
 
 if __name__ == "__main__":
