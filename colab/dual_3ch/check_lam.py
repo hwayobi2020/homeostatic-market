@@ -57,12 +57,23 @@ def main():
         except Exception as e:                                    # noqa: BLE001
             print(f"{os.path.basename(f)}  로드실패  {e}")
             continue
-        sd = ck.get("state_dict", ck.get("model", ck)) if isinstance(ck, dict) else ck
+        sd = ck
+        if isinstance(ck, dict):
+            for key in ("model_state", "state_dict", "state", "model"):
+                if key in ck and isinstance(ck[key], dict):
+                    sd = ck[key]
+                    break
         if not isinstance(sd, dict):
             continue
         hits = {k: v for k, v in sd.items()
                 if "lam" in k.lower() and hasattr(v, "reshape")}
         if not hits:
+            if not rows:
+                print(f"\n[진단] {os.path.basename(f)} 최상위 키: {list(ck)[:8]}")
+                print(f"[진단] state 키 {len(sd)}개 중 base/flow 관련:")
+                for k in list(sd)[:400]:
+                    if any(s in k.lower() for s in ("base", "lam", "skew", "dist")):
+                        print("   ", k, tuple(sd[k].shape) if hasattr(sd[k], "shape") else "")
             continue
         wd = find_wd(ck)
         for k, v in hits.items():
