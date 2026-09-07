@@ -1268,6 +1268,15 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
             extra_context_dim=int(extra_context_dim),
             extra_stats=extra_stats,
             direct_future_cols=list(DIRECT_FUTURE_COLS),
+            # ckpt_epoch = model_state 가 실제로 어느 에폭의 가중치인가.
+            # best_epoch / best_val_nll 은 NLL 기준 기록이라, CRPS 기준으로
+            # 고른 경우 저장된 가중치와 다른 에폭을 가리킨다 (예: F_gfc lr1e-4
+            # 에서 NLL 은 ep6, CRPS 는 ep14).  둘을 분리해 남긴다.
+            ckpt_criterion=("val_crps_z" if _use_crps else "val_nll"),
+            ckpt_epoch=(int(best_crps_epoch) if _use_crps else int(best_epoch)),
+            best_crps_epoch=(int(best_crps_epoch) if _use_crps else None),
+            best_val_crps_z=(float(best_val_crps) if _use_crps
+                             and np.isfinite(best_val_crps) else None),
             best_epoch=best_epoch, best_val_nll=best_val_nll,
             n_train=int(n_tr), n_val=int(n_v),
             n_params=int(n_params), seed=seed,
@@ -1309,6 +1318,9 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
     print(f"  saved summary : {summary_path}")
     print(f"\n  best val NLL = {best_val_nll:+.4f} (per-week "
           f"{best_val_nll / FUTURE_LEN:+.4f}) @ep{best_epoch}")
+    if _use_crps:
+        print(f"  best val CRPS(z) = {best_val_crps:.5f} @ep{best_crps_epoch}"
+              f"   ← 저장된 가중치는 이 에폭이다 (NLL 의 ep{best_epoch} 아님)")
     return model, best_state, cond_stats, target_stats, extra_stats
 
 
