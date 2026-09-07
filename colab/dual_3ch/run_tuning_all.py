@@ -47,6 +47,10 @@ import sys
 import time
 from types import SimpleNamespace
 
+# torch 는 다른 무엇보다 먼저 import 한다.  Windows 에서 다른 패키지가 먼저
+# 로드되면 c10.dll 초기화가 실패한다 (OSError WinError 1114).
+import torch                                                             # noqa: E402
+
 try:
     sys.stdout.reconfigure(encoding="utf-8")
 except Exception:
@@ -80,8 +84,6 @@ import train_vae_gan_baseline as VG                                      # noqa:
 
 VG.garch_preprocess_fold = rawstd_preprocess_fold      # import-bound 이름 교체
 VG.forward_garch_rescale = forward_rawvol_rescale
-
-import torch                                                             # noqa: E402
 
 FPATH_DIM = LRS.fpath_model.FUTURE_SUMMARY_DIM
 RESULT_DIR = PS.RESULT_DIR
