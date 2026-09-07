@@ -96,6 +96,8 @@ MODELS = _env_list("TUNE_MODELS", "flow,vae,gan")
 FOLDS = _env_list("TUNE_FOLDS", ",".join(PS.FOLDS))
 SEEDS = [int(s) for s in _env_list("TUNE_SEEDS", "2026")]
 N_SIM = int(os.environ.get("TUNE_NSIM", str(PS.N_SIM)))
+# VAL summary 가 없는 flow 셀을 다시 돌릴지.  0 이면 빈칸인 채로 둔다.
+REDO_MISSING_VAL = os.environ.get("TUNE_REDO_MISSING_VAL", "1") == "1"
 
 # 기존 값이 격자 안에 들어가도록 잡았다 (flow 1e-4, vae 5e-4, gan 1e-4).
 LR_GRID = {
@@ -120,11 +122,21 @@ def flow_setup():
 
 
 def flow_cell(fold, seed, lr):
-    """MAC-Flow 한 셀.  태그 규약은 run_lr_sweep 과 같아 결과가 재사용된다."""
+    """MAC-Flow 한 셀.  태그 규약은 run_lr_sweep 과 같아 결과가 재사용된다.
+
+    시험셋 summary 만 있고 VAL summary 가 없는 셀은 다시 돌린다.  lr 선택 기준이
+    val 지표라, 그게 없는 셀은 재사용해도 표에서 빈칸으로 남는다 (VAL 롤아웃이
+    run_lr_sweep 에 추가되기 전 판본으로 돌린 셀이 이 경우다).
+    """
     tag = f"rvAbl_full_fpath_novol_lr{LRS.lr_tag(lr)}_d{FPATH_DIM}_s{seed}"
     sp = os.path.join(RESULT_DIR, f"garch_flow_ar_{tag}_{fold}_summary.json")
     vp = os.path.join(RESULT_DIR, f"garch_flow_ar_{tag}_{fold}_VAL_summary.json")
-    if not os.path.exists(sp):
+    have = os.path.exists(sp)
+    if have and not os.path.exists(vp) and REDO_MISSING_VAL:
+        print(f"    [redo] summary 는 있으나 VAL 없음 → 재학습 "
+              f"({os.path.basename(vp)})")
+        have = False
+    if not have:
         spec = dict(LRS.LOCKED)
         spec.update(fold=fold, seed=seed, tag=tag, lr=lr)
         t0 = time.time()
@@ -139,6 +151,9 @@ def flow_cell(fold, seed, lr):
     if os.path.exists(vp):
         with open(vp, encoding="utf-8") as fh:
             ve = json.load(fh) or {}
+    else:
+        print(f"    [warn] VAL summary 없음 → val 지표 빈칸: "
+              f"{os.path.basename(vp)}")
     return dict(val=ve, test=(d.get("test_eval") or {}),
                 best_epoch=d.get("best_epoch"), best_val_nll=d.get("best_val_nll"))
 
