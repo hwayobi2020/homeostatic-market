@@ -93,9 +93,25 @@ def metrics(sim, act):
 
     return dict(n_origin=int(np.shape(act)[0]), n_obs=int(af.size),
                 crps=float(T.crps_pooled(sim, act)[0]),
+                crps_per_origin=crps_per_origin(sim, act),
                 cov50=cov[50], cov80=cov[80], cov95=cov[95],
                 skew_actual=_sk(af), skew_sim=_sk(sf),
                 std_actual=float(af.std(ddof=1)), std_sim=float(sf.std(ddof=1)))
+
+
+def crps_per_origin(sim, act):
+    """원점별 CRPS (13주 평균).  모델 간 짝지은 검정의 표본 단위가 된다.
+
+    crps_pooled 는 원점×시점 전부를 평균해 스칼라 하나만 낸다.  그러면 폴드당
+    값이 1 개라 4 폴드 = 표본 4 개가 되어 검정력이 없다.  원점별로 남기면
+    폴드당 14 개, 4 폴드 합쳐 56 개 짝이 생긴다.
+    """
+    sim = np.asarray(sim); act = np.asarray(act)
+    out = []
+    for i in range(sim.shape[0]):
+        out.append(float(np.mean([T.crps_ensemble_sample(sim[i, :, w], act[i, w])
+                                  for w in range(sim.shape[2])])))
+    return out
 
 
 def thin_all_offsets(sim, act):
@@ -112,8 +128,10 @@ def thin_all_offsets(sim, act):
         if idx.size < 2:
             continue
         per.append(metrics(np.asarray(sim)[idx], np.asarray(act)[idx]))
-    keys = [k for k in per[0] if k not in ("n_origin", "n_obs")]
+    keys = [k for k in per[0] if k not in ("n_origin", "n_obs", "crps_per_origin")]
     m = {k: float(np.mean([r[k] for r in per])) for k in keys}
+    # 원점별 CRPS 는 평균하지 않고 전 오프셋을 이어붙인다 (= 폴드의 전 원점).
+    m["crps_per_origin"] = [v for r in per for v in r["crps_per_origin"]]
     m["n_origin"] = float(np.mean([r["n_origin"] for r in per]))
     m["n_obs"] = float(np.mean([r["n_obs"] for r in per]))
     m["n_offset"] = len(per)
@@ -257,8 +275,11 @@ def main():
             sel = np.array([pos[v] for v in common], dtype=int)
             per_seed = [thin_all_offsets(np.asarray(d["sim"])[sel],
                                          np.asarray(d["act"])[sel]) for d in mac]
-            keys = list(per_seed[0].keys())
+            keys = [k for k in per_seed[0] if k != "crps_per_origin"]
             m = {k: float(np.mean([r[k] for r in per_seed])) for k in keys}
+            # 시드별 원점 CRPS 를 원점 위치마다 평균 (짝 구조 유지)
+            m["crps_per_origin"] = list(np.mean(
+                [r["crps_per_origin"] for r in per_seed], axis=0))
             m["n_seed"] = len(per_seed)
             out[fold]["MAC-Flow"] = m
 
@@ -293,6 +314,38 @@ def main():
         print()
     print("[읽는 법] cov 는 명목 0.50/0.80/0.95 에 가까울수록, skew 는 실측과 부호·크기가 "
           "맞을수록, CRPS 는 낮을수록 좋다.")
+
+    # ── 원점별 CRPS 짝지은 검정 (4 폴드 전 원점 통합) ─────────────────────
+    #   표본 단위 = 원점.  같은 원점에서 두 모델의 CRPS 차이를 보므로 짝지은 비교다.
+    #   비중첩으로 솎았으므로 원점 간 예측 구간이 겹치지 않는다.
+    try:
+        from scipy import stats
+    except ImportError:
+        print("\n[검정 생략] scipy 없음"); return
+
+    pool = {}
+    for fold in FOLDS:
+        for name, r in out[fold].items():
+            pool.setdefault(name, []).extend(r.get("crps_per_origin", []))
+
+    if "MAC-Flow" in pool:
+        print(f"\n{'='*104}")
+        print("[원점별 CRPS 짝지은 t-검정]  표본=원점, 4 폴드 통합, 양측")
+        print("=" * 104)
+        base = np.asarray(pool["MAC-Flow"], float)
+        for name in ("CondVAE", "CondGAN"):
+            if name not in pool:
+                continue
+            oth = np.asarray(pool[name], float)
+            if oth.size != base.size:
+                print(f"  {name}: 표본 수 불일치 {base.size} vs {oth.size} — 생략"); continue
+            d = oth - base                       # 양수 = MAC-Flow 가 낮음(우위)
+            tv, p = stats.ttest_rel(oth, base)
+            w = stats.wilcoxon(oth, base).pvalue if d.size >= 10 else float("nan")
+            print(f"  MAC-Flow vs {name:<9} n={d.size:>4}  mean diff={d.mean():+.5f}  "
+                  f"sd={d.std(ddof=1):.5f}  t={tv:+.3f}  p={p:.4f}  "
+                  f"Wilcoxon p={w:.4f}  MAC 우위 {int((d > 0).sum())}/{d.size}")
+        print("  (mean diff > 0 이면 MAC-Flow 의 CRPS 가 낮다 = 우위)")
 
 
 if __name__ == "__main__":
