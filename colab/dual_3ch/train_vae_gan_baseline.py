@@ -57,6 +57,16 @@ N_CRITIC = 5          # WGAN-GP critic steps per generator step
 GP_LAMBDA = 10.0
 KL_ANNEAL = 60        # epochs to ramp beta 0 -> 1
 
+# ---- validation-based checkpoint selection ----
+# MAC-Flow(train_garch_flow) 는 val NLL 최저 시점의 가중치를 복원한다.  베이스라인만
+# 마지막 에폭을 쓰면 모델 선택 절차가 비대칭이 되므로(리뷰어 1 #5) 여기도 val 기준
+# best checkpoint 를 고른다.  GAN 은 우도가 없어 ELBO/NLL 을 쓸 수 없으므로 VAE·GAN
+# 공통으로 val CRPS(z 공간, proper scoring rule)를 기준으로 삼는다.
+VAL_SELECT   = os.environ.get("VG_VAL_SELECT", "1") == "1"
+VAL_EVERY    = int(os.environ.get("VG_VAL_EVERY", "10"))    # 몇 에폭마다 검증할지
+VAL_N_SIM    = int(os.environ.get("VG_VAL_NSIM", "200"))    # 검증용 표본 수
+VAL_SIM_SEED = 12345      # 에폭 간 검증 잡음을 공통으로 만들기 위한 고정 시드
+
 
 # =====================================================================
 # Context encoder (shared) -- maps input window X (B,L,N_CH) -> c (B,D_CTX)
@@ -193,6 +203,40 @@ def gradient_penalty(critic, y_real, y_fake, c, device):
 
 
 # =====================================================================
+# Validation criterion for checkpoint selection
+# =====================================================================
+@torch.no_grad()
+def val_crps(gen, Xva, Yva, device, n_sim=VAL_N_SIM, seed=VAL_SIM_SEED):
+    """검증 구간 CRPS (z 공간).  낮을수록 좋다.
+
+    표본 추출 시드를 매 호출 고정해 에폭 간 비교가 표본 잡음이 아니라 모델 차이를
+    반영하도록 한다.  호출 전후로 전역 RNG 상태를 보존해 학습 궤적을 건드리지 않는다.
+    """
+    was_training = gen.training
+    gen.eval()
+    cpu_state = torch.get_rng_state()
+    cuda_state = (torch.cuda.get_rng_state_all()
+                  if torch.cuda.is_available() else None)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    sims = []
+    for s in range(0, Xva.shape[0], 16):
+        sims.append(gen.generate(Xva[s:s + 16].to(device), n_sim).cpu().numpy())
+    torch.set_rng_state(cpu_state)
+    if cuda_state is not None:
+        torch.cuda.set_rng_state_all(cuda_state)
+    if was_training:
+        gen.train()
+    m, _ = crps_pooled(np.concatenate(sims, axis=0), Yva.numpy())
+    return float(m)
+
+
+def _snapshot(module):
+    return {k: v.detach().cpu().clone() for k, v in module.state_dict().items()}
+
+
+# =====================================================================
 # Train + eval for one fold
 # =====================================================================
 def run_fold(model_kind, fold, args, device):
@@ -202,6 +246,27 @@ def run_fold(model_kind, fold, args, device):
     Xtr, Ytr, cond_stats, target_stats, n_tr = cached_load_windows_seq(train_csv)
     print(f"  train windows = {n_tr}, X={tuple(Xtr.shape)}")
     torch.manual_seed(args.seed); np.random.seed(args.seed)
+
+    Xva = Yva = None
+    if VAL_SELECT:
+        Xva, Yva, _, _, n_va = cached_load_windows_seq(
+            val_csv, cond_stats=cond_stats, target_stats=target_stats)
+        print(f"  val   windows = {n_va}  (checkpoint 선택 기준 = val CRPS, "
+              f"{VAL_EVERY} 에폭마다)")
+
+    best = dict(crps=float("inf"), epoch=-1, state=None)
+
+    def check_val(gen, ep):
+        """val CRPS 를 재고 개선되면 가중치를 스냅샷한다."""
+        if not VAL_SELECT:
+            return
+        c = val_crps(gen, Xva, Yva, device)
+        mark = ""
+        if c < best["crps"]:
+            best.update(crps=c, epoch=ep, state=_snapshot(gen))
+            mark = "  *"
+        print(f"      val CRPS = {c:.5f}  (best {best['crps']:.5f} "
+              f"@ep{best['epoch']}){mark}")
 
     dl = DataLoader(TensorDataset(Xtr, Ytr), batch_size=BATCH, shuffle=True,
                     drop_last=True)
@@ -222,6 +287,8 @@ def run_fold(model_kind, fold, args, device):
             if ep == 1 or ep % 50 == 0 or ep == EPOCHS:
                 print(f"    ep{ep:>3d}  loss={np.mean(losses):+.3f} "
                       f"(recon~{rec:+.3f} kl~{kl:.3f} beta={beta:.2f})")
+            if ep % VAL_EVERY == 0 or ep == EPOCHS:
+                check_val(model, ep)
         gen = model
 
     else:  # gan (WGAN-GP)
@@ -253,7 +320,15 @@ def run_fold(model_kind, fold, args, device):
             if (ep == 1 or ep % 50 == 0 or ep == EPOCHS) and dl_loss:
                 dl_, gl_ = np.mean(dl_loss, axis=0)
                 print(f"    ep{ep:>3d}  D={dl_:+.3f}  G={gl_:+.3f}")
+            if ep % VAL_EVERY == 0 or ep == EPOCHS:
+                check_val(G, ep)
         gen = G
+
+    # ---------- restore best-validation checkpoint ----------
+    if VAL_SELECT and best["state"] is not None:
+        gen.load_state_dict(best["state"])
+        print(f"  [checkpoint] val CRPS 최저 ep{best['epoch']} "
+              f"({best['crps']:.5f}) 복원  (마지막 에폭 {EPOCHS} 아님)")
 
     # ---------- evaluate (mirror train_garch_flow.evaluate_test) ----------
     gen.eval()
@@ -337,6 +412,12 @@ def run_fold(model_kind, fold, args, device):
             f"{model_kind}_baseline_{fold}_crps_per_origin.npy"), per_oc)
 
     summ = dict(model=f"cond-{model_kind}", fold=fold, n_sim=args.n_sim,
+                seed=int(args.seed),
+                val_select=bool(VAL_SELECT),
+                best_epoch=int(best["epoch"]),
+                best_val_crps=(float(best["crps"])
+                               if np.isfinite(best["crps"]) else None),
+                epochs_max=EPOCHS,
                 test_eval=dict(crps_pooled=crps_m, emd=emd, std_ratio=std_s / std_a,
                                coverage_50=cov[50], coverage_80=cov[80],
                                coverage_95=cov[95], cvar_1pct_diff=cv1s - cv1a,
