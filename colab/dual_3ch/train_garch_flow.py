@@ -1759,8 +1759,12 @@ def main_worker(args):
             print("\n" + "=" * 84)
             print("[에폭 선택 기준 비교 — 검증셋]  NLL 최저 에폭 vs CRPS 최저 에폭")
             print("=" * 84)
-            print("{:>6} {:>11} {:>10} {:>8} {:>8} {:>10}".format(
-                "epoch", "val_NLL", "val_CRPS", "cov80", "cov95", "skew_sim"))
+            # crps_se 는 원점×스텝을 독립으로 본 표준오차라 하한이다.  이웃 원점은
+            # 13 주 중 최대 12 주를 공유하므로 실제 오차는 이보다 크다.  에폭 간
+            # CRPS 차이가 이 하한보다도 작으면 순위를 신뢰할 수 없다.
+            print("{:>6} {:>11} {:>10} {:>10} {:>8} {:>8} {:>10}".format(
+                "epoch", "val_NLL", "val_CRPS", "crps_se(하한)",
+                "cov80", "cov95", "skew_sim"))
             # log_rows 는 train() 지역 변수라 여기서 못 쓴다.  train 이 남긴
             # 학습 로그 CSV(:1184)에서 에폭별 val NLL 을 읽는다.
             nll_by_ep = {}
@@ -1770,14 +1774,24 @@ def main_worker(args):
                                      _lg["val_nll"].astype(float)))
             except Exception as e:                                # noqa: BLE001
                 print(f"    [warn] 학습 로그 읽기 실패 {e!r}")
+            # eval_metrics 의 원점 수 키는 n_test_origins (:1458).  여기서는
+            # 검증셋을 넘겼으므로 그 값이 val 원점 수다.
+            _n_val = int(epoch_val[sorted(epoch_val)[0]].get("n_test_origins", 0)
+                         or 0) * FUTURE_LEN
             for ep in sorted(epoch_val):
                 m = epoch_val[ep]
-                print("{:>6} {:>11} {:>10.5f} {:>8.3f} {:>8.3f} {:>+10.4f}".format(
-                    ep,
-                    (f"{nll_by_ep[ep]:+.4f}" if ep in nll_by_ep else "-"),
-                    m["crps_pooled"], m["coverage_80"], m["coverage_95"],
-                    m["skew_sim"]))
+                se = (m["crps_std"] / math.sqrt(_n_val)) if _n_val else float("nan")
+                print("{:>6} {:>11} {:>10.5f} {:>10.6f} {:>8.3f} {:>8.3f} "
+                      "{:>+10.4f}".format(
+                          ep,
+                          (f"{nll_by_ep[ep]:+.4f}" if ep in nll_by_ep else "-"),
+                          m["crps_pooled"], se,
+                          m["coverage_80"], m["coverage_95"], m["skew_sim"]))
             ep_crps = min(epoch_val, key=lambda e: epoch_val[e]["crps_pooled"])
+            _cs = sorted(epoch_val[e]["crps_pooled"] for e in epoch_val)
+            if len(_cs) > 1:
+                print(f"\n  CRPS 최저 {_cs[0]:.5f} / 차순위 {_cs[1]:.5f} "
+                      f"(차이 {_cs[1] - _cs[0]:.6f})")
             # best_epoch 도 train() 지역 변수다.  train 이 쓴 summary(:1184 부근)에서 읽는다.
             ep_nll = None
             try:
