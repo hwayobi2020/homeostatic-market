@@ -1097,8 +1097,19 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
     log_rows = []
     pat = 0
 
+    # 에폭 선택 기준 점검용 스냅샷.  논문이 성능으로 보고하는 지표는 CRPS·커버리지·
+    # 왜도인데 체크포인트는 val NLL 로 고른다.  두 기준이 같은 에폭을 가리키는지
+    # 보려면 여러 에폭의 가중치가 필요하다.  FLOW_SNAP_EPOCHS 가 있을 때만 켜지고,
+    # 켜지면 조기종료를 끄고 max_epoch 까지 돌린다 (뒤쪽 에폭도 후보라서).
+    _snap_eps = {int(x) for x in
+                 os.environ.get("FLOW_SNAP_EPOCHS", "").replace(" ", "").split(",")
+                 if x}
+    EPOCH_STATES.clear()
+
     print(f"\n[2] Train  (max_epoch={max_epoch}, patience={patience}, "
-          f"batch={batch}, lr={lr})")
+          f"batch={batch}, lr={lr}, weight_decay={weight_decay})")
+    if _snap_eps:
+        print(f"    [에폭 스냅샷] {sorted(_snap_eps)}  (조기종료 해제)")
     for ep in range(1, max_epoch + 1):
         model.train()
         losses = []
@@ -1124,6 +1135,9 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
             ).mean().item())
 
         log_rows.append(dict(epoch=ep, train_nll=train_nll, val_nll=val_nll))
+        if ep in _snap_eps:
+            EPOCH_STATES[ep] = {k: v.detach().cpu().clone()
+                                for k, v in model.state_dict().items()}
         improved = val_nll < best_val_nll
         if improved:
             best_val_nll = val_nll
@@ -1139,7 +1153,7 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
                   f"val_nll = {val_nll:+.4f} "
                   f"(per-week {val_nll / FUTURE_LEN:+.3f})   "
                   f"(best {best_val_nll:+.4f} @ep{best_epoch}){mark}")
-        if pat >= patience:
+        if pat >= patience and not _snap_eps:
             print(f"    [early stop] ep{ep}  (patience {patience} from "
                   f"ep{best_epoch})")
             break
@@ -1469,6 +1483,15 @@ def evaluate_test(model, best_state, test_csv, cond_stats, target_stats,
     return eval_metrics
 
 
+# 패치되지 않는 원본 참조.  run_lr_sweep 등이 evaluate_test 를 감싸 검증셋 평가를
+# 덧붙이는데, 아래 에폭 기준 점검이 그 래퍼를 다시 부르면 검증셋의 검증셋을 재는
+# 무한 재귀가 된다.  정의 시점의 함수를 붙잡아 둔다.
+_BASE_EVALUATE_TEST = evaluate_test
+
+# 에폭 스냅샷 — FLOW_SNAP_EPOCHS 가 있을 때만 채워진다 (train 이 매 호출 초기화).
+EPOCH_STATES = {}
+
+
 # =====================================================================
 # NF-GARCH Stage-1 preprocessing  (fold-respecting GARCH filtering)
 # =====================================================================
@@ -1701,9 +1724,82 @@ def main_worker(args):
         extra_cond_cols=extra_cond_cols, extra_stats=extra_stats,
     )
 
+    # ------------------------------------------------------------------
+    # 에폭 선택 기준 점검: 스냅샷한 에폭마다 *검증셋* 을 논문 지표로 평가한다.
+    #   체크포인트는 val NLL 로 고르는데, 논문이 성능으로 보고하는 값은 CRPS·
+    #   커버리지·왜도다 (NLL 은 결과 표에 없다).  두 기준이 같은 에폭을 가리키는지
+    #   확인하려는 것이다.  시험셋은 건드리지 않는다.
+    # ------------------------------------------------------------------
+    epoch_val = {}
+    if EPOCH_STATES:
+        _pf, _ph = plot_fanchart, plot_histogram
+        globals()["plot_fanchart"] = lambda *a, **k: None
+        globals()["plot_histogram"] = lambda *a, **k: None
+        n_sim_chk = int(os.environ.get("FLOW_SNAP_NSIM", "300"))
+        try:
+            for ep in sorted(EPOCH_STATES):
+                print(f"\n[에폭 점검] ep{ep} 검증셋 평가 (n_sim={n_sim_chk})")
+                try:
+                    # 래퍼가 아닌 원본을 부른다 (검증셋의 검증셋 재귀 방지).
+                    m = _BASE_EVALUATE_TEST(
+                        model, EPOCH_STATES[ep], val_csv, cond_stats,
+                        target_stats, f"{result_prefix}_EPCHK{ep}",
+                        n_sim_chk, args.seed, device,
+                        chunk_origins=args.chunk_origins,
+                        extra_cond_cols=extra_cond_cols,
+                        extra_stats=extra_stats)
+                    epoch_val[ep] = m
+                except Exception as e:                            # noqa: BLE001
+                    print(f"    [FAIL ep{ep}] {e!r}")
+        finally:
+            globals()["plot_fanchart"] = _pf
+            globals()["plot_histogram"] = _ph
+
+        if epoch_val:
+            print("\n" + "=" * 84)
+            print("[에폭 선택 기준 비교 — 검증셋]  NLL 최저 에폭 vs CRPS 최저 에폭")
+            print("=" * 84)
+            print("{:>6} {:>11} {:>10} {:>8} {:>8} {:>10}".format(
+                "epoch", "val_NLL", "val_CRPS", "cov80", "cov95", "skew_sim"))
+            # log_rows 는 train() 지역 변수라 여기서 못 쓴다.  train 이 남긴
+            # 학습 로그 CSV(:1184)에서 에폭별 val NLL 을 읽는다.
+            nll_by_ep = {}
+            try:
+                _lg = pd.read_csv(log_path)
+                nll_by_ep = dict(zip(_lg["epoch"].astype(int),
+                                     _lg["val_nll"].astype(float)))
+            except Exception as e:                                # noqa: BLE001
+                print(f"    [warn] 학습 로그 읽기 실패 {e!r}")
+            for ep in sorted(epoch_val):
+                m = epoch_val[ep]
+                print("{:>6} {:>11} {:>10.5f} {:>8.3f} {:>8.3f} {:>+10.4f}".format(
+                    ep,
+                    (f"{nll_by_ep[ep]:+.4f}" if ep in nll_by_ep else "-"),
+                    m["crps_pooled"], m["coverage_80"], m["coverage_95"],
+                    m["skew_sim"]))
+            ep_crps = min(epoch_val, key=lambda e: epoch_val[e]["crps_pooled"])
+            # best_epoch 도 train() 지역 변수다.  train 이 쓴 summary(:1184 부근)에서 읽는다.
+            ep_nll = None
+            try:
+                with open(summary_path, encoding="utf-8") as f:
+                    ep_nll = json.load(f).get("best_epoch")
+            except Exception as e:                                # noqa: BLE001
+                print(f"    [warn] summary 읽기 실패 {e!r}")
+            if ep_nll is None and nll_by_ep:
+                ep_nll = min(nll_by_ep, key=lambda e: nll_by_ep[e])
+            print(f"\n  val NLL 최저 에폭  = ep{ep_nll}")
+            print(f"  val CRPS 최저 에폭 = ep{ep_crps}")
+            if ep_nll != ep_crps:
+                print("  → 두 기준이 다른 에폭을 가리킨다.  현재 체크포인트는 "
+                      "논문이 보고하지 않는 기준으로 뽑힌 것이다.")
+            else:
+                print("  → 두 기준이 같은 에폭을 가리킨다.  NLL 기준을 유지해도 된다.")
+
     with open(summary_path, "r") as f:
         existing = json.load(f)
     existing.update(dict(test_eval=eval_metrics))
+    if epoch_val:
+        existing["epoch_val_check"] = {str(k): v for k, v in epoch_val.items()}
     with open(summary_path, "w") as f:
         json.dump(existing, f, indent=2, default=str)
     print(f"\n  updated summary with test eval : {summary_path}")
