@@ -164,8 +164,18 @@ def flow_cell(fold, seed, lr, wd=BASE_WD):
     else:
         print(f"    [warn] VAL summary 없음 → val 지표 빈칸: "
               f"{os.path.basename(vp)}")
+    # 실제로 평가에 쓰인 가중치의 에폭을 보고한다.  FLOW_VAL_CRPS=1 이면
+    # best_state 를 CRPS 로만 갱신하므로(train_garch_flow:1219-1222, :1235-1236)
+    # best_epoch(=NLL 기준)이 아니라 best_crps_epoch 이 맞다.
+    crit = d.get("ckpt_criterion", "val_nll")
+    ep_used = (d.get("best_crps_epoch") if crit == "val_crps_z"
+               else d.get("best_epoch"))
+    if crit == "val_crps_z":
+        print(f"    [체크포인트] CRPS 기준 ep{ep_used} "
+              f"(NLL 기준이었다면 ep{d.get('best_epoch')})")
     return dict(val=ve, test=(d.get("test_eval") or {}),
-                best_epoch=d.get("best_epoch"), best_val_nll=d.get("best_val_nll"))
+                best_epoch=ep_used, ckpt_criterion=crit,
+                best_val_nll=d.get("best_val_nll"))
 
 
 # =====================================================================
