@@ -1157,6 +1157,11 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
     # 논문 결과 표에 NLL 이 없으므로 CRPS 로 맞추는 쪽이 맞다.  켜면 조기종료를
     # 끄고 max_epoch 까지 돌리며, FLOW_VAL_EVERY 에폭마다 val CRPS 를 잰다.
     _use_crps = os.environ.get("FLOW_VAL_CRPS", "0") == "1"
+    # 간격은 2 를 유지한다.  F_gfc lr1e-4 로그에서 CRPS 는 인접 검증점 사이에서
+    # 크게 튄다 (ep12 0.58361 → ep14 0.54819 → ep16 0.55578).  간격을 4 나 6 으로
+    # 벌리면 ep14 를 건너뛰어 최저가 ep6 (= NLL 이 고르는 에폭) 으로 바뀐다.
+    # 비용은 간격이 아니라 max_epoch 으로 줄인다 (ep16 이후 검증점 22 개가 모두
+    # ep14 를 못 넘겼고 NLL 은 ep6 부터 단조 상승한다).
     _crps_every = int(os.environ.get("FLOW_VAL_EVERY", "2"))
     _crps_nsim = int(os.environ.get("FLOW_VAL_NSIM", "1000"))
     _crps_chunk = int(os.environ.get("FLOW_VAL_CHUNK", "8"))

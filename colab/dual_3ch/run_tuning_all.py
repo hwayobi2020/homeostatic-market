@@ -100,6 +100,11 @@ SEEDS = [int(s) for s in _env_list("TUNE_SEEDS", "2026")]
 N_SIM = int(os.environ.get("TUNE_NSIM", str(PS.N_SIM)))
 # VAL summary 가 없는 flow 셀을 다시 돌릴지.  0 이면 빈칸인 채로 둔다.
 REDO_MISSING_VAL = os.environ.get("TUNE_REDO_MISSING_VAL", "1") == "1"
+# MAC-Flow 최대 에폭.  기본 60 은 스크리닝 비용이 크다 — F_gfc lr1e-4 실측
+# 1748 초/셀 이고 36 셀이면 17.5 시간이다.  같은 로그에서 CRPS 최저는 ep14,
+# ep16~60 검증점 22 개가 모두 그 값을 못 넘겼고 NLL 은 ep6 부터 단조 상승한다.
+# 30 으로 자르면 학습·검증이 절반이 되고 ep1~30 해상도는 2 간격 그대로다.
+MAX_EPOCH = int(os.environ.get("TUNE_MAX_EPOCH", "30"))
 
 # 기존 값이 격자 안에 들어가도록 잡았다 (flow 1e-4, vae 5e-4, gan 1e-4).
 LR_GRID = {
@@ -148,7 +153,9 @@ def flow_cell(fold, seed, lr, wd=BASE_WD):
         have = False
     if not have:
         spec = dict(LRS.LOCKED)
-        spec.update(fold=fold, seed=seed, tag=tag, lr=lr, weight_decay=wd)
+        spec.update(fold=fold, seed=seed, tag=tag, lr=lr, weight_decay=wd,
+                    n_sim=N_SIM)
+        spec["max_epoch"] = MAX_EPOCH
         t0 = time.time()
         LRS.main_worker(spec)
         print(f"    done ({time.time() - t0:.0f}s)")
@@ -224,6 +231,7 @@ def main():
     print("#" * 108)
     print("# 학습률 통합 스윕 — MAC-Flow / CondVAE / CondGAN, 선택은 val 지표만")
     print(f"#  models={MODELS}  folds={FOLDS}  seeds={SEEDS}  n_sim={N_SIM}")
+    print(f"#  flow max_epoch={MAX_EPOCH}  (베이스라인은 250 고정)")
     for m in MODELS:
         print(f"#  {m:5} lr grid = {LR_GRID[m]}   (게재 판본 {BASE_LR[m]:g})")
     print(f"#  device={device}  fpath_dim={FPATH_DIM}")
