@@ -64,8 +64,16 @@ KL_ANNEAL = 60        # epochs to ramp beta 0 -> 1
 # 공통으로 val CRPS(z 공간, proper scoring rule)를 기준으로 삼는다.
 VAL_SELECT   = os.environ.get("VG_VAL_SELECT", "1") == "1"
 EVAL_VAL     = os.environ.get("VG_EVAL_VAL", "0") == "1"   # lr 선택용 val 전체평가
-VAL_EVERY    = int(os.environ.get("VG_VAL_EVERY", "10"))    # 몇 에폭마다 검증할지
-VAL_N_SIM    = int(os.environ.get("VG_VAL_NSIM", "200"))    # 검증용 표본 수
+# 검증 간격은 모델마다 다르지만 검증 *횟수* 는 맞춘다 (학습 예산의 1/30).
+#   flow  :  60 에폭 ÷ 30 = 2 에폭마다   (FLOW_VAL_EVERY)
+#   VAE/GAN: 250 에폭 ÷ 30 ≈ 8 에폭마다
+# 간격을 똑같이 2 로 두면 베이스라인만 125 회를 재게 되는데, 최적 에폭이
+# 20/110/205 로 곡선이 완만한 구간이라 그만한 해상도가 필요 없다.
+VAL_EVERY    = int(os.environ.get("VG_VAL_EVERY", "8"))
+# 검증용 표본 수는 최종 평가와 같게 둔다.  CRPS 앙상블 추정량의 편향이
+# E|X-X'|/(2n) 이라 모델 자신의 산포에 비례한다.  n 을 줄이면 분포가 좁은
+# 체크포인트가 덜 벌점을 받아 과신하는 에폭 쪽으로 선택이 기운다.
+VAL_N_SIM    = int(os.environ.get("VG_VAL_NSIM", "1000"))
 VAL_SIM_SEED = 12345      # 에폭 간 검증 잡음을 공통으로 만들기 위한 고정 시드
 
 

@@ -950,6 +950,51 @@ def crps_pooled(sim_paths, actual_paths):
     return float(np.mean(vals)), float(np.std(vals))
 
 
+@torch.no_grad()
+def val_crps_z(model, Xv_dev, Yv_np, last_sp_dev, extra_dev, n_sim, seed,
+               device, chunk_origins=8):
+    """검증셋 z 공간 CRPS.  체크포인트 선택 기준을 베이스라인과 맞추기 위한 것.
+
+    CondVAE/CondGAN 은 표준화 타깃 위에서 val CRPS 로 체크포인트를 고른다
+    (train_vae_gan_baseline.val_crps).  MAC-Flow 만 val NLL 로 고르면 절차가
+    비대칭이라, 여기서 같은 공간·같은 지표를 쓴다.  ar_sample 의 출력과 Yv 가
+    동일한 표준화 공간이므로 그대로 짝지어 잰다 (evaluate_test 의 raw 재스케일
+    전 단계와 같다).
+
+    표본 시드를 매 호출 고정해 에폭 간 비교가 표본 잡음이 아니라 모델 차이를
+    반영하게 하고, 호출 전후로 전역 RNG 상태를 보존해 학습 궤적을 안 건드린다.
+    """
+    was_training = model.training
+    model.eval()
+    cpu_state = torch.get_rng_state()
+    cuda_state = (torch.cuda.get_rng_state_all()
+                  if torch.cuda.is_available() else None)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+    _um_idx = [COND_COLS.index(c) for c in FUTURE_UNMASK_MACRO_COLS
+               if c in COND_COLS]
+    chunks = []
+    for s in range(0, Xv_dev.shape[0], chunk_origins):
+        e = min(Xv_dev.shape[0], s + chunk_origins)
+        chunks.append(model.ar_sample(
+            Xv_dev[s:e, :PAST_LEN, :],
+            Xv_dev[s:e, PAST_LEN:, TBILL_CH],
+            last_sp_dev[s:e], n_sim,
+            extra_context=(extra_dev[s:e] if extra_dev is not None else None),
+            future_macro_z=(Xv_dev[s:e, PAST_LEN:, _um_idx] if _um_idx else None),
+        ).cpu())
+    sim_z = torch.cat(chunks, dim=0).numpy()             # (n_v, n_sim, T)
+
+    torch.set_rng_state(cpu_state)
+    if cuda_state is not None:
+        torch.cuda.set_rng_state_all(cuda_state)
+    if was_training:
+        model.train()
+    return crps_pooled(sim_z, Yv_np)                     # (mean, std)
+
+
 def compute_emd_1d(samples_a, samples_b, n_bins=200):
     lo = float(min(samples_a.min(), samples_b.min()))
     hi = float(max(samples_a.max(), samples_b.max()))
@@ -1106,10 +1151,34 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
                  if x}
     EPOCH_STATES.clear()
 
+    # 체크포인트 선택 기준을 베이스라인과 맞춘다 (FLOW_VAL_CRPS=1).
+    #   베이스라인: 표준화 공간 val CRPS 최저 체크포인트, 조기종료 없음
+    #   본모형(기존): val NLL 최저 체크포인트, 조기종료 patience 30
+    # 논문 결과 표에 NLL 이 없으므로 CRPS 로 맞추는 쪽이 맞다.  켜면 조기종료를
+    # 끄고 max_epoch 까지 돌리며, FLOW_VAL_EVERY 에폭마다 val CRPS 를 잰다.
+    _use_crps = os.environ.get("FLOW_VAL_CRPS", "0") == "1"
+    _crps_every = int(os.environ.get("FLOW_VAL_EVERY", "2"))
+    _crps_nsim = int(os.environ.get("FLOW_VAL_NSIM", "1000"))
+    _crps_chunk = int(os.environ.get("FLOW_VAL_CHUNK", "8"))
+    best_val_crps = float("inf"); best_crps_epoch = -1
+    _last_sp_dev = None
+    if _use_crps:
+        # ar_sample 은 원점의 마지막 관측 sp_z 로 첫 미래 토큰을 씨앗한다.
+        # evaluate_test(:1287-1294) 와 같은 방식으로 검증셋에서 뽑는다.
+        _vm, _zv, _ = compute_valid_mask(val_csv, cond_stats)
+        _nw = _zv.shape[0] - PAST_LEN - FUTURE_LEN + 1
+        _lsp = _zv[PAST_LEN - 1: PAST_LEN - 1 + _nw, SP_CH][_vm].astype(np.float32)
+        if len(_lsp) != Xv.shape[0]:
+            sys.exit(f"[FATAL] val valid mask mismatch: {len(_lsp)} vs {Xv.shape[0]}")
+        _last_sp_dev = torch.from_numpy(_lsp).to(device)
+
     print(f"\n[2] Train  (max_epoch={max_epoch}, patience={patience}, "
           f"batch={batch}, lr={lr}, weight_decay={weight_decay})")
     if _snap_eps:
         print(f"    [에폭 스냅샷] {sorted(_snap_eps)}  (조기종료 해제)")
+    if _use_crps:
+        print(f"    [체크포인트 기준] val CRPS (z 공간, n_sim={_crps_nsim}, "
+              f"{_crps_every} 에폭마다)  — 베이스라인과 동일 절차, 조기종료 해제")
     for ep in range(1, max_epoch + 1):
         model.train()
         losses = []
@@ -1134,15 +1203,38 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
                 Xv_dev, Yv_dev, extra_context=Xv_extra_dev,
             ).mean().item())
 
-        log_rows.append(dict(epoch=ep, train_nll=train_nll, val_nll=val_nll))
+        _row = dict(epoch=ep, train_nll=train_nll, val_nll=val_nll)
         if ep in _snap_eps:
             EPOCH_STATES[ep] = {k: v.detach().cpu().clone()
                                 for k, v in model.state_dict().items()}
+
+        # --- 체크포인트 기준이 CRPS 일 때: 여기서 재고 여기서 고른다 ---
+        _crps_now = None
+        if _use_crps and (ep % _crps_every == 0 or ep == 1 or ep == max_epoch):
+            _crps_now, _crps_sd = val_crps_z(
+                model, Xv_dev, Yv.numpy(), _last_sp_dev, Xv_extra_dev,
+                _crps_nsim, seed, device, chunk_origins=_crps_chunk)
+            _row["val_crps_z"] = _crps_now
+            _row["val_crps_z_std"] = _crps_sd
+            if _crps_now < best_val_crps:
+                best_val_crps = _crps_now
+                best_crps_epoch = ep
+                best_state = {k: v.detach().cpu().clone()
+                              for k, v in model.state_dict().items()}
+            print(f"    ep{ep:>3d}: val CRPS(z) = {_crps_now:.5f}  "
+                  f"(best {best_val_crps:.5f} @ep{best_crps_epoch})"
+                  f"{'  *' if _crps_now <= best_val_crps else ''}")
+
+        log_rows.append(_row)
         improved = val_nll < best_val_nll
         if improved:
             best_val_nll = val_nll
             best_epoch = ep
-            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            # CRPS 기준일 때는 NLL 이 좋아져도 가중치를 덮지 않는다.  best_val_nll /
+            # best_epoch 은 두 기준을 비교할 수 있게 계속 기록만 한다.
+            if not _use_crps:
+                best_state = {k: v.detach().cpu().clone()
+                              for k, v in model.state_dict().items()}
             pat = 0
         else:
             pat += 1
@@ -1153,7 +1245,7 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
                   f"val_nll = {val_nll:+.4f} "
                   f"(per-week {val_nll / FUTURE_LEN:+.3f})   "
                   f"(best {best_val_nll:+.4f} @ep{best_epoch}){mark}")
-        if pat >= patience and not _snap_eps:
+        if pat >= patience and not _snap_eps and not _use_crps:
             print(f"    [early stop] ep{ep}  (patience {patience} from "
                   f"ep{best_epoch})")
             break
@@ -1197,6 +1289,11 @@ def train(fold, train_csv, val_csv, save_path, log_path, summary_path,
         flow_tail_bound=float(FLOW_TAIL_BOUND),
         best_epoch=int(best_epoch), best_val_nll=float(best_val_nll),
         best_val_nll_per_week=float(best_val_nll / FUTURE_LEN),
+        # 어떤 기준으로 가중치를 골랐는지.  두 기준을 같이 남겨 비교할 수 있게 한다.
+        ckpt_criterion=("val_crps_z" if _use_crps else "val_nll"),
+        best_crps_epoch=(int(best_crps_epoch) if _use_crps else None),
+        best_val_crps_z=(float(best_val_crps) if _use_crps
+                         and np.isfinite(best_val_crps) else None),
         n_train=int(n_tr), n_val=int(n_v), n_params=int(n_params),
         seed=int(seed),
         target_stats=target_stats, cond_stats=cond_stats,

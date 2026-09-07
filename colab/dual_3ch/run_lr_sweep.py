@@ -50,6 +50,43 @@ T.MambaFlowAR = fpath_model.MambaFlowARFpath                        # ★ monkey
 
 from train_garch_flow import main_worker                            # noqa: E402
 
+# ---------------------------------------------------------------------------
+# evaluate_test 래핑 — 시험셋 평가 뒤 *검증셋*에도 같은 롤아웃을 한 번 더 돌린다.
+# lr 선택을 시험 지표로 하면 test-set selection 이 된다.  검증셋에서 논문과
+# 같은 정의의 CRPS/커버리지/왜도를 뽑아 그것으로 고른다.
+# ---------------------------------------------------------------------------
+_ORIG_EVAL = T.evaluate_test
+VAL_EVAL = {}          # tag -> val 지표 dict
+
+
+def _eval_with_val(model, best_state, test_csv, cond_stats, target_stats,
+                   result_prefix, n_sim, seed, device, **kw):
+    out = _ORIG_EVAL(model, best_state, test_csv, cond_stats, target_stats,
+                     result_prefix, n_sim, seed, device, **kw)
+    val_csv = test_csv.replace("_test", "_val")
+    if val_csv != test_csv and os.path.exists(val_csv):
+        print("\n[VAL] 같은 롤아웃을 검증셋에 재실행 (lr 선택용)")
+        _pf, _ph = T.plot_fanchart, T.plot_histogram
+        T.plot_fanchart = lambda *a, **k: None      # 그림 생략(시간 절약)
+        T.plot_histogram = lambda *a, **k: None
+        try:
+            v = _ORIG_EVAL(model, best_state, val_csv, cond_stats, target_stats,
+                           result_prefix + "_VAL", n_sim, seed, device, **kw)
+            VAL_EVAL[os.path.basename(result_prefix)] = v
+            with open(result_prefix + "_VAL_summary.json", "w",
+                      encoding="utf-8") as fh:                       # skip 대비 저장
+                json.dump(v, fh, indent=2, default=str)
+        except Exception as e:                                       # noqa: BLE001
+            print(f"[VAL] 실패 {e!r}")
+        finally:
+            T.plot_fanchart, T.plot_histogram = _pf, _ph
+    else:
+        print(f"[VAL] 검증 csv 없음: {val_csv}")
+    return out
+
+
+T.evaluate_test = _eval_with_val
+
 RESULT_DIR = os.path.join(HERE, "result")
 FOLDS_DIR = os.path.join(ROOT, "data", "folds_v33_vix_expanding")
 
@@ -127,16 +164,23 @@ def main():
                 try:
                     with open(sp, encoding="utf-8") as fh:
                         d = json.load(fh)
-                    te = d.get("test_eval", {}) or {}
+                    vp = os.path.join(
+                        RESULT_DIR,
+                        f"garch_flow_ar_{tag}_{fold}_VAL_summary.json")
+                    ve = {}
+                    if os.path.exists(vp):
+                        with open(vp, encoding="utf-8") as fh:
+                            ve = json.load(fh) or {}
                     rows.append(dict(
                         fold=fold, seed=seed, lr=lr,
                         best_val=d.get("best_val_nll"),
                         best_ep=d.get("best_epoch"),
-                        crps=te.get("crps_pooled"),
-                        cov80=te.get("coverage_80"),
-                        cov95=te.get("coverage_95"),
-                        skew_a=te.get("skew_actual"),
-                        skew_s=te.get("skew_sim"),
+                        v_crps=ve.get("crps_pooled"),
+                        v_cov80=ve.get("coverage_80"),
+                        v_cov95=ve.get("coverage_95"),
+                        v_skew_a=ve.get("skew_actual"),
+                        v_skew_s=ve.get("skew_sim"),
+                        _test=(d.get("test_eval", {}) or {}),
                     ))
                 except Exception as e:                               # noqa: BLE001
                     print(f"    [warn] summary 읽기 실패 {e!r}")
@@ -145,31 +189,54 @@ def main():
         print("\n결과 없음")
         return
 
+    def _f(v, fmt, w=9):
+        return fmt.format(v) if isinstance(v, (int, float)) else "-".rjust(w)
+
     print("\n" + "=" * 104)
-    print("[요약]  본모형 spec 고정, lr 만 변경")
+    print("[선택 기준]  검증셋(val) 지표만.  시험셋은 lr 선택에 쓰지 않는다.")
     print("=" * 104)
-    hdr = ("{:16} {:>6} {:>8} {:>10} {:>8} {:>9} {:>8} {:>8} {:>9} {:>9}"
-           .format("fold", "seed", "lr", "best_val", "best_ep",
-                   "CRPS", "cov80", "cov95", "skew실측", "skew모형"))
+    hdr = ("{:16} {:>6} {:>8} {:>10} {:>8} {:>10} {:>8} {:>8} {:>10} {:>10}"
+           .format("fold", "seed", "lr", "val_NLL", "best_ep",
+                   "val_CRPS", "v_cov80", "v_cov95", "v_skew실측", "v_skew모형"))
     print(hdr)
     print("-" * len(hdr))
-
-    def _f(v, fmt):
-        return fmt.format(v) if isinstance(v, (int, float)) else "{:>9}".format("-")
-
     for r in rows:
-        print("{:16} {:>6} {:>8.0e} {:>10} {:>8} {:>9} {:>8} {:>8} {:>9} {:>9}".format(
-            r["fold"], r["seed"], r["lr"],
-            _f(r["best_val"], "{:.4f}"), r["best_ep"] if r["best_ep"] else "-",
-            _f(r["crps"], "{:.5f}"), _f(r["cov80"], "{:.3f}"),
-            _f(r["cov95"], "{:.3f}"), _f(r["skew_a"], "{:+.4f}"),
-            _f(r["skew_s"], "{:+.4f}")))
+        print("{:16} {:>6} {:>8.0e} {:>10} {:>8} {:>10} {:>8} {:>8} {:>10} {:>10}"
+              .format(r["fold"], r["seed"], r["lr"],
+                      _f(r["best_val"], "{:.4f}", 10),
+                      r["best_ep"] if r["best_ep"] else "-",
+                      _f(r["v_crps"], "{:.5f}", 10),
+                      _f(r["v_cov80"], "{:.3f}", 8),
+                      _f(r["v_cov95"], "{:.3f}", 8),
+                      _f(r["v_skew_a"], "{:+.4f}", 10),
+                      _f(r["v_skew_s"], "{:+.4f}", 10)))
 
-    base = [r for r in rows if abs(r["lr"] - 1e-4) < 1e-12]
-    if base and len(rows) > len(base):
-        b = base[0]
-        print(f"\n기준 lr=1e-4 : best_val={b['best_val']} @ep{b['best_ep']}")
-        print("best_val 이 더 낮아지면 과소학습, 더 높아지면 lr 과다.")
+    # lr 별 시드 평균(val 기준)
+    print("\n[lr 별 시드 평균 — val]")
+    print("{:>8} {:>4} {:>10} {:>8} {:>10} {:>8} {:>8} {:>10}".format(
+        "lr", "n", "val_NLL", "best_ep", "val_CRPS", "v_cov80", "v_cov95",
+        "v_skew모형"))
+    for lr in sorted({r["lr"] for r in rows}):
+        g = [r for r in rows if r["lr"] == lr]
+
+        def _m(key):
+            v = [r[key] for r in g if isinstance(r[key], (int, float))]
+            return sum(v) / len(v) if v else None
+
+        print("{:>8.0e} {:>4} {:>10} {:>8} {:>10} {:>8} {:>8} {:>10}".format(
+            lr, len(g), _f(_m("best_val"), "{:.4f}", 10),
+            _f(_m("best_ep"), "{:.1f}", 8), _f(_m("v_crps"), "{:.5f}", 10),
+            _f(_m("v_cov80"), "{:.3f}", 8), _f(_m("v_cov95"), "{:.3f}", 8),
+            _f(_m("v_skew_s"), "{:+.4f}", 10)))
+
+    print("\nlr 은 위 val 표로만 고른다.  고른 뒤에 시험셋을 본다.")
+    if os.environ.get("LRS_SHOW_TEST", "0") == "1":
+        print("\n[시험셋 — 선택 후 확인용]")
+        for r in rows:
+            t = r["_test"]
+            print("  lr={:.0e} seed={}  CRPS={} cov80={} skew={}".format(
+                r["lr"], r["seed"], t.get("crps_pooled"),
+                t.get("coverage_80"), t.get("skew_sim")))
 
 
 if __name__ == "__main__":
