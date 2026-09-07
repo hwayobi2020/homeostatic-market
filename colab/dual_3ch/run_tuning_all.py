@@ -107,6 +107,12 @@ LR_GRID = {
 }
 BASE_LR = {"flow": 1e-4, "vae": 5e-4, "gan": 1e-4}      # 게재 판본 값
 
+# MAC-Flow 는 weight_decay 도 같이 흔든다.  lr 을 10 배 올려도 best epoch 이
+# 3~4 에 머무는 것은 학습률이 병목이 아니라는 뜻이고, LOCKED 의 weight_decay=0.5
+# 는 train_garch_flow CLI 기본값 0.01 의 50 배다.
+WD_GRID = [float(x) for x in _env_list("TUNE_WD_FLOW", "0.5,0.1,0.01")]
+BASE_WD = 0.5                                           # 게재 판본 값
+
 OUT = os.path.join(RESULT_DIR, "tuning_all.json")
 
 
@@ -121,14 +127,16 @@ def flow_setup():
     T.ENCODER_MASK_SP = False
 
 
-def flow_cell(fold, seed, lr):
-    """MAC-Flow 한 셀.  태그 규약은 run_lr_sweep 과 같아 결과가 재사용된다.
+def flow_cell(fold, seed, lr, wd=BASE_WD):
+    """MAC-Flow 한 셀.  wd=0.5 일 때 태그가 run_lr_sweep 과 같아 결과가 재사용된다.
 
     시험셋 summary 만 있고 VAL summary 가 없는 셀은 다시 돌린다.  lr 선택 기준이
     val 지표라, 그게 없는 셀은 재사용해도 표에서 빈칸으로 남는다 (VAL 롤아웃이
     run_lr_sweep 에 추가되기 전 판본으로 돌린 셀이 이 경우다).
     """
-    tag = f"rvAbl_full_fpath_novol_lr{LRS.lr_tag(lr)}_d{FPATH_DIM}_s{seed}"
+    wd_sfx = "" if abs(wd - BASE_WD) < 1e-12 else f"_wd{LRS.lr_tag(wd)}"
+    tag = (f"rvAbl_full_fpath_novol_lr{LRS.lr_tag(lr)}{wd_sfx}"
+           f"_d{FPATH_DIM}_s{seed}")
     sp = os.path.join(RESULT_DIR, f"garch_flow_ar_{tag}_{fold}_summary.json")
     vp = os.path.join(RESULT_DIR, f"garch_flow_ar_{tag}_{fold}_VAL_summary.json")
     have = os.path.exists(sp)
@@ -138,7 +146,7 @@ def flow_cell(fold, seed, lr):
         have = False
     if not have:
         spec = dict(LRS.LOCKED)
-        spec.update(fold=fold, seed=seed, tag=tag, lr=lr)
+        spec.update(fold=fold, seed=seed, tag=tag, lr=lr, weight_decay=wd)
         t0 = time.time()
         LRS.main_worker(spec)
         print(f"    done ({time.time() - t0:.0f}s)")
@@ -221,24 +229,31 @@ def main():
                 print(f"  [skip {fold}] CSV 없음: {missing}")
                 continue
             for seed in SEEDS:
+                # weight_decay 는 MAC-Flow 에서만 흔든다 (베이스라인은 미사용).
+                wds = WD_GRID if mk == "flow" else [None]
                 for lr in LR_GRID[mk]:
-                    print(f"\n  [{mk}] fold={fold} seed={seed} lr={lr:g}")
-                    try:
-                        if mk == "flow":
-                            c = flow_cell(fold, seed, lr)
-                        else:
-                            c = baseline_cell(mk, fold, seed, lr, device)
-                    except Exception as e:                        # noqa: BLE001
-                        print(f"    [FAIL] {e!r}")
-                        continue
-                    v = c["val"] or {}
-                    rows.append(dict(
-                        model=mk, fold=fold, seed=seed, lr=lr,
-                        best_epoch=c.get("best_epoch"),
-                        v_crps=v.get("crps_pooled"), v_cov80=v.get("coverage_80"),
-                        v_cov95=v.get("coverage_95"), v_skew_a=v.get("skew_actual"),
-                        v_skew_s=v.get("skew_sim"),
-                        _test=c["test"]))
+                    for wd in wds:
+                        label = (f"lr={lr:g}" if wd is None
+                                 else f"lr={lr:g} wd={wd:g}")
+                        print(f"\n  [{mk}] fold={fold} seed={seed} {label}")
+                        try:
+                            if mk == "flow":
+                                c = flow_cell(fold, seed, lr, wd)
+                            else:
+                                c = baseline_cell(mk, fold, seed, lr, device)
+                        except Exception as e:                    # noqa: BLE001
+                            print(f"    [FAIL] {e!r}")
+                            continue
+                        v = c["val"] or {}
+                        rows.append(dict(
+                            model=mk, fold=fold, seed=seed, lr=lr, wd=wd,
+                            best_epoch=c.get("best_epoch"),
+                            v_crps=v.get("crps_pooled"),
+                            v_cov80=v.get("coverage_80"),
+                            v_cov95=v.get("coverage_95"),
+                            v_skew_a=v.get("skew_actual"),
+                            v_skew_s=v.get("skew_sim"),
+                            _test=c["test"]))
 
     if not rows:
         print("\n결과 없음")
@@ -251,14 +266,16 @@ def main():
     print("\n" + "=" * 108)
     print("[셀별 — 검증셋 지표만.  시험셋은 lr 선택에 쓰지 않는다]")
     print("=" * 108)
-    hdr = ("{:6} {:16} {:>6} {:>8} {:>8} {:>10} {:>8} {:>8} {:>11} {:>11}"
-           .format("model", "fold", "seed", "lr", "best_ep", "val_CRPS",
+    hdr = ("{:6} {:16} {:>6} {:>8} {:>7} {:>8} {:>10} {:>8} {:>8} {:>11} {:>11}"
+           .format("model", "fold", "seed", "lr", "wd", "best_ep", "val_CRPS",
                    "v_cov80", "v_cov95", "v_skew실측", "v_skew모형"))
     print(hdr)
     print("-" * len(hdr))
     for r in rows:
-        print("{:6} {:16} {:>6} {:>8.0e} {:>8} {:>10} {:>8} {:>8} {:>11} {:>11}"
+        print("{:6} {:16} {:>6} {:>8.0e} {:>7} {:>8} {:>10} {:>8} {:>8} "
+              "{:>11} {:>11}"
               .format(r["model"], r["fold"], r["seed"], r["lr"],
+                      _f(r.get("wd"), "{:g}", 7),
                       r["best_epoch"] if r["best_epoch"] is not None else "-",
                       _f(r["v_crps"], "{:.5f}", 10),
                       _f(r["v_cov80"], "{:.3f}", 8),
@@ -269,42 +286,55 @@ def main():
     print("\n" + "=" * 108)
     print("[모델 × lr — 폴드·시드 평균 (선택 기준: 평균 val_CRPS 최소)]")
     print("=" * 108)
-    hdr2 = ("{:6} {:>8} {:>4} {:>8} {:>10} {:>8} {:>8} {:>11}"
-            .format("model", "lr", "n", "best_ep", "val_CRPS", "v_cov80",
+    hdr2 = ("{:6} {:>8} {:>7} {:>4} {:>8} {:>10} {:>8} {:>8} {:>11}"
+            .format("model", "lr", "wd", "n", "best_ep", "val_CRPS", "v_cov80",
                     "v_cov95", "v_skew모형"))
     print(hdr2)
     print("-" * len(hdr2))
     chosen = {}
     for mk in MODELS:
         cand = []
+        wds = WD_GRID if mk == "flow" else [None]
         for lr in LR_GRID[mk]:
-            g = [r for r in rows if r["model"] == mk and r["lr"] == lr]
-            if not g:
-                continue
-            mc = _mean(g, "v_crps")
-            cand.append((mc, lr))
-            mark = "  (게재 판본)" if abs(lr - BASE_LR[mk]) < 1e-12 else ""
-            print("{:6} {:>8.0e} {:>4} {:>8} {:>10} {:>8} {:>8} {:>11}{}"
-                  .format(mk, lr, len(g), _f(_mean(g, "best_epoch"), "{:.1f}", 8),
-                          _f(mc, "{:.5f}", 10),
-                          _f(_mean(g, "v_cov80"), "{:.3f}", 8),
-                          _f(_mean(g, "v_cov95"), "{:.3f}", 8),
-                          _f(_mean(g, "v_skew_s"), "{:+.4f}", 11), mark))
+            for wd in wds:
+                g = [r for r in rows if r["model"] == mk and r["lr"] == lr
+                     and r.get("wd") == wd]
+                if not g:
+                    continue
+                mc = _mean(g, "v_crps")
+                cand.append((mc, lr, wd))
+                base = (abs(lr - BASE_LR[mk]) < 1e-12
+                        and (wd is None or abs(wd - BASE_WD) < 1e-12))
+                print("{:6} {:>8.0e} {:>7} {:>4} {:>8} {:>10} {:>8} {:>8} {:>11}{}"
+                      .format(mk, lr, _f(wd, "{:g}", 7), len(g),
+                              _f(_mean(g, "best_epoch"), "{:.1f}", 8),
+                              _f(mc, "{:.5f}", 10),
+                              _f(_mean(g, "v_cov80"), "{:.3f}", 8),
+                              _f(_mean(g, "v_cov95"), "{:.3f}", 8),
+                              _f(_mean(g, "v_skew_s"), "{:+.4f}", 11),
+                              "  (게재 판본)" if base else ""))
         cand = [c for c in cand if isinstance(c[0], (int, float))]
         if cand:
-            chosen[mk] = min(cand)[1]
+            _, lr, wd = min(cand, key=lambda c: c[0])
+            chosen[mk] = (lr, wd)
 
     print("\n[선택 결과 — 평균 val CRPS 기준]")
-    for mk, lr in chosen.items():
-        same = abs(lr - BASE_LR[mk]) < 1e-12
-        print(f"  {mk:5} lr = {lr:g}"
-              + ("  (게재 판본과 같음)" if same
-                 else f"  ← 게재 판본 {BASE_LR[mk]:g} 에서 변경"))
+    for mk, (lr, wd) in chosen.items():
+        same = (abs(lr - BASE_LR[mk]) < 1e-12
+                and (wd is None or abs(wd - BASE_WD) < 1e-12))
+        cur = f"lr = {lr:g}" + ("" if wd is None else f", weight_decay = {wd:g}")
+        old = (f"lr {BASE_LR[mk]:g}"
+               + ("" if wd is None else f", weight_decay {BASE_WD:g}"))
+        print(f"  {mk:5} {cur}"
+              + ("  (게재 판본과 같음)" if same else f"  ← 게재 판본 {old} 에서 변경"))
     if len(SEEDS) == 1:
-        print("\n시드 1 개 결과다.  고른 lr 로 5 시드 재학습해 안정성을 확인해야 한다:")
-        for mk, lr in chosen.items():
-            print(f"  TUNE_MODELS={mk} TUNE_LR_{mk.upper()}={lr:g} "
-                  f"TUNE_SEEDS=2026,2027,2028,2029,2030")
+        print("\n시드 1 개 결과다.  고른 값으로 5 시드 재학습해 안정성을 확인해야 한다:")
+        for mk, (lr, wd) in chosen.items():
+            cmd = (f"  TUNE_MODELS={mk} TUNE_LR_{mk.upper()}={lr:g} "
+                   f"TUNE_SEEDS=2026,2027,2028,2029,2030")
+            if wd is not None:
+                cmd += f" TUNE_WD_FLOW={wd:g}"
+            print(cmd)
 
     if os.environ.get("TUNE_SHOW_TEST", "0") == "1":
         print("\n[시험셋 — lr 확정 후 확인용]")
