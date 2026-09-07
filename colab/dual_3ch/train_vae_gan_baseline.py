@@ -63,6 +63,7 @@ KL_ANNEAL = 60        # epochs to ramp beta 0 -> 1
 # best checkpoint 를 고른다.  GAN 은 우도가 없어 ELBO/NLL 을 쓸 수 없으므로 VAE·GAN
 # 공통으로 val CRPS(z 공간, proper scoring rule)를 기준으로 삼는다.
 VAL_SELECT   = os.environ.get("VG_VAL_SELECT", "1") == "1"
+EVAL_VAL     = os.environ.get("VG_EVAL_VAL", "0") == "1"   # lr 선택용 val 전체평가
 VAL_EVERY    = int(os.environ.get("VG_VAL_EVERY", "10"))    # 몇 에폭마다 검증할지
 VAL_N_SIM    = int(os.environ.get("VG_VAL_NSIM", "200"))    # 검증용 표본 수
 VAL_SIM_SEED = 12345      # 에폭 간 검증 잡음을 공통으로 만들기 위한 고정 시드
@@ -236,6 +237,99 @@ def _snapshot(module):
     return {k: v.detach().cpu().clone() for k, v in module.state_dict().items()}
 
 
+def _sk(a):
+    a = np.asarray(a, float); m = a.mean(); s = a.std() + 1e-12
+    return float(np.mean(((a - m) / s) ** 3))
+
+
+def _ek(a):
+    a = np.asarray(a, float); m = a.mean(); s = a.std() + 1e-12
+    return float(np.mean(((a - m) / s) ** 4) - 3.0)
+
+
+# =====================================================================
+# Evaluate a trained generator on one split (val or test)
+# =====================================================================
+def evaluate_split(gen, model_kind, fold, split_csv, cond_stats, target_stats,
+                   n_sim, device, label):
+    """train_garch_flow.evaluate_test 와 같은 정의로 한 split 을 평가한다.
+
+    lr 같은 상위 하이퍼파라미터를 *검증셋* 지표로 고르려면 시험셋과 동일한
+    롤아웃·재스케일·지표 정의를 검증셋에도 적용해야 한다.  그래서 이 함수를
+    val/test 공용으로 쓴다 (예전에는 test 전용으로 run_fold 안에 박혀 있었다).
+    """
+    gen.eval()
+    Xs, Ys, _, _, _ = cached_load_windows_seq(
+        split_csv, cond_stats=cond_stats, target_stats=target_stats)
+    valid_mask, _, df_s = compute_valid_mask(split_csv, cond_stats)
+    n_orig = Xs.shape[0]
+
+    sims = []
+    for s in range(0, n_orig, 16):
+        sims.append(gen.generate(Xs[s:s + 16].to(device), n_sim).cpu().numpy())
+    sim_paths_z = np.concatenate(sims, axis=0)                 # (n_orig, n_sim, T)
+
+    tmu = float(target_stats["mean"]); tsd = float(target_stats["std"])
+    sim_zt = sim_paths_z * tsd + tmu
+    actual_zt = Ys.numpy() * tsd + tmu
+
+    # raw rescale (same as garch_flow, look-ahead 제거):
+    #   actual = filtered σ (realized) 복원 = 실현 수익률 (정답 라벨, 누수 아님)
+    #   sim    = origin 부터 forward GARCH σ 예측 (미래 실현 σ 안 씀)
+    for _c in ("garch_omega", "garch_alpha", "garch_beta"):
+        if _c not in df_s.columns:
+            raise SystemExit(f"[FATAL] {label} csv lacks {_c} -> *_garch.csv 재생성 "
+                             "필요 (garch_preprocess_fold 최신 버전으로)")
+    gsig = df_s["garch_sigma"].to_numpy(float)
+    gmu = df_s["garch_mu"].to_numpy(float)
+    gz = df_s["sp_return"].to_numpy(float)               # = z_t (표준화 잔차)
+    oidx = np.where(valid_mask)[0]
+    sig = np.array([[gsig[int(oidx[i]) + PAST_LEN + t] for t in range(FUTURE_LEN)]
+                    for i in range(n_orig)])
+    mu = np.array([[gmu[int(oidx[i]) + PAST_LEN + t] for t in range(FUTURE_LEN)]
+                   for i in range(n_orig)])
+    actual_raw = actual_zt * sig + mu                    # 실현 수익률 복원
+    om = float(df_s["garch_omega"].iloc[0]); al = float(df_s["garch_alpha"].iloc[0])
+    be = float(df_s["garch_beta"].iloc[0]); mu_c = float(gmu[0])
+    orow = oidx + (PAST_LEN - 1)                         # origin (마지막 관측) 행
+    s2_orig = gsig[orow] ** 2
+    e2_orig = (gz[orow] * gsig[orow]) ** 2               # ε_origin = z_origin·σ_origin
+    sim_paths_raw = forward_garch_rescale(sim_zt, s2_orig, e2_orig,
+                                          om, al, be, mu_c)
+
+    af = actual_raw.ravel(); sf = sim_paths_raw.ravel()
+    crps_m, _ = crps_pooled(sim_paths_raw, actual_raw)
+    emd = compute_emd_1d(af, sf, n_bins=200)
+    std_a, std_s = float(af.std(ddof=1)), float(sf.std(ddof=1))
+
+    # 커버리지: MAC-Flow(train_garch_flow.evaluate_test) 와 동일하게 *전역 풀링* 구간.
+    #   전 origin × 전 sim × 전 시점을 합친 분포에서 백분위 한 쌍을 뽑아 전부를 판정한다.
+    #   (이전에는 axis=1 원점별이라 MAC-Flow 와 정의가 달랐다.)
+    cov = {}
+    for lvl, lo, hi in [(50, 25, 75), (80, 10, 90), (95, 2.5, 97.5)]:
+        L_, H_ = np.percentile(sf, lo), np.percentile(sf, hi)
+        cov[lvl] = float(((af >= L_) & (af <= H_)).mean())
+    cv1a, cv1s = compute_cvar(af, 0.01), compute_cvar(sf, 0.01)
+
+    m = dict(crps_pooled=crps_m, emd=emd, std_ratio=std_s / std_a,
+             coverage_50=cov[50], coverage_80=cov[80], coverage_95=cov[95],
+             cvar_1pct_diff=cv1s - cv1a,
+             skew_actual=_sk(af), skew_sim=_sk(sf),
+             exkurt_actual=_ek(af), exkurt_sim=_ek(sf))
+
+    print(f"\n[{model_kind.upper()} {label}]  fold={fold}  (n_sim={n_sim}, "
+          f"origins={n_orig})")
+    print(f"    CRPS pooled       = {crps_m:.5f}")
+    print(f"    EMD               = {emd:.6f}")
+    print(f"    std act/sim/ratio = {std_a:.5f} / {std_s:.5f} / {std_s / std_a:.3f}")
+    print(f"    skew act/sim      = {m['skew_actual']:+.4f} / {m['skew_sim']:+.4f}")
+    print(f"    exkurt act/sim    = {m['exkurt_actual']:+.4f} / {m['exkurt_sim']:+.4f}")
+    print(f"    CVaR1 act/sim/D   = {cv1a:+.5f} / {cv1s:+.5f} / {cv1s - cv1a:+.5f}")
+    print(f"    cov 50/80/95      = {cov[50]:.3f} / {cov[80]:.3f} / {cov[95]:.3f}")
+
+    return dict(metrics=m, sim=sim_paths_raw, act=actual_raw, oidx=oidx)
+
+
 # =====================================================================
 # Train + eval for one fold
 # =====================================================================
@@ -246,6 +340,13 @@ def run_fold(model_kind, fold, args, device):
     Xtr, Ytr, cond_stats, target_stats, n_tr = cached_load_windows_seq(train_csv)
     print(f"  train windows = {n_tr}, X={tuple(Xtr.shape)}")
     torch.manual_seed(args.seed); np.random.seed(args.seed)
+
+    # lr 은 args 로 덮어쓸 수 있다 (스윕용).  없으면 모듈 기본값.
+    lr = getattr(args, "lr", None)
+    if lr is None:
+        lr = LR_VAE if model_kind == "vae" else LR_GAN
+    lr = float(lr)
+    print(f"  lr = {lr:g}  seed = {args.seed}")
 
     Xva = Yva = None
     if VAL_SELECT:
@@ -273,7 +374,7 @@ def run_fold(model_kind, fold, args, device):
 
     if model_kind == "vae":
         model = CondVAE().to(device)
-        opt = torch.optim.Adam(model.parameters(), lr=LR_VAE)
+        opt = torch.optim.Adam(model.parameters(), lr=lr)
         for ep in range(1, EPOCHS + 1):
             model.train(); beta = min(1.0, ep / KL_ANNEAL)
             losses = []
@@ -293,8 +394,8 @@ def run_fold(model_kind, fold, args, device):
 
     else:  # gan (WGAN-GP)
         G, Dc = Generator().to(device), Critic().to(device)
-        optG = torch.optim.Adam(G.parameters(), lr=LR_GAN, betas=(0.0, 0.9))
-        optD = torch.optim.Adam(Dc.parameters(), lr=LR_GAN, betas=(0.0, 0.9))
+        optG = torch.optim.Adam(G.parameters(), lr=lr, betas=(0.0, 0.9))
+        optD = torch.optim.Adam(Dc.parameters(), lr=lr, betas=(0.0, 0.9))
         it = 0
         for ep in range(1, EPOCHS + 1):
             G.train(); Dc.train(); dl_loss = []
@@ -330,106 +431,45 @@ def run_fold(model_kind, fold, args, device):
         print(f"  [checkpoint] val CRPS 최저 ep{best['epoch']} "
               f"({best['crps']:.5f}) 복원  (마지막 에폭 {EPOCHS} 아님)")
 
-    # ---------- evaluate (mirror train_garch_flow.evaluate_test) ----------
-    gen.eval()
-    Xte, Yte, _, _, n_te = cached_load_windows_seq(
-        test_csv, cond_stats=cond_stats, target_stats=target_stats)
-    valid_mask, _, df_te = compute_valid_mask(test_csv, cond_stats)
-    n_orig = Xte.shape[0]
+    # ---------- evaluate ----------
+    # lr 등 상위 하이퍼파라미터를 고를 때는 *검증셋* 지표만 본다 (시험셋으로 고르면
+    # test-set selection).  VG_EVAL_VAL=1 이면 시험셋과 같은 정의로 검증셋도 평가한다.
+    val_metrics = None
+    if EVAL_VAL:
+        val_metrics = evaluate_split(gen, model_kind, fold, val_csv, cond_stats,
+                                     target_stats, args.n_sim, device,
+                                     "VAL")["metrics"]
 
-    # generate in chunks
-    sims = []
-    for s in range(0, n_orig, 16):
-        xb = Xte[s:s + 16].to(device)
-        sims.append(gen.generate(xb, args.n_sim).cpu().numpy())
-    sim_paths_z = np.concatenate(sims, axis=0)                 # (n_orig, n_sim, T)
-    actual_z = Yte.numpy()
+    te = evaluate_split(gen, model_kind, fold, test_csv, cond_stats,
+                        target_stats, args.n_sim, device, "TEST")
+    sim_paths_raw, actual_raw, oidx = te["sim"], te["act"], te["oidx"]
+    n_orig = sim_paths_raw.shape[0]
 
-    tmu = float(target_stats["mean"]); tsd = float(target_stats["std"])
-    sim_zt = sim_paths_z * tsd + tmu
-    actual_zt = actual_z * tsd + tmu
-
-    # raw rescale (same as garch_flow, look-ahead 제거):
-    #   actual = filtered σ (realized) 복원 = 실현 수익률 (정답 라벨, 누수 아님)
-    #   sim    = origin 부터 forward GARCH σ 예측 (미래 실현 σ 안 씀)
-    for _c in ("garch_omega", "garch_alpha", "garch_beta"):
-        if _c not in df_te.columns:
-            raise SystemExit(f"[FATAL] test csv lacks {_c} -> *_garch.csv 재생성 필요 "
-                             "(garch_preprocess_fold 최신 버전으로)")
-    gsig = df_te["garch_sigma"].to_numpy(float)
-    gmu = df_te["garch_mu"].to_numpy(float)
-    gz = df_te["sp_return"].to_numpy(float)              # = z_t (표준화 잔차)
-    oidx = np.where(valid_mask)[0]
-    sig = np.array([[gsig[int(oidx[i]) + PAST_LEN + t] for t in range(FUTURE_LEN)]
-                    for i in range(n_orig)])
-    mu = np.array([[gmu[int(oidx[i]) + PAST_LEN + t] for t in range(FUTURE_LEN)]
-                   for i in range(n_orig)])
-    actual_raw = actual_zt * sig + mu                    # 실현 수익률 복원
-    om = float(df_te["garch_omega"].iloc[0]); al = float(df_te["garch_alpha"].iloc[0])
-    be = float(df_te["garch_beta"].iloc[0]); mu_c = float(gmu[0])
-    orow = oidx + (PAST_LEN - 1)                         # origin (마지막 관측) 행
-    s2_orig = gsig[orow] ** 2
-    e2_orig = (gz[orow] * gsig[orow]) ** 2               # ε_origin = z_origin·σ_origin
-    sim_paths_raw = forward_garch_rescale(sim_zt, s2_orig, e2_orig, om, al, be, mu_c)
-
-    af = actual_raw.ravel(); sf = sim_paths_raw.ravel()
-    crps_m, _ = crps_pooled(sim_paths_raw, actual_raw)
-    emd = compute_emd_1d(af, sf, n_bins=200)
-    std_a, std_s = float(af.std(ddof=1)), float(sf.std(ddof=1))
-
-    def _sk(a):
-        a = np.asarray(a, float); m = a.mean(); s = a.std() + 1e-12
-        return float(np.mean(((a - m) / s) ** 3))
-
-    def _ek(a):
-        a = np.asarray(a, float); m = a.mean(); s = a.std() + 1e-12
-        return float(np.mean(((a - m) / s) ** 4) - 3.0)
-
-    # 커버리지: MAC-Flow(train_garch_flow.evaluate_test) 와 동일하게 *전역 풀링* 구간.
-    #   전 origin × 전 sim × 전 시점을 합친 분포에서 백분위 한 쌍을 뽑아 전부를 판정한다.
-    #   (이전에는 axis=1 원점별이라 MAC-Flow 와 정의가 달랐다.)
-    cov = {}
-    for lvl, lo, hi in [(50, 25, 75), (80, 10, 90), (95, 2.5, 97.5)]:
-        L_, H_ = np.percentile(sf, lo), np.percentile(sf, hi)
-        cov[lvl] = float(((af >= L_) & (af <= H_)).mean())
-    cv1a, cv1s = compute_cvar(af, 0.01), compute_cvar(sf, 0.01)
-
-
-    print(f"\n[{model_kind.upper()}]  fold={fold}  (n_sim={args.n_sim})")
-    print(f"    CRPS pooled       = {crps_m:.5f}")
-    print(f"    EMD               = {emd:.6f}")
-    print(f"    std act/sim/ratio = {std_a:.5f} / {std_s:.5f} / {std_s / std_a:.3f}")
-    print(f"    skew act/sim      = {_sk(af):+.4f} / {_sk(sf):+.4f}")
-    print(f"    exkurt act/sim    = {_ek(af):+.4f} / {_ek(sf):+.4f}")
-    print(f"    CVaR1 act/sim/D   = {cv1a:+.5f} / {cv1s:+.5f} / {cv1s - cv1a:+.5f}")
-    print(f"    cov 50/80/95      = {cov[50]:.3f} / {cov[80]:.3f} / {cov[95]:.3f}")
+    tag = getattr(args, "tag", "") or ""
+    os.makedirs(args.out_dir, exist_ok=True)
 
     # per-(origin,step) CRPS for paired DM test vs garch-flow (same origins/order)
     per_oc = np.array([[crps_ensemble_sample(sim_paths_raw[i, :, t], actual_raw[i, t])
                         for t in range(FUTURE_LEN)] for i in range(n_orig)])
-    os.makedirs(args.out_dir, exist_ok=True)
     np.save(os.path.join(args.out_dir,
-            f"{model_kind}_baseline_{fold}_crps_per_origin.npy"), per_oc)
+            f"{model_kind}_baseline{tag}_{fold}_crps_per_origin.npy"), per_oc)
 
     summ = dict(model=f"cond-{model_kind}", fold=fold, n_sim=args.n_sim,
-                seed=int(args.seed),
+                seed=int(args.seed), lr=float(lr),
                 val_select=bool(VAL_SELECT),
                 best_epoch=int(best["epoch"]),
-                best_val_crps=(float(best["crps"])
-                               if np.isfinite(best["crps"]) else None),
+                best_val_crps_z=(float(best["crps"])
+                                 if np.isfinite(best["crps"]) else None),
                 epochs_max=EPOCHS,
-                test_eval=dict(crps_pooled=crps_m, emd=emd, std_ratio=std_s / std_a,
-                               coverage_50=cov[50], coverage_80=cov[80],
-                               coverage_95=cov[95], cvar_1pct_diff=cv1s - cv1a,
-                               skew_actual=_sk(af), skew_sim=_sk(sf),
-                               exkurt_actual=_ek(af), exkurt_sim=_ek(sf)))
-    os.makedirs(args.out_dir, exist_ok=True)
-    sp = os.path.join(args.out_dir, f"{model_kind}_baseline_{fold}_summary.json")
+                val_eval=val_metrics,
+                test_eval=te["metrics"])
+    sp = os.path.join(args.out_dir,
+                      f"{model_kind}_baseline{tag}_{fold}_summary.json")
     json.dump(summ, open(sp, "w"), indent=2, default=str)
     print(f"    saved {os.path.basename(sp)}")
     # pred_start = 예측 대상 첫 주의 test CSV 행 번호 (창 w 의 past 52 주 다음).
     return dict(sim=sim_paths_raw, act=actual_raw,
-                pred_start=oidx + PAST_LEN)
+                pred_start=oidx + PAST_LEN, summary=summ)
 
 
 def main():
@@ -442,6 +482,10 @@ def main():
     ap.add_argument("--out-dir", default=os.path.join(HERE, "result"))
     ap.add_argument("--n-sim", type=int, default=1000)
     ap.add_argument("--seed", type=int, default=2026)
+    ap.add_argument("--lr", type=float, default=None,
+                    help="없으면 모듈 기본값 (vae 5e-4 / gan 1e-4)")
+    ap.add_argument("--tag", default="",
+                    help="결과 파일명 접미사 (스윕에서 셀 구분용)")
     args = ap.parse_args()
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"[{args.model}-baseline] fold={args.fold} device={device}")
