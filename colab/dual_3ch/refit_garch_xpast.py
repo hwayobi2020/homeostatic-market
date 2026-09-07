@@ -131,13 +131,19 @@ def one_fold(fold):
             d = json.load(fh)
         old = d.get("params") or {}
 
+    # 학습기간 실측 왜도.  λ 는 상수라 학습기간의 *평균* 비대칭 하나만 잡는다.
+    # 학습기간에 위기가 없으면 λ̂ 이 작게 나오고, 시험기간 위기의 큰 음의 왜도는
+    # 애초에 낼 수 없다.  적합 실패와 구조적 한계를 구분하려면 이 값이 필요하다.
+    _z = (y - y.mean()) / (y.std() + 1e-12)
+    skew_train = float(np.mean(_z ** 3))
     sk = sample_skew(nu, lam)
     print(f"  재적합: mu={mu:+.6f} om={om:.3e} al={al:.4f} be={be:.4f} "
           f"g_tbill={g1:+.4f} g_metab={g2:+.4f} nu={nu:.2f} lam={lam:+.5f}")
     if old:
         print(f"  기존값: al={old.get('alpha'):.4f} be={old.get('beta'):.4f} "
               f"nu={old.get('nu'):.2f} lam={old.get('lambda_skew'):+.5f}")
-    print(f"  혁신 왜도(λ,ν 로부터) = {sk:+.4f}")
+    print(f"  학습기간 실측 왜도 = {skew_train:+.4f}   "
+          f"혁신 왜도(λ,ν 로부터) = {sk:+.4f}")
     print(f"  우도비 λ=0 검정: LR={lr:.3f}  p={pval:.4g}"
           f"   → {'λ 는 0 과 유의하게 다르다' if pval < 0.05 else 'λ=0 을 기각 못 한다'}")
 
@@ -149,7 +155,7 @@ def one_fold(fold):
                             beta=float(be), gamma_tbill=float(g1),
                             gamma_metab=float(g2), nu=float(nu),
                             lambda_skew=float(lam)),
-                innov_skew=sk, old_params=old)
+                innov_skew=sk, skew_train=skew_train, old_params=old)
 
 
 def main():
@@ -176,8 +182,8 @@ def main():
     print("\n" + "=" * 100)
     print("[재적합 요약]  괄호 안은 기존(조기 종료) 값")
     print("=" * 100)
-    hdr = ("{:18} {:>18} {:>14} {:>14} {:>10} {:>10} {:>10}"
-           .format("fold", "lambda", "nu", "alpha", "innov_skew",
+    hdr = ("{:18} {:>18} {:>14} {:>11} {:>11} {:>9} {:>9}"
+           .format("fold", "lambda", "nu", "skew_train", "innov_skew",
                    "LR", "p"))
     print(hdr)
     print("-" * len(hdr))
@@ -189,11 +195,11 @@ def main():
             return (f"{s} ({format(o[key], spec)})"
                     if isinstance(o.get(key), (int, float)) else s)
 
-        print("{:18} {:>18} {:>14} {:>14} {:>10} {:>10} {:>10}".format(
+        print("{:18} {:>18} {:>14} {:>11} {:>11} {:>9} {:>9}".format(
             r["fold"],
             pair(p["lambda_skew"], "lambda_skew", "+.4f"),
             pair(p["nu"], "nu", ".2f"),
-            pair(p["alpha"], "alpha", ".3f"),
+            format(r["skew_train"], "+.4f"),
             format(r["innov_skew"], "+.4f"),
             format(r["lr_stat"], ".2f"),
             format(r["lr_pvalue"], ".3g")))
@@ -205,6 +211,10 @@ def main():
     print("    'λ 는 추정되지만 값이 작다' 가 아니라 근거 있는 답을 할 수 있다.")
     print("  · 재적합값이 기존과 크게 다르면 GARCH-ST 의 모든 지표(CRPS·커버리지·")
     print("    CVaR·왜도)를 다시 만들어야 한다.  §4.1.1 비교 전체가 영향을 받는다.")
+    print("  · skew_train 과 lambda 를 같이 봐라.  λ 는 상수라 학습기간의 평균")
+    print("    비대칭 하나만 잡는다.  skew_train 이 0 근처인데 λ̂ 도 0 근처면")
+    print("    적합 실패가 아니라 학습기간에 잡을 비대칭이 없었던 것이고, 시험기간")
+    print("    위기의 큰 음의 왜도는 재적합해도 못 낸다 — 구조적 한계다.")
 
 
 if __name__ == "__main__":
