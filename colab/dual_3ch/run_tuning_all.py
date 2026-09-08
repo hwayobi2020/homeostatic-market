@@ -120,6 +120,14 @@ BASE_LR = {"flow": 1e-4, "vae": 5e-4, "gan": 1e-4}      # 게재 판본 값
 WD_GRID = [float(x) for x in _env_list("TUNE_WD_FLOW", "0.5,0.1,0.01")]
 BASE_WD = 0.5                                           # 게재 판본 값
 
+# 흐름 헤드 hidden.  MAC-Flow 726,947 파라미터 중 흐름 헤드가 약 59 만이고
+# (MODEL_SPEC.md §8 count_params.py 실측 총계 − 인코더 쪽 산술 135,344),
+# CondVAE 177,210 / CondGAN 204,558 보다 3.5~4.1 배 크다.  리뷰어 1 #5 의
+# 튜닝 공정성 지적에 답하려면 용량을 맞춘 비교가 필요한데 그 기록이 없다.
+# 흐름 헤드는 hidden 의 제곱에 비례하므로 이 축 하나로 베이스라인 수준까지 내려간다.
+HID_GRID = [int(x) for x in _env_list("TUNE_HID_FLOW", "128")]
+BASE_HID = 128                                          # 게재 판본 값 (Table 5)
+
 OUT = os.path.join(RESULT_DIR, "tuning_all.json")
 
 
@@ -134,7 +142,7 @@ def flow_setup():
     T.ENCODER_MASK_SP = False
 
 
-def flow_cell(fold, seed, lr, wd=BASE_WD):
+def flow_cell(fold, seed, lr, wd=BASE_WD, hid=BASE_HID):
     """MAC-Flow 한 셀.  wd=0.5 일 때 태그가 run_lr_sweep 과 같아 결과가 재사용된다.
 
     시험셋 summary 만 있고 VAL summary 가 없는 셀은 다시 돌린다.  lr 선택 기준이
@@ -142,7 +150,8 @@ def flow_cell(fold, seed, lr, wd=BASE_WD):
     run_lr_sweep 에 추가되기 전 판본으로 돌린 셀이 이 경우다).
     """
     wd_sfx = "" if abs(wd - BASE_WD) < 1e-12 else f"_wd{LRS.lr_tag(wd)}"
-    tag = (f"rvAbl_full_fpath_novol_lr{LRS.lr_tag(lr)}{wd_sfx}"
+    hid_sfx = "" if hid == BASE_HID else f"_fh{hid}"
+    tag = (f"rvAbl_full_fpath_novol_lr{LRS.lr_tag(lr)}{wd_sfx}{hid_sfx}"
            f"_d{FPATH_DIM}_s{seed}")
     sp = os.path.join(RESULT_DIR, f"garch_flow_ar_{tag}_{fold}_summary.json")
     vp = os.path.join(RESULT_DIR, f"garch_flow_ar_{tag}_{fold}_VAL_summary.json")
@@ -154,7 +163,7 @@ def flow_cell(fold, seed, lr, wd=BASE_WD):
     if not have:
         spec = dict(LRS.LOCKED)
         spec.update(fold=fold, seed=seed, tag=tag, lr=lr, weight_decay=wd,
-                    n_sim=N_SIM)
+                    n_flow_hidden=hid, n_sim=N_SIM)
         spec["max_epoch"] = MAX_EPOCH
         t0 = time.time()
         LRS.main_worker(spec)
@@ -180,7 +189,11 @@ def flow_cell(fold, seed, lr, wd=BASE_WD):
     if crit == "val_crps_z":
         print(f"    [체크포인트] CRPS 기준 ep{ep_used} "
               f"(NLL 기준이었다면 ep{d.get('best_epoch')})")
+    if d.get("n_params"):
+        print(f"    [용량] {int(d['n_params']):,} 파라미터  "
+              f"(CondVAE 177,210 / CondGAN 204,558 — MODEL_SPEC.md §8)")
     return dict(val=ve, test=(d.get("test_eval") or {}),
+                n_params=d.get("n_params"),
                 best_epoch=ep_used, ckpt_criterion=crit,
                 best_val_nll=d.get("best_val_nll"))
 
@@ -251,14 +264,16 @@ def main():
             for seed in SEEDS:
                 # weight_decay 는 MAC-Flow 에서만 흔든다 (베이스라인은 미사용).
                 wds = WD_GRID if mk == "flow" else [None]
+                hids = HID_GRID if mk == "flow" else [None]
                 for lr in LR_GRID[mk]:
+                  for hid in hids:
                     for wd in wds:
                         label = (f"lr={lr:g}" if wd is None
-                                 else f"lr={lr:g} wd={wd:g}")
+                                 else f"lr={lr:g} wd={wd:g} hid={hid}")
                         print(f"\n  [{mk}] fold={fold} seed={seed} {label}")
                         try:
                             if mk == "flow":
-                                c = flow_cell(fold, seed, lr, wd)
+                                c = flow_cell(fold, seed, lr, wd, hid)
                             else:
                                 c = baseline_cell(mk, fold, seed, lr, device)
                         except Exception as e:                    # noqa: BLE001
@@ -267,6 +282,7 @@ def main():
                         v = c["val"] or {}
                         rows.append(dict(
                             model=mk, fold=fold, seed=seed, lr=lr, wd=wd,
+                            hid=hid, n_params=c.get("n_params"),
                             best_epoch=c.get("best_epoch"),
                             v_crps=v.get("crps_pooled"),
                             v_cov80=v.get("coverage_80"),
@@ -286,16 +302,22 @@ def main():
     print("\n" + "=" * 108)
     print("[셀별 — 검증셋 지표만.  시험셋은 lr 선택에 쓰지 않는다]")
     print("=" * 108)
-    hdr = ("{:6} {:16} {:>6} {:>8} {:>7} {:>8} {:>10} {:>8} {:>8} {:>11} {:>11}"
-           .format("model", "fold", "seed", "lr", "wd", "best_ep", "val_CRPS",
-                   "v_cov80", "v_cov95", "v_skew실측", "v_skew모형"))
+    hdr = ("{:6} {:16} {:>6} {:>8} {:>7} {:>5} {:>10} {:>8} {:>10} {:>8} {:>8} "
+           "{:>11} {:>11}"
+           .format("model", "fold", "seed", "lr", "wd", "hid", "params",
+                   "best_ep", "val_CRPS", "v_cov80", "v_cov95",
+                   "v_skew실측", "v_skew모형"))
     print(hdr)
     print("-" * len(hdr))
     for r in rows:
-        print("{:6} {:16} {:>6} {:>8.0e} {:>7} {:>8} {:>10} {:>8} {:>8} "
-              "{:>11} {:>11}"
+        print("{:6} {:16} {:>6} {:>8.0e} {:>7} {:>5} {:>10} {:>8} {:>10} "
+              "{:>8} {:>8} {:>11} {:>11}"
               .format(r["model"], r["fold"], r["seed"], r["lr"],
                       _f(r.get("wd"), "{:g}", 7),
+                      _f(r.get("hid"), "{:d}", 5),
+                      (f"{int(r['n_params']):,}"
+                       if isinstance(r.get("n_params"), (int, float))
+                       else "-".rjust(10)),
                       r["best_epoch"] if r["best_epoch"] is not None else "-",
                       _f(r["v_crps"], "{:.5f}", 10),
                       _f(r["v_cov80"], "{:.3f}", 8),
@@ -306,27 +328,36 @@ def main():
     print("\n" + "=" * 108)
     print("[모델 × lr — 폴드·시드 평균 (선택 기준: 평균 val_CRPS 최소)]")
     print("=" * 108)
-    hdr2 = ("{:6} {:>8} {:>7} {:>4} {:>8} {:>10} {:>8} {:>8} {:>11}"
-            .format("model", "lr", "wd", "n", "best_ep", "val_CRPS", "v_cov80",
-                    "v_cov95", "v_skew모형"))
+    hdr2 = ("{:6} {:>8} {:>7} {:>5} {:>10} {:>4} {:>8} {:>10} {:>8} {:>8} {:>11}"
+            .format("model", "lr", "wd", "hid", "params", "n", "best_ep",
+                    "val_CRPS", "v_cov80", "v_cov95", "v_skew모형"))
     print(hdr2)
     print("-" * len(hdr2))
     chosen = {}
     for mk in MODELS:
         cand = []
         wds = WD_GRID if mk == "flow" else [None]
+        hids = HID_GRID if mk == "flow" else [None]
         for lr in LR_GRID[mk]:
+          for hid in hids:
             for wd in wds:
                 g = [r for r in rows if r["model"] == mk and r["lr"] == lr
-                     and r.get("wd") == wd]
+                     and r.get("wd") == wd and r.get("hid") == hid]
                 if not g:
                     continue
                 mc = _mean(g, "v_crps")
-                cand.append((mc, lr, wd))
+                cand.append((mc, lr, wd, hid))
                 base = (abs(lr - BASE_LR[mk]) < 1e-12
-                        and (wd is None or abs(wd - BASE_WD) < 1e-12))
-                print("{:6} {:>8.0e} {:>7} {:>4} {:>8} {:>10} {:>8} {:>8} {:>11}{}"
-                      .format(mk, lr, _f(wd, "{:g}", 7), len(g),
+                        and (wd is None or abs(wd - BASE_WD) < 1e-12)
+                        and (hid is None or hid == BASE_HID))
+                npar = _mean(g, "n_params")
+                print("{:6} {:>8.0e} {:>7} {:>5} {:>10} {:>4} {:>8} {:>10} "
+                      "{:>8} {:>8} {:>11}{}"
+                      .format(mk, lr, _f(wd, "{:g}", 7), _f(hid, "{:d}", 5),
+                              (f"{int(npar):,}"
+                               if isinstance(npar, (int, float))
+                               else "-".rjust(10)),
+                              len(g),
                               _f(_mean(g, "best_epoch"), "{:.1f}", 8),
                               _f(mc, "{:.5f}", 10),
                               _f(_mean(g, "v_cov80"), "{:.3f}", 8),
@@ -335,25 +366,31 @@ def main():
                               "  (게재 판본)" if base else ""))
         cand = [c for c in cand if isinstance(c[0], (int, float))]
         if cand:
-            _, lr, wd = min(cand, key=lambda c: c[0])
-            chosen[mk] = (lr, wd)
+            _, lr, wd, hid = min(cand, key=lambda c: c[0])
+            chosen[mk] = (lr, wd, hid)
 
     print("\n[선택 결과 — 평균 val CRPS 기준]")
-    for mk, (lr, wd) in chosen.items():
+    for mk, (lr, wd, hid) in chosen.items():
         same = (abs(lr - BASE_LR[mk]) < 1e-12
-                and (wd is None or abs(wd - BASE_WD) < 1e-12))
-        cur = f"lr = {lr:g}" + ("" if wd is None else f", weight_decay = {wd:g}")
+                and (wd is None or abs(wd - BASE_WD) < 1e-12)
+                and (hid is None or hid == BASE_HID))
+        cur = (f"lr = {lr:g}"
+               + ("" if wd is None else f", weight_decay = {wd:g}")
+               + ("" if hid is None else f", flow hidden = {hid}"))
         old = (f"lr {BASE_LR[mk]:g}"
-               + ("" if wd is None else f", weight_decay {BASE_WD:g}"))
+               + ("" if wd is None else f", weight_decay {BASE_WD:g}")
+               + ("" if hid is None else f", flow hidden {BASE_HID}"))
         print(f"  {mk:5} {cur}"
               + ("  (게재 판본과 같음)" if same else f"  ← 게재 판본 {old} 에서 변경"))
     if len(SEEDS) == 1:
         print("\n시드 1 개 결과다.  고른 값으로 5 시드 재학습해 안정성을 확인해야 한다:")
-        for mk, (lr, wd) in chosen.items():
+        for mk, (lr, wd, hid) in chosen.items():
             cmd = (f"  TUNE_MODELS={mk} TUNE_LR_{mk.upper()}={lr:g} "
                    f"TUNE_SEEDS=2026,2027,2028,2029,2030")
             if wd is not None:
                 cmd += f" TUNE_WD_FLOW={wd:g}"
+            if hid is not None:
+                cmd += f" TUNE_HID_FLOW={hid}"
             print(cmd)
 
     if os.environ.get("TUNE_SHOW_TEST", "0") == "1":
