@@ -66,10 +66,14 @@ os.environ.setdefault("FPATH_DIM", "2")
 # 베이스라인도 검증셋을 시험셋과 같은 정의로 평가하게 한다 (lr 선택 지표).
 os.environ["VG_EVAL_VAL"] = "1"
 
-# VAE/GAN 의 원래 조건 채널(6개)을 PS import 전에 확보한다.
-#   analyze_pathshape_rawvol 은 import 시점에 COND_COLS 를 5 채널로 덮어쓴다.
-import train_flow_seq as _TFS                                            # noqa: E402
-VG_COND_COLS = list(_TFS.COND_COLS)
+# 베이스라인 조건 채널 — 논문 Table 3 과 같게 맞춘다.
+#   예전에는 train_flow_seq.COND_COLS(6채널)를 썼는데 그 목록에는
+#   Excess_liq_13w(metab_13w)가 빠져 있고 대신 sp_std_13w / sp_log_std_13w 가
+#   들어 있었다.  즉 베이스라인만 논문의 핵심 조건 변수를 못 받고, MAC-Flow 만
+#   받는 상태였다.  §3.5.1/§3.5.2 는 베이스라인이 "the past 52-week window" 를
+#   받는다고만 적어 이 차이를 밝히지 않는다 → CRPS 비교가 동등하지 않았다.
+#   Table 3: sp_return, tbill_wr, Excess_liq_13w(metab_13w), ads_lag, wti_wr
+VG_COND_COLS = ["sp_return", "tbill_wr", "ads_lag", "wti_wr", "metab_13w"]
 
 from rawvol_helpers import (patch_rawvol, rawstd_preprocess_fold,        # noqa: E402
                             forward_rawvol_rescale)
@@ -217,8 +221,12 @@ def flow_cell(fold, seed, lr, wd=BASE_WD, hid=BASE_HID, fl=BASE_FL):
 # CondVAE / CondGAN
 # =====================================================================
 def baseline_cell(mk, fold, seed, lr, device):
-    """VAE/GAN 한 셀.  조건 채널을 원래 6 채널로 되돌린 뒤 학습한다."""
-    tag = f"_lr{LRS.lr_tag(lr)}_s{seed}"
+    """VAE/GAN 한 셀.  조건 채널을 Table 3 목록으로 맞춘 뒤 학습한다.
+
+    태그에 t3 를 넣어 예전 6 채널(train_flow_seq.COND_COLS) 결과와 파일을
+    분리한다.  안 그러면 채널이 다른 옛 결과를 "이미 있음"으로 건너뛴다.
+    """
+    tag = f"_t3_lr{LRS.lr_tag(lr)}_s{seed}"
     sp = os.path.join(RESULT_DIR, f"{mk}_baseline{tag}_{fold}_summary.json")
     if not os.path.exists(sp):
         args = SimpleNamespace(model=mk, fold=fold, folds_dir=FOLDS_DIR,
