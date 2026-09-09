@@ -149,6 +149,20 @@ BASE_HID = 128                                          # 게재 판본 값 (Tab
 FL_GRID = [int(x) for x in _env_list("TUNE_LAYERS_FLOW", "4")]
 BASE_FL = 4                                             # 게재 판본 값 (Table 5)
 
+# 베이스라인 용량 축.  지금까지 스윕된 적이 없어 D_CTX=128 / HID=128 고정이었다.
+# flow 는 n_flow_layers x n_flow_hidden 9 조합을 돌았으므로 §3.7 의 "모든 모델을
+# 스윕했다"가 사실이 되려면 베이스라인도 같은 축을 열어야 한다.  파라미터 수도
+# flow 726,947 대 CondVAE 177,210 / CondGAN 169,741 로 4 배 차이가 난다.
+DCTX_GRID = [int(x) for x in _env_list("TUNE_DCTX_VG", "128")]
+HID_GRID_VG = [int(x) for x in _env_list("TUNE_HID_VG", "128")]
+BASE_DCTX, BASE_HID_VG = 128, 128                       # 게재 판본 값 (Table 6/7)
+
+
+def vg_combos(mk):
+    """베이스라인 격자 조합 (lr, D_CTX, HID)."""
+    return [(lr, dc, h) for lr in LR_GRID[mk]
+            for dc in DCTX_GRID for h in HID_GRID_VG]
+
 
 def flow_combos():
     """MAC-Flow 격자 조합 목록.  축이 넷이라 중첩 루프 대신 목록으로 다룬다."""
@@ -230,38 +244,45 @@ def flow_cell(fold, seed, lr, wd=BASE_WD, hid=BASE_HID, fl=BASE_FL):
 # =====================================================================
 # CondVAE / CondGAN
 # =====================================================================
-def baseline_cell(mk, fold, seed, lr, device):
+def baseline_cell(mk, fold, seed, lr, device, dctx=BASE_DCTX, hid=BASE_HID_VG):
     """VAE/GAN 한 셀.  조건 채널을 Table 3 목록으로 맞춘 뒤 학습한다.
 
     태그에 t3 를 넣어 예전 6 채널(train_flow_seq.COND_COLS) 결과와 파일을
     분리한다.  안 그러면 채널이 다른 옛 결과를 "이미 있음"으로 건너뛴다.
-    sp_skew_13w 를 주입하면 sk 를 더 붙여 그 이전 결과와도 분리한다.
+    sp_skew_13w 를 주입하면 sk, 미래 metab 을 주면 fu 를 더 붙인다.
+    용량이 게재 판본과 다르면 c{D_CTX}h{HID} 도 붙여 분리한다.
     """
     sk_sfx = "sk" if os.environ.get("VG_EXTRA_COLS") else ""
     fu_sfx = "fu" if os.environ.get("VG_FUTURE_UNMASK") else ""
-    tag = f"_t3{sk_sfx}{fu_sfx}_lr{LRS.lr_tag(lr)}_s{seed}"
+    cap_sfx = ("" if (dctx == BASE_DCTX and hid == BASE_HID_VG)
+               else f"_c{dctx}h{hid}")
+    tag = f"_t3{sk_sfx}{fu_sfx}{cap_sfx}_lr{LRS.lr_tag(lr)}_s{seed}"
     sp = os.path.join(RESULT_DIR, f"{mk}_baseline{tag}_{fold}_summary.json")
     if not os.path.exists(sp):
         args = SimpleNamespace(model=mk, fold=fold, folds_dir=FOLDS_DIR,
                                out_dir=RESULT_DIR, n_sim=N_SIM, seed=seed,
                                lr=lr, tag=tag)
         saved = list(T.COND_COLS)
+        saved_cap = (VG.D_CTX, VG.HID)
         PS.set_cond_cols(VG_COND_COLS)
         VG.COND_COLS = list(T.COND_COLS); VG.N_CH = len(VG.COND_COLS)
         VG.SP_CH, VG.TBILL_CH = T.SP_CH, T.TBILL_CH
+        # 모델 층은 __init__ 에서 모듈 전역을 읽으므로 여기서 바꾸면 반영된다.
+        VG.D_CTX, VG.HID = dctx, hid
         t0 = time.time()
         try:
             VG.run_fold(mk, fold, args, device)
             print(f"    done ({time.time() - t0:.0f}s)")
         finally:
             PS.set_cond_cols(saved)
+            VG.D_CTX, VG.HID = saved_cap
     else:
         print(f"    [skip] {os.path.basename(sp)}")
 
     with open(sp, encoding="utf-8") as fh:
         d = json.load(fh)
     return dict(val=(d.get("val_eval") or {}), test=(d.get("test_eval") or {}),
-                best_epoch=d.get("best_epoch"),
+                best_epoch=d.get("best_epoch"), n_params=d.get("n_params"),
                 best_val_nll=d.get("best_val_crps_z"))
 
 
@@ -299,17 +320,20 @@ def main():
                 continue
             for seed in SEEDS:
                 # weight_decay 는 MAC-Flow 에서만 흔든다 (베이스라인은 미사용).
+                # flow: (lr, wd, hid, fl) / 베이스라인: (lr, dctx, hid, None)
                 combos = (flow_combos() if mk == "flow"
-                          else [(lr, None, None, None) for lr in LR_GRID[mk]])
+                          else [(lr, dc, h, None) for lr, dc, h in vg_combos(mk)])
                 for lr, wd, hid, fl in combos:
-                        label = (f"lr={lr:g}" if wd is None
-                                 else f"lr={lr:g} wd={wd:g} layers={fl} hid={hid}")
+                        label = (f"lr={lr:g} wd={wd:g} layers={fl} hid={hid}"
+                                 if mk == "flow"
+                                 else f"lr={lr:g} d_ctx={wd} hid={hid}")
                         print(f"\n  [{mk}] fold={fold} seed={seed} {label}")
                         try:
                             if mk == "flow":
                                 c = flow_cell(fold, seed, lr, wd, hid, fl)
                             else:
-                                c = baseline_cell(mk, fold, seed, lr, device)
+                                c = baseline_cell(mk, fold, seed, lr, device,
+                                                  wd, hid)
                         except Exception as e:                    # noqa: BLE001
                             print(f"    [FAIL] {e!r}")
                             continue
@@ -373,7 +397,7 @@ def main():
     for mk in MODELS:
         cand = []
         combos = (flow_combos() if mk == "flow"
-                  else [(lr, None, None, None) for lr in LR_GRID[mk]])
+                  else [(lr, dc, h, None) for lr, dc, h in vg_combos(mk)])
         for lr, wd, hid, fl in combos:
                 g = [r for r in rows if r["model"] == mk and r["lr"] == lr
                      and r.get("wd") == wd and r.get("hid") == hid
@@ -382,10 +406,11 @@ def main():
                     continue
                 mc = _mean(g, "v_crps")
                 cand.append((mc, lr, wd, hid, fl))
-                base = (abs(lr - BASE_LR[mk]) < 1e-12
-                        and (wd is None or abs(wd - BASE_WD) < 1e-12)
-                        and (hid is None or hid == BASE_HID)
-                        and (fl is None or fl == BASE_FL))
+                # 베이스라인은 wd 칸에 D_CTX 가 들어간다 (Table 6/7 기본 128/128).
+                base = (abs(lr - BASE_LR[mk]) < 1e-12 and (
+                    (wd == BASE_DCTX and hid == BASE_HID_VG) if mk != "flow"
+                    else (abs(wd - BASE_WD) < 1e-12 and hid == BASE_HID
+                          and fl == BASE_FL)))
                 npar = _mean(g, "n_params")
                 print("{:6} {:>8.0e} {:>7} {:>4} {:>5} {:>10} {:>4} {:>8} "
                       "{:>10} {:>8} {:>8} {:>11}{}"
@@ -408,18 +433,19 @@ def main():
 
     print("\n[선택 결과 — 평균 val CRPS 기준]")
     for mk, (lr, wd, hid, fl) in chosen.items():
-        same = (abs(lr - BASE_LR[mk]) < 1e-12
-                and (wd is None or abs(wd - BASE_WD) < 1e-12)
-                and (hid is None or hid == BASE_HID)
-                and (fl is None or fl == BASE_FL))
-        cur = (f"lr = {lr:g}"
-               + ("" if wd is None else f", weight_decay = {wd:g}")
-               + ("" if fl is None else f", flow layers = {fl}")
-               + ("" if hid is None else f", flow hidden = {hid}"))
-        old = (f"lr {BASE_LR[mk]:g}"
-               + ("" if wd is None else f", weight_decay {BASE_WD:g}")
-               + ("" if fl is None else f", flow layers {BASE_FL}")
-               + ("" if hid is None else f", flow hidden {BASE_HID}"))
+        if mk == "flow":
+            same = (abs(lr - BASE_LR[mk]) < 1e-12 and abs(wd - BASE_WD) < 1e-12
+                    and hid == BASE_HID and fl == BASE_FL)
+            cur = (f"lr = {lr:g}, weight_decay = {wd:g}, "
+                   f"flow layers = {fl}, flow hidden = {hid}")
+            old = (f"lr {BASE_LR[mk]:g}, weight_decay {BASE_WD:g}, "
+                   f"flow layers {BASE_FL}, flow hidden {BASE_HID}")
+        else:
+            same = (abs(lr - BASE_LR[mk]) < 1e-12
+                    and wd == BASE_DCTX and hid == BASE_HID_VG)
+            cur = f"lr = {lr:g}, d_ctx = {wd}, hidden = {hid}"
+            old 	= (f"lr {BASE_LR[mk]:g}, d_ctx {BASE_DCTX}, "
+                       f"hidden {BASE_HID_VG}")
         print(f"  {mk:5} {cur}"
               + ("  (게재 판본과 같음)" if same else f"  ← 게재 판본 {old} 에서 변경"))
     if len(SEEDS) == 1:
@@ -427,12 +453,11 @@ def main():
         for mk, (lr, wd, hid, fl) in chosen.items():
             cmd = (f"  TUNE_MODELS={mk} TUNE_LR_{mk.upper()}={lr:g} "
                    f"TUNE_SEEDS=2026,2027,2028,2029,2030")
-            if wd is not None:
-                cmd += f" TUNE_WD_FLOW={wd:g}"
-            if fl is not None:
-                cmd += f" TUNE_LAYERS_FLOW={fl}"
-            if hid is not None:
-                cmd += f" TUNE_HID_FLOW={hid}"
+            if mk == "flow":
+                cmd += (f" TUNE_WD_FLOW={wd:g} TUNE_LAYERS_FLOW={fl}"
+                        f" TUNE_HID_FLOW={hid}")
+            else:
+                cmd += f" TUNE_DCTX_VG={wd} TUNE_HID_VG={hid}"
             print(cmd)
 
     if os.environ.get("TUNE_SHOW_TEST", "0") == "1":

@@ -57,9 +57,13 @@ FUTURE_UNMASK_COLS = [c for c in
                       os.environ.get("VG_FUTURE_UNMASK", "").split(",") if c]
 
 # ---- compact baseline hyperparameters (small, fast) ----
-D_CTX   = 128
-LATENT  = 16
-HID     = 128
+# 용량은 스윕된 적이 없다 (flow 는 n_flow_layers x n_flow_hidden 9 조합을 돌았다).
+# §3.7 이 "모든 모델의 주요 하이퍼파라미터를 스윕했다"고 적으므로 같은 축을 연다.
+# 맥락 차원과 은닉 폭이 파라미터 수를 지배한다 (CtxEncoder 의 Linear(L*N_CH,256)
+# 와 Linear(256,D_CTX), 그리고 q/dec/Generator/Critic 의 HID).
+D_CTX   = int(os.environ.get("VG_D_CTX", "128"))
+LATENT  = int(os.environ.get("VG_LATENT", "16"))
+HID     = int(os.environ.get("VG_HID", "128"))
 EPOCHS  = 250
 LR_VAE  = 5e-4          # 1e-3 → 5e-4: decoder logvar 폭발/불안정(std 2.3배·우편향) 완화
 DEC_LOGVAR_CLAMP = (-2.0, 2.0)   # decoder logvar 범위: 하한 -2(σ floor exp(-1)=0.37 → 과확신/
@@ -98,8 +102,9 @@ class CtxEncoder(nn.Module):
         super().__init__()
         self.net = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(L * N_CH, 256), nn.ReLU(), nn.Dropout(dropout),
-            nn.Linear(256, D_CTX), nn.ReLU(),
+            # 중간 폭을 D_CTX 에 묶는다.  기본 D_CTX=128 에서 256 이라 기존과 동일.
+            nn.Linear(L * N_CH, 2 * D_CTX), nn.ReLU(), nn.Dropout(dropout),
+            nn.Linear(2 * D_CTX, D_CTX), nn.ReLU(),
         )
 
     def forward(self, x, extra=None):          # x: (B, L, N_CH), extra: (B, E)
@@ -525,7 +530,10 @@ def run_fold(model_kind, fold, args, device):
 
     summ = dict(model=f"cond-{model_kind}", fold=fold, n_sim=args.n_sim,
                 seed=int(args.seed), lr=float(lr),
+                d_ctx=int(D_CTX), hid=int(HID), latent=int(LATENT),
+                n_params=int(sum(p.numel() for p in gen.parameters())),
                 cond_cols=list(COND_COLS), extra_cols=list(EXTRA_COLS),
+                future_unmask=list(FUTURE_UNMASK_COLS),
                 val_select=bool(VAL_SELECT),
                 best_epoch=int(best["epoch"]),
                 best_val_crps_z=(float(best["crps"])
