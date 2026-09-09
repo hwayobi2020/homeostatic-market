@@ -70,6 +70,11 @@ os.environ["VG_EVAL_VAL"] = "1"
 # 한쪽만 최근 실현 왜도를 입력으로 받으면 "왜도 재현" 비교가 성립하지 않으므로
 # 같은 값을 같은 형태(원점 행 z-스코어)로 준다.  VG_EXTRA_COLS="" 로 끌 수 있다.
 os.environ.setdefault("VG_EXTRA_COLS", "sp_skew_13w")
+# 미래 구간 조건 경로도 맞춘다.  flow_setup 이 flow 에
+# FUTURE_UNMASK_MACRO_COLS=["metab_13w"] 를 주므로 flow 는 미래 metab 경로까지
+# 조건으로 쓴다 (Table 3 의 반사실 주입 경로 = tbill + Excess_liq_13w).
+# 베이스라인만 tbill 만 받으면 조건 정보가 달라 비교가 동등하지 않다.
+os.environ.setdefault("VG_FUTURE_UNMASK", "metab_13w")
 
 # 베이스라인 조건 채널 — 논문 Table 3 과 같게 맞춘다.
 #   예전에는 train_flow_seq.COND_COLS(6채널)를 썼는데 그 목록에는
@@ -233,7 +238,8 @@ def baseline_cell(mk, fold, seed, lr, device):
     sp_skew_13w 를 주입하면 sk 를 더 붙여 그 이전 결과와도 분리한다.
     """
     sk_sfx = "sk" if os.environ.get("VG_EXTRA_COLS") else ""
-    tag = f"_t3{sk_sfx}_lr{LRS.lr_tag(lr)}_s{seed}"
+    fu_sfx = "fu" if os.environ.get("VG_FUTURE_UNMASK") else ""
+    tag = f"_t3{sk_sfx}{fu_sfx}_lr{LRS.lr_tag(lr)}_s{seed}"
     sp = os.path.join(RESULT_DIR, f"{mk}_baseline{tag}_{fold}_summary.json")
     if not os.path.exists(sp):
         args = SimpleNamespace(model=mk, fold=fold, folds_dir=FOLDS_DIR,

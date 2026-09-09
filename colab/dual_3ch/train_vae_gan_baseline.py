@@ -51,6 +51,11 @@ L = PAST_LEN + FUTURE_LEN
 # z-스코어 스칼라)로 준다.  load_extra_context 를 그대로 써서 정의를 일치시킨다.
 EXTRA_COLS = [c for c in os.environ.get("VG_EXTRA_COLS", "").split(",") if c]
 
+# 미래 구간에서 마스킹하지 않을 거시 채널 (tbill 은 항상 유지).  MAC-Flow 의
+# train_garch_flow.FUTURE_UNMASK_MACRO_COLS 와 같은 역할이다.
+FUTURE_UNMASK_COLS = [c for c in
+                      os.environ.get("VG_FUTURE_UNMASK", "").split(",") if c]
+
 # ---- compact baseline hyperparameters (small, fast) ----
 D_CTX   = 128
 LATENT  = 16
@@ -115,9 +120,17 @@ class CtxEncoder(nn.Module):
             x[:, PAST_LEN:, :] = last
             x[:, PAST_LEN:, SP_CH] = 0.0
         else:
-            keep_tbill = x[:, PAST_LEN:, TBILL_CH].clone()
+            # 미래에 남길 채널 = tbill + FUTURE_UNMASK_COLS.
+            #   MAC-Flow 는 flow_setup 에서 FUTURE_UNMASK_MACRO_COLS=["metab_13w"]
+            #   를 받아 미래 metab 경로까지 조건으로 쓴다 (Table 3 의 반사실 주입
+            #   경로가 tbill 과 Excess_liq_13w 둘이다).  베이스라인만 tbill 만
+            #   받으면 조건 정보가 달라 CRPS 비교가 동등하지 않다.
+            keep = [TBILL_CH] + [COND_COLS.index(c) for c in FUTURE_UNMASK_COLS
+                                 if c in COND_COLS]
+            kept = {ch: x[:, PAST_LEN:, ch].clone() for ch in set(keep)}
             x[:, PAST_LEN:, :] = 0.0
-            x[:, PAST_LEN:, TBILL_CH] = keep_tbill
+            for ch, v in kept.items():
+                x[:, PAST_LEN:, ch] = v
         c = self.net(x)
         # 원점 고정 추가 맥락을 맥락 벡터에 붙인다 (MAC-Flow 와 같은 형태).
         return c if extra is None else torch.cat([c, extra], dim=-1)
