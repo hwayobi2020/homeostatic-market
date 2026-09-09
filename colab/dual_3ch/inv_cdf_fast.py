@@ -12,10 +12,22 @@ GPU 실측 (rows=8000 = chunk 8 x n_sim 1000, 13 스텝):
 를 부른다.  두 가지가 낭비다.
 
   1. **t.ppf 를 두 번 부른다.**  z1 과 z2 를 전체 배열에 계산한 뒤
-     `np.where(cond, z1, z2)` 로 고른다.  즉 필요량의 2 배를 계산한다.
-     인자 쪽에서 먼저 고르면(`np.where` 를 ppf 앞으로) 한 번만 부르면 된다.
-     CPU 실측 2.02x (lam≈0), 1.65x (lam=-0.3), 전부 비트일치.
-     실제 학습된 lam 은 -0.002 ~ -0.005 라 lam≈0 쪽이다.
+     `np.where(cond, z1, z2)` 로 고른다.  인자 쪽에서 먼저 고르면
+     (`np.where` 를 ppf 앞으로) 한 번만 부르면 된다.
+
+     절감분은 stdtrit 호출량이 아니다.  scipy `rv_continuous.ppf` 는 내부에서
+     정의역 밖 원소를 마스킹해 `_ppf` 를 유효 부분집합에만 부르므로, 실제로
+     줄어드는 것은 래퍼(argcheck·출력 할당·NaN 배치)를 두 번 도는 비용이다.
+
+     CPU 실측 (rows 8000 x 13 스텝, 라운드로빈): lam +0.0000 1.92x /
+     -0.0028 1.96x / -0.0050 1.91x / ±0.3126 1.35~1.67x / -0.70 1.13x.
+     실제 학습된 lam 은 -0.002 ~ -0.005 다.
+
+     **정확성**: 무작위 lam 300 회(df 5/7/10/15, float32/float64, u 에 경계값
+     0·1·cut 강제 삽입)에서 융합·부분계산 모두 **0/300 불일치**.
+     `(1-lam)*s` 는 파이썬 float 스칼라, `sc*s` 는 같은 값의 float64 배열이라
+     IEEE 배정밀도로 동일하고 t.ppf 는 원소별 결정적 함수다.  순서 재배열이
+     결과를 바꿀 여지가 구조적으로 없다.
 
   2. **매 스텝 GPU→CPU→GPU 를 왕복한다.**  AR 13 스텝 x 33 청크 = 429 회.
      u 는 context 와 무관하므로(`_sample`:222-228 이 shape/device 결정에만 씀)
@@ -102,7 +114,13 @@ def unpatch():
 def _verify(rows=8000, steps=13, seed=2026):
     global _ORIG_INV
     cls = T.SkewStudentT
-    _ORIG_INV = cls.__dict__["_inv_cdf"]
+    # patch() 뒤에 부르면 _ORIG_INV 가 융합판이 되어 자기 자신을 비교하고
+    # 최대차 0 이 자동 보장된다.  그 상태를 막는다.
+    if cls.__dict__["_inv_cdf"] is inv_cdf_fused:
+        raise RuntimeError("_verify() 는 patch() 전에만 유효하다 "
+                           "(원본이 이미 융합판으로 교체돼 있다)")
+    if _ORIG_INV is None:
+        _ORIG_INV = cls.__dict__["_inv_cdf"]
     dev = "cuda" if torch.cuda.is_available() else "cpu"
 
     print("=" * 78)
@@ -111,10 +129,12 @@ def _verify(rows=8000, steps=13, seed=2026):
     print("=" * 78)
 
     # 실제 학습값 범위를 포함해 여러 lam 에서 확인한다.
-    for lam_t in (0.0, -0.0028, -0.30, 0.30):
+    # _lam() = tanh(_lam_raw) * 0.99 (train_garch_flow.py:187) 이므로 역함수도
+    # 0.99 로 나눠야 한다.  0.95 로 두면 요청 -0.30 이 실제 -0.3126 이 된다.
+    for lam_t in (0.0, -0.0028, -0.0050, -0.30, 0.30):
         d = cls(shape=[1], df=7.0)
         with torch.no_grad():
-            d._lam_raw.fill_(math.atanh(lam_t / 0.95) if lam_t else 0.0)
+            d._lam_raw.fill_(math.atanh(lam_t / 0.99) if lam_t else 0.0)
         d = d.to(dev)
 
         torch.manual_seed(seed)
