@@ -104,6 +104,15 @@ if os.environ.get("ARFAST", "1") == "1":
     import ar_sample_fast                                                # noqa: E402
     ar_sample_fast.patch()
 
+# SkewStudentT._inv_cdf 가속.  GPU 실측에서 _distribution.sample 이 flow.sample
+# 의 69.1% 였고, 그 안에서 t.ppf 를 필요량의 2 배로 부르고 있었다 (z1, z2 를
+# 전체에 계산 후 np.where).  인자 쪽에서 고르면 한 번만 부른다.
+# 회귀 테스트: lam 0 / -0.0029 / ±0.31 에서 모두 최대차 0.000e+00, 1.43~3.41x.
+# INVFAST=0 으로 끈다.
+if os.environ.get("INVFAST", "1") == "1":
+    import inv_cdf_fast                                                  # noqa: E402
+    inv_cdf_fast.patch()
+
 VG.garch_preprocess_fold = rawstd_preprocess_fold      # import-bound 이름 교체
 VG.forward_garch_rescale = forward_rawvol_rescale
 
