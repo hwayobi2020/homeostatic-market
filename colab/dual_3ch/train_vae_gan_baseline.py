@@ -35,6 +35,7 @@ sys.path.insert(0, HERE)
 # train_garch_flow uses -- guarantees an apples-to-apples comparison.
 from train_garch_flow import (  # noqa: E402
     garch_preprocess_fold, compute_valid_mask, cached_load_windows_seq,
+    load_extra_context,
     COND_COLS, TBILL_CH, PAST_LEN, FUTURE_LEN, SP_CH, MASK_FUTURE_FILL,
     crps_pooled, crps_ensemble_sample, compute_var, compute_cvar, compute_emd_1d,
     forward_garch_rescale,
@@ -42,6 +43,13 @@ from train_garch_flow import (  # noqa: E402
 
 N_CH = len(COND_COLS)
 L = PAST_LEN + FUTURE_LEN
+
+# 원점 고정 추가 맥락.  MAC-Flow 는 extra_context_channels 로 sp_skew_13w 를
+# 받아 flow 헤드 컨텍스트에 직접 붙인다(train_garch_flow:673, :830).  베이스라인이
+# 그걸 못 받으면 "MAC-Flow 가 왜도를 잘 낸다"는 비교가 성립하지 않는다 — 한쪽만
+# 최근 실현 왜도를 입력으로 받은 것이기 때문이다.  같은 값을, 같은 형태(원점 행의
+# z-스코어 스칼라)로 준다.  load_extra_context 를 그대로 써서 정의를 일치시킨다.
+EXTRA_COLS = [c for c in os.environ.get("VG_EXTRA_COLS", "").split(",") if c]
 
 # ---- compact baseline hyperparameters (small, fast) ----
 D_CTX   = 128
@@ -89,7 +97,7 @@ class CtxEncoder(nn.Module):
             nn.Linear(256, D_CTX), nn.ReLU(),
         )
 
-    def forward(self, x):                      # x: (B, L, N_CH)
+    def forward(self, x, extra=None):          # x: (B, L, N_CH), extra: (B, E)
         # NO-LEAK: the flow's sp channel is 1-step shifted, so future positions
         # hold (shifted) future ACTUAL returns.  A non-causal MLP would read the
         # target straight off the context.  Mask ALL future positions except the
@@ -110,7 +118,9 @@ class CtxEncoder(nn.Module):
             keep_tbill = x[:, PAST_LEN:, TBILL_CH].clone()
             x[:, PAST_LEN:, :] = 0.0
             x[:, PAST_LEN:, TBILL_CH] = keep_tbill
-        return self.net(x)
+        c = self.net(x)
+        # 원점 고정 추가 맥락을 맥락 벡터에 붙인다 (MAC-Flow 와 같은 형태).
+        return c if extra is None else torch.cat([c, extra], dim=-1)
 
 
 # =====================================================================
@@ -120,17 +130,18 @@ class CondVAE(nn.Module):
     def __init__(self):
         super().__init__()
         self.enc_ctx = CtxEncoder()
+        cdim = D_CTX + len(EXTRA_COLS)          # 원점 고정 맥락만큼 넓어진다
         self.q = nn.Sequential(
-            nn.Linear(FUTURE_LEN + D_CTX, HID), nn.ReLU(),
+            nn.Linear(FUTURE_LEN + cdim, HID), nn.ReLU(),
             nn.Linear(HID, 2 * LATENT),
         )
         self.dec = nn.Sequential(
-            nn.Linear(LATENT + D_CTX, HID), nn.ReLU(),
+            nn.Linear(LATENT + cdim, HID), nn.ReLU(),
             nn.Linear(HID, 2 * FUTURE_LEN),    # (mean_13, logvar_13)
         )
 
-    def forward(self, x, y):
-        c = self.enc_ctx(x)
+    def forward(self, x, y, extra=None):
+        c = self.enc_ctx(x, extra)
         h = self.q(torch.cat([y, c], dim=-1))
         mu, logvar = h[:, :LATENT], h[:, LATENT:].clamp(-8, 8)
         z = mu + torch.randn_like(mu) * torch.exp(0.5 * logvar)
@@ -139,10 +150,10 @@ class CondVAE(nn.Module):
         return ymean, ylogvar, mu, logvar
 
     @torch.no_grad()
-    def generate(self, x, n_sim):
-        c = self.enc_ctx(x)                              # (B, D_CTX)
+    def generate(self, x, n_sim, extra=None):
+        c = self.enc_ctx(x, extra)                       # (B, cdim)
         B = c.shape[0]
-        c_rep = c.repeat_interleave(n_sim, 0)            # (B*n_sim, D_CTX)
+        c_rep = c.repeat_interleave(n_sim, 0)            # (B*n_sim, cdim)
         z = torch.randn(B * n_sim, LATENT, device=c.device)
         out = self.dec(torch.cat([z, c_rep], dim=-1))
         ymean = out[:, :FUTURE_LEN]
@@ -169,18 +180,18 @@ class Generator(nn.Module):
         super().__init__()
         self.enc_ctx = CtxEncoder(dropout=0.0)
         self.net = nn.Sequential(
-            nn.Linear(LATENT + D_CTX, HID), nn.ReLU(),
+            nn.Linear(LATENT + D_CTX + len(EXTRA_COLS), HID), nn.ReLU(),
             nn.Linear(HID, HID), nn.ReLU(),
             nn.Linear(HID, FUTURE_LEN),
         )
 
-    def forward(self, x, noise):
-        c = self.enc_ctx(x)
+    def forward(self, x, noise, extra=None):
+        c = self.enc_ctx(x, extra)
         return self.net(torch.cat([noise, c], dim=-1)), c
 
     @torch.no_grad()
-    def generate(self, x, n_sim):
-        c = self.enc_ctx(x)
+    def generate(self, x, n_sim, extra=None):
+        c = self.enc_ctx(x, extra)
         B = c.shape[0]
         c_rep = c.repeat_interleave(n_sim, 0)
         noise = torch.randn(B * n_sim, LATENT, device=c.device)
@@ -192,7 +203,8 @@ class Critic(nn.Module):
     def __init__(self):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(FUTURE_LEN + D_CTX, HID), nn.LeakyReLU(0.2),
+            nn.Linear(FUTURE_LEN + D_CTX + len(EXTRA_COLS), HID),
+            nn.LeakyReLU(0.2),
             nn.Linear(HID, HID), nn.LeakyReLU(0.2),
             nn.Linear(HID, 1),
         )
@@ -215,7 +227,8 @@ def gradient_penalty(critic, y_real, y_fake, c, device):
 # Validation criterion for checkpoint selection
 # =====================================================================
 @torch.no_grad()
-def val_crps(gen, Xva, Yva, device, n_sim=VAL_N_SIM, seed=VAL_SIM_SEED):
+def val_crps(gen, Xva, Yva, device, n_sim=VAL_N_SIM, seed=VAL_SIM_SEED,
+             Eva=None):
     """검증 구간 CRPS (z 공간).  낮을수록 좋다.
 
     표본 추출 시드를 매 호출 고정해 에폭 간 비교가 표본 잡음이 아니라 모델 차이를
@@ -231,7 +244,9 @@ def val_crps(gen, Xva, Yva, device, n_sim=VAL_N_SIM, seed=VAL_SIM_SEED):
         torch.cuda.manual_seed_all(seed)
     sims = []
     for s in range(0, Xva.shape[0], 16):
-        sims.append(gen.generate(Xva[s:s + 16].to(device), n_sim).cpu().numpy())
+        eb = None if Eva is None else Eva[s:s + 16].to(device)
+        sims.append(gen.generate(Xva[s:s + 16].to(device), n_sim,
+                                 eb).cpu().numpy())
     torch.set_rng_state(cpu_state)
     if cuda_state is not None:
         torch.cuda.set_rng_state_all(cuda_state)
@@ -259,7 +274,7 @@ def _ek(a):
 # Evaluate a trained generator on one split (val or test)
 # =====================================================================
 def evaluate_split(gen, model_kind, fold, split_csv, cond_stats, target_stats,
-                   n_sim, device, label):
+                   n_sim, device, label, extra_stats=None):
     """train_garch_flow.evaluate_test 와 같은 정의로 한 split 을 평가한다.
 
     lr 같은 상위 하이퍼파라미터를 *검증셋* 지표로 고르려면 시험셋과 동일한
@@ -272,9 +287,18 @@ def evaluate_split(gen, model_kind, fold, split_csv, cond_stats, target_stats,
     valid_mask, _, df_s = compute_valid_mask(split_csv, cond_stats)
     n_orig = Xs.shape[0]
 
+    Es = None
+    if EXTRA_COLS:
+        Es, _, n_ex, _ = load_extra_context(split_csv, EXTRA_COLS,
+                                            extra_stats=extra_stats)
+        if n_ex != n_orig:
+            raise SystemExit(f"[FATAL] {label} extra valid {n_ex} != main {n_orig}")
+
     sims = []
     for s in range(0, n_orig, 16):
-        sims.append(gen.generate(Xs[s:s + 16].to(device), n_sim).cpu().numpy())
+        eb = None if Es is None else Es[s:s + 16].to(device)
+        sims.append(gen.generate(Xs[s:s + 16].to(device), n_sim,
+                                 eb).cpu().numpy())
     sim_paths_z = np.concatenate(sims, axis=0)                 # (n_orig, n_sim, T)
 
     tmu = float(target_stats["mean"]); tsd = float(target_stats["std"])
@@ -356,10 +380,25 @@ def run_fold(model_kind, fold, args, device):
     lr = float(lr)
     print(f"  lr = {lr:g}  seed = {args.seed}")
 
+    # 원점 고정 추가 맥락 (MAC-Flow 의 extra_context 와 같은 정의·같은 형태).
+    Etr = Eva = None
+    extra_stats = None
+    if EXTRA_COLS:
+        Etr, extra_stats, n_ex_tr, _ = load_extra_context(train_csv, EXTRA_COLS)
+        if n_ex_tr != n_tr:
+            raise SystemExit(f"[FATAL] train extra valid {n_ex_tr} != {n_tr}")
+        print(f"  extra context : {EXTRA_COLS} (dim={len(EXTRA_COLS)}, "
+              f"origin-frozen)")
+
     Xva = Yva = None
     if VAL_SELECT:
         Xva, Yva, _, _, n_va = cached_load_windows_seq(
             val_csv, cond_stats=cond_stats, target_stats=target_stats)
+        if EXTRA_COLS:
+            Eva, _, n_ex_v, _ = load_extra_context(val_csv, EXTRA_COLS,
+                                                   extra_stats=extra_stats)
+            if n_ex_v != n_va:
+                raise SystemExit(f"[FATAL] val extra valid {n_ex_v} != {n_va}")
         print(f"  val   windows = {n_va}  (checkpoint 선택 기준 = val CRPS, "
               f"{VAL_EVERY} 에폭마다)")
 
@@ -369,7 +408,7 @@ def run_fold(model_kind, fold, args, device):
         """val CRPS 를 재고 개선되면 가중치를 스냅샷한다."""
         if not VAL_SELECT:
             return
-        c = val_crps(gen, Xva, Yva, device)
+        c = val_crps(gen, Xva, Yva, device, Eva=Eva)
         mark = ""
         if c < best["crps"]:
             best.update(crps=c, epoch=ep, state=_snapshot(gen))
@@ -377,8 +416,17 @@ def run_fold(model_kind, fold, args, device):
         print(f"      val CRPS = {c:.5f}  (best {best['crps']:.5f} "
               f"@ep{best['epoch']}){mark}")
 
-    dl = DataLoader(TensorDataset(Xtr, Ytr), batch_size=BATCH, shuffle=True,
-                    drop_last=True)
+    ds = (TensorDataset(Xtr, Ytr) if Etr is None
+          else TensorDataset(Xtr, Ytr, Etr))
+    dl = DataLoader(ds, batch_size=BATCH, shuffle=True, drop_last=True)
+
+    def _split(batch):
+        """(x, y) 또는 (x, y, extra) 배치를 장치로 옮겨 셋으로 돌려준다."""
+        if len(batch) == 3:
+            xb, yb, eb = batch
+            return xb.to(device), yb.to(device), eb.to(device)
+        xb, yb = batch
+        return xb.to(device), yb.to(device), None
 
     if model_kind == "vae":
         model = CondVAE().to(device)
@@ -386,9 +434,9 @@ def run_fold(model_kind, fold, args, device):
         for ep in range(1, EPOCHS + 1):
             model.train(); beta = min(1.0, ep / KL_ANNEAL)
             losses = []
-            for xb, yb in dl:
-                xb, yb = xb.to(device), yb.to(device)
-                ymean, ylogvar, mu, lv = model(xb, yb)
+            for batch in dl:
+                xb, yb, eb = _split(batch)
+                ymean, ylogvar, mu, lv = model(xb, yb, eb)
                 loss, rec, kl = vae_loss(ymean, ylogvar, yb, mu, lv, beta)
                 opt.zero_grad(); loss.backward()
                 nn.utils.clip_grad_norm_(model.parameters(), 5.0); opt.step()
@@ -407,13 +455,13 @@ def run_fold(model_kind, fold, args, device):
         it = 0
         for ep in range(1, EPOCHS + 1):
             G.train(); Dc.train(); dl_loss = []
-            for xb, yb in dl:
-                xb, yb = xb.to(device), yb.to(device)
+            for batch in dl:
+                xb, yb, eb = _split(batch)
                 # ---- critic ----
                 noise = torch.randn(xb.shape[0], LATENT, device=device)
                 with torch.no_grad():
-                    y_fake, _ = G(xb, noise)
-                c = G.enc_ctx(xb).detach()
+                    y_fake, _ = G(xb, noise, eb)
+                c = G.enc_ctx(xb, eb).detach()
                 gp_term = gradient_penalty(Dc, yb, y_fake, c, device)
                 d_loss = (Dc(y_fake, c).mean() - Dc(yb, c).mean()
                           + GP_LAMBDA * gp_term)
@@ -422,7 +470,7 @@ def run_fold(model_kind, fold, args, device):
                 # ---- generator every N_CRITIC ----
                 if it % N_CRITIC == 0:
                     noise = torch.randn(xb.shape[0], LATENT, device=device)
-                    y_fake, c2 = G(xb, noise)
+                    y_fake, c2 = G(xb, noise, eb)
                     g_loss = -Dc(y_fake, c2).mean()
                     optG.zero_grad(); g_loss.backward(); optG.step()
                     dl_loss.append((float(d_loss), float(g_loss)))
@@ -446,10 +494,10 @@ def run_fold(model_kind, fold, args, device):
     if EVAL_VAL:
         val_metrics = evaluate_split(gen, model_kind, fold, val_csv, cond_stats,
                                      target_stats, args.n_sim, device,
-                                     "VAL")["metrics"]
+                                     "VAL", extra_stats)["metrics"]
 
     te = evaluate_split(gen, model_kind, fold, test_csv, cond_stats,
-                        target_stats, args.n_sim, device, "TEST")
+                        target_stats, args.n_sim, device, "TEST", extra_stats)
     sim_paths_raw, actual_raw, oidx = te["sim"], te["act"], te["oidx"]
     n_orig = sim_paths_raw.shape[0]
 
@@ -464,6 +512,7 @@ def run_fold(model_kind, fold, args, device):
 
     summ = dict(model=f"cond-{model_kind}", fold=fold, n_sim=args.n_sim,
                 seed=int(args.seed), lr=float(lr),
+                cond_cols=list(COND_COLS), extra_cols=list(EXTRA_COLS),
                 val_select=bool(VAL_SELECT),
                 best_epoch=int(best["epoch"]),
                 best_val_crps_z=(float(best["crps"])

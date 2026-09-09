@@ -65,6 +65,11 @@ os.environ.setdefault("PS_BASE", "fpath_novol")
 os.environ.setdefault("FPATH_DIM", "2")
 # 베이스라인도 검증셋을 시험셋과 같은 정의로 평가하게 한다 (lr 선택 지표).
 os.environ["VG_EVAL_VAL"] = "1"
+# 베이스라인 원점 고정 추가 맥락.  MAC-Flow 는 sp_skew_13w 를 extra_context 로
+# 받아 flow 헤드에 직접 붙인다(run_lr_sweep LOCKED: extra_context_channels).
+# 한쪽만 최근 실현 왜도를 입력으로 받으면 "왜도 재현" 비교가 성립하지 않으므로
+# 같은 값을 같은 형태(원점 행 z-스코어)로 준다.  VG_EXTRA_COLS="" 로 끌 수 있다.
+os.environ.setdefault("VG_EXTRA_COLS", "sp_skew_13w")
 
 # 베이스라인 조건 채널 — 논문 Table 3 과 같게 맞춘다.
 #   예전에는 train_flow_seq.COND_COLS(6채널)를 썼는데 그 목록에는
@@ -225,8 +230,10 @@ def baseline_cell(mk, fold, seed, lr, device):
 
     태그에 t3 를 넣어 예전 6 채널(train_flow_seq.COND_COLS) 결과와 파일을
     분리한다.  안 그러면 채널이 다른 옛 결과를 "이미 있음"으로 건너뛴다.
+    sp_skew_13w 를 주입하면 sk 를 더 붙여 그 이전 결과와도 분리한다.
     """
-    tag = f"_t3_lr{LRS.lr_tag(lr)}_s{seed}"
+    sk_sfx = "sk" if os.environ.get("VG_EXTRA_COLS") else ""
+    tag = f"_t3{sk_sfx}_lr{LRS.lr_tag(lr)}_s{seed}"
     sp = os.path.join(RESULT_DIR, f"{mk}_baseline{tag}_{fold}_summary.json")
     if not os.path.exists(sp):
         args = SimpleNamespace(model=mk, fold=fold, folds_dir=FOLDS_DIR,
