@@ -96,6 +96,14 @@ import analyze_pathshape_rawvol as PS                                    # noqa:
 import train_garch_flow as T                                             # noqa: E402
 import train_vae_gan_baseline as VG                                      # noqa: E402
 
+# AR 롤아웃 가속.  run_lr_sweep 이 T.MambaFlowAR 을 MambaFlowARFpath 로 바꾼
+# *뒤* 에 걸어야 두 클래스가 모두 잡힌다.  per-step MLP 인코더 + ENCODER_MASK_SP
+# False 일 때만 가속하고 아니면 원본에 위임한다 (회귀 테스트에서 네 경우 모두
+# 원본과 차이 0.000e+00, CPU 배속 Fpath 2.70x).  ARFAST=0 으로 끌 수 있다.
+if os.environ.get("ARFAST", "1") == "1":
+    import ar_sample_fast                                                # noqa: E402
+    ar_sample_fast.patch()
+
 VG.garch_preprocess_fold = rawstd_preprocess_fold      # import-bound 이름 교체
 VG.forward_garch_rescale = forward_rawvol_rescale
 

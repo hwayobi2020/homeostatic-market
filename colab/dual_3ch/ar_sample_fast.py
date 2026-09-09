@@ -186,24 +186,28 @@ def patch():
     """베이스와 Fpath 양쪽의 ar_sample 을 가속판으로 교체하고 적중 클래스를 찍는다."""
     global _ORIG_BASE, _ORIG_FPATH
     hit = []
-    import train_flow_seq  # noqa: F401  (T.MambaFlowAR 원본 보장용 no-op)
-    base_cls = getattr(T, "_BASE_MambaFlowAR", None)
-    if base_cls is None:
-        base_cls = T.MambaFlowAR
-    if "ar_sample" in base_cls.__dict__:
+    done = set()          # 같은 클래스를 두 번 잡지 않는다.
+
+    # Fpath 를 먼저 잡는다.  run_lr_sweep 이 T.MambaFlowAR 을 Fpath 로 덮어쓰므로
+    # 베이스 경로가 같은 클래스를 가리킬 수 있고, 그때 베이스 가속판을 걸면
+    # fut_sum_rep 이 빠져 차원이 안 맞는다.
+    try:
+        import fpath_model
+        fp = fpath_model.MambaFlowARFpath
+        if "ar_sample" in fp.__dict__:
+            if _ORIG_FPATH is None:
+                _ORIG_FPATH = fp.__dict__["ar_sample"]
+            fp.ar_sample = ar_sample_fpath
+            hit.append(fp.__name__); done.add(id(fp))
+    except Exception as e:                                        # noqa: BLE001
+        print(f"[ar_sample_fast] fpath_model 패치 실패: {e!r}")
+
+    base_cls = T.MambaFlowAR
+    if id(base_cls) not in done and "ar_sample" in base_cls.__dict__:
         if _ORIG_BASE is None:
             _ORIG_BASE = base_cls.__dict__["ar_sample"]
         base_cls.ar_sample = ar_sample_base
         hit.append(base_cls.__name__)
-    try:
-        import fpath_model
-        if "ar_sample" in fpath_model.MambaFlowARFpath.__dict__:
-            if _ORIG_FPATH is None:
-                _ORIG_FPATH = fpath_model.MambaFlowARFpath.__dict__["ar_sample"]
-            fpath_model.MambaFlowARFpath.ar_sample = ar_sample_fpath
-            hit.append("MambaFlowARFpath")
-    except Exception as e:                                        # noqa: BLE001
-        print(f"[ar_sample_fast] fpath_model 패치 실패: {e!r}")
     print(f"[ar_sample_fast] 패치 적중: {hit or '없음'}  "
           f"(MLP 인코더 + ENCODER_MASK_SP=False 일 때만 가속)")
     return hit
@@ -211,12 +215,11 @@ def patch():
 
 def unpatch():
     global _ORIG_BASE, _ORIG_FPATH
-    if _ORIG_BASE is not None:
-        base_cls = getattr(T, "_BASE_MambaFlowAR", T.MambaFlowAR)
-        base_cls.ar_sample = _ORIG_BASE
     if _ORIG_FPATH is not None:
         import fpath_model
         fpath_model.MambaFlowARFpath.ar_sample = _ORIG_FPATH
+    if _ORIG_BASE is not None:
+        T.MambaFlowAR.ar_sample = _ORIG_BASE
     print("[ar_sample_fast] 원복")
 
 
