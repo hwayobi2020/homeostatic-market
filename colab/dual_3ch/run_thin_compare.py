@@ -49,12 +49,12 @@ sys.path.insert(0, HERE)
 os.environ.setdefault("PS_BASE", "fpath_novol")
 os.environ.setdefault("FPATH_DIM", "2")
 
-# VAE/GAN 의 원래 조건 채널(6개)을 PS import 전에 확보해 둔다.
-#   analyze_pathshape_rawvol 은 import 시점에 set_cond_cols(ENC_COLS) 로
-#   train_garch_flow.COND_COLS 를 5채널(metab 포함)로 덮어쓴다.  그 뒤 import 되는
-#   train_vae_gan_baseline 이 그 값을 읽으면 원래 세팅과 다른 모델이 만들어진다.
-import train_flow_seq as _TFS                                            # noqa: E402
-VG_COND_COLS = list(_TFS.COND_COLS)
+# 베이스라인 조건 입력을 MAC-Flow 와 일치시킨다 (VG import 전에 설정해야 한다).
+#   과거 52 주 5 채널(논문 Table 3) + 미래 tbill·metab + 원점 고정 sp_skew_13w.
+#   예전에는 train_flow_seq.COND_COLS(6채널, metab 없이 변동성 2채널)를 썼는데
+#   그러면 MAC-Flow 만 논문의 핵심 조건 변수(metab)를 받아 비교가 성립하지 않는다.
+os.environ.setdefault("VG_EXTRA_COLS", "sp_skew_13w")
+os.environ.setdefault("VG_FUTURE_UNMASK", "metab_13w")
 
 from rawvol_helpers import (patch_rawvol, rawstd_preprocess_fold,        # noqa: E402
                             forward_rawvol_rescale)
@@ -76,6 +76,11 @@ FOLDS = PS.FOLDS
 SEEDS = PS.SEEDS
 N_SIM = PS.N_SIM
 DM_LAG = 12             # 13주 지평 → 최대 12주 겹침
+
+# 튜닝 결과 (27 조합 x 4 폴드 val CRPS 최소).  run_tuning_all 과 같은 값이어야
+# 같은 태그의 결과를 재사용한다.
+VG_SPEC = {"vae": dict(lr=1e-4, dctx=128, hid=192),
+           "gan": dict(lr=3e-4, dctx=192, hid=128)}
 # 세 모델 모두 같은 시드 집합을 쓴다.  한쪽만 여러 시드를 평균하면 그쪽 학습
 # 잡음이 √k 배 줄어 차이 d 의 분산이 과소평가되고 유의성이 과장된다.
 OUT = os.path.join(PS.RESULT_DIR, f"dm_compare{PS.CACHE_SUFFIX}.json")
@@ -237,19 +242,26 @@ def main():
             runs = []
             for sd in SEEDS:
                 try:
-                    spv = os.path.join(PS.RESULT_DIR, f"{mk}_baseline_{fold}_summary.json")
-                    bakv = _keep_summary(spv)
+                    sp = VG_SPEC[mk]
+                    # run_tuning_all.baseline_cell 과 같은 태그 규약.  같으면
+                    # 이미 학습된 결과를 그대로 쓰고, 다르면 새로 학습한다.
+                    tag = (f"_t3skfu_c{sp['dctx']}h{sp['hid']}"
+                           f"_lr{('%g' % sp['lr']).replace('-', 'm').replace('.', 'd')}"
+                           f"_s{sd}")
                     args = SimpleNamespace(model=mk, fold=fold, folds_dir=PS.FOLDS_DIR,
-                                           out_dir=PS.RESULT_DIR, n_sim=N_SIM, seed=sd)
+                                           out_dir=PS.RESULT_DIR, n_sim=N_SIM, seed=sd,
+                                           lr=sp["lr"], tag=tag)
                     _saved = list(T.COND_COLS)
-                    PS.set_cond_cols(VG_COND_COLS)
+                    _saved_cap = (VG.D_CTX, VG.HID)
+                    PS.set_cond_cols(PS.ENC_COLS)          # Table 3 의 5 채널
                     VG.COND_COLS = list(T.COND_COLS); VG.N_CH = len(VG.COND_COLS)
                     VG.SP_CH, VG.TBILL_CH = T.SP_CH, T.TBILL_CH
+                    VG.D_CTX, VG.HID = sp["dctx"], sp["hid"]
                     try:
                         runs.append(VG.run_fold(mk, fold, args, device))
                     finally:
                         PS.set_cond_cols(_saved)
-                    _restore_summary(spv, bakv)
+                        VG.D_CTX, VG.HID = _saved_cap
                 except Exception as e:
                     print(f"  [FAIL {mk} s{sd}] {e!r}")
             if runs:
