@@ -43,7 +43,8 @@ sys.path.insert(0, HERE)
 
 import analyze_pathshape_rawvol as PS                                # noqa: E402
 
-CACHE_DIR = os.path.join(PS.RESULT_DIR, f"pathshape_zeromean_k1k3_cache{PS.CACHE_SUFFIX}")
+CACHE_DIR = os.path.join(PS.RESULT_DIR,
+                         f"pathshape_zeromean_k1k3_cache{PS.CACHE_SUFFIX}{PS.ORIGIN_SUFFIX}")
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 FOLDS = PS.FOLDS
@@ -120,9 +121,17 @@ def compute_fold_seed(fold, seed, device):
 
     def metr(sim):
         m = PS.sim_metrics(sim, rescale)
-        return {"skew": m["skew"], "uw_mean": m["uw_mean"], "uw_cvar10": m["uw_cvar10"]}
+        # 재추론이 비싸다(4 fold × 5 seed × GPU).  지표를 골라 버리지 말고 통째로 담는다.
+        # 원점별 성분이 핵심이다 — 풀링 CVaR 는 어느 원점이 꼬리에 드는지가 원점
+        # 변동성으로 거의 고정돼 형태 효과가 희석되지만, 원점 안에서는 1,000 경로가
+        # 같은 σ 를 공유하므로 그 선택 효과가 빠진다.
+        return dict(m)
 
     res = {"flat": {}, "shape_tbill": {}, "shape_metab": {}}
+    # 원점 축 메타 — 원점별 Δ 를 시점축·국면축에 놓으려면 필요하다(§4.2 분할 재사용).
+    res["_origin"] = {"dates": [str(d) for d in ctx.get("origin_dates", [])],
+                      "tbill": [float(v) for v in ctx.get("real_tb_mean", [])],
+                      "metab": [float(v) for v in ctx.get("real_mb_mean", [])]}
     # 공통 baseline: 양 축 마지막값 flat ("현 상태 지속")
     res["flat"] = metr(rollout_paths(ctx, tb_flat, mb_flat, seed, device))
     for K in K_LIST:

@@ -43,7 +43,8 @@ sys.path.insert(0, HERE)
 
 import analyze_pathshape_rawvol as PS                                # noqa: E402
 
-CACHE_DIR = os.path.join(PS.RESULT_DIR, f"pathshape_anchored_k1k3_cache{PS.CACHE_SUFFIX}")
+CACHE_DIR = os.path.join(PS.RESULT_DIR,
+                         f"pathshape_anchored_k1k3_cache{PS.CACHE_SUFFIX}{PS.ORIGIN_SUFFIX}")
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 FOLDS = PS.FOLDS
@@ -116,9 +117,14 @@ def compute_fold_seed(fold, seed, device):
 
     def metr(sim):
         m = PS.sim_metrics(sim, rescale)
-        return {"skew": m["skew"], "uw_mean": m["uw_mean"], "uw_cvar10": m["uw_cvar10"]}
+        # 지표를 골라 버리지 않는다(재추론 비용) — zeromean 스크립트와 동일 규약
+        return dict(m)
 
     res = {"flat": {}, "shape_tbill": {}, "shape_metab": {}}
+    # 원점 축 메타 — 원점별 Δ 를 시점축·국면축에 놓으려면 필요하다(§4.2 분할 재사용).
+    res["_origin"] = {"dates": [str(d) for d in ctx.get("origin_dates", [])],
+                      "tbill": [float(v) for v in ctx.get("real_tb_mean", [])],
+                      "metab": [float(v) for v in ctx.get("real_mb_mean", [])]}
     # 공통 baseline: 양 축 마지막값 flat ("현 상태 지속")
     res["flat"] = metr(rollout_paths(ctx, tb_flat, mb_flat, seed, device))
     for K in K_LIST:

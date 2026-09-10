@@ -81,6 +81,10 @@ else:
     CACHE_SUFFIX = ""
 
 # ★ 하류 §4 스크립트들도 자기 CACHE_DIR 에 PS.CACHE_SUFFIX 를 붙여 모델별 캐시 분리(stale hit 방지).
+# ORIGIN_SUFFIX: 원점별 지표를 담는 캐시는 *별도 디렉터리*에 쌓는다.  기존 캐시를 지우면
+#   Table 16/18/19 의 게재 숫자를 같은 GPU·라이브러리 환경에서만 재현할 수 있게 되므로,
+#   덮지 않고 새 디렉터리로 분리한다.  ""(빈 값)로 두면 기존 경로를 그대로 쓴다.
+ORIGIN_SUFFIX = os.environ.get("PS_ORIGIN_SUFFIX", "_org")
 CACHE_DIR = os.path.join(RESULT_DIR, f"pathshape_test_cache{CACHE_SUFFIX}")
 os.makedirs(CACHE_DIR, exist_ok=True)
 
@@ -301,22 +305,53 @@ def sim_metrics(sim_z, rescale):
     underw = cum0.min(axis=2).ravel()                                     # intra-horizon loss (진입 대비, ≤0) ★주
     mdd = (cum0 - np.maximum.accumulate(cum0, axis=2)).min(axis=2).ravel()  # peak-to-trough MDD (보조)
     term = cum[:, :, -1].ravel()                                          # terminal 누적수익 (끝점)
-    # 원점별 IHL — 리뷰어 1 #1 이 요구한 "1,000 draws" 성분을 내려면 집계 전
-    # 원점 단위가 있어야 한다.  Diff 셀의 원점 부트스트랩 구간이 여기서 나온다.
+    # 원점별 지표 — 리뷰어 1 #1 이 요구한 "1,000 draws" 성분을 내려면 집계 전
+    # 원점 단위가 있어야 한다.  풀링 CVaR 는 어느 원점이 꼬리에 드는지가 원점
+    # 변동성으로 거의 고정돼 형태 효과가 희석되는데, 원점 안에서는 1,000 경로가
+    # 같은 σ 를 공유하므로 그 선택 효과가 빠진다.
+    #   ※ 원점별 CVaR 의 평균 ≠ 풀링 CVaR.  전자는 원점 등가중, 후자는 고변동
+    #     원점이 꼬리를 독점한다.  서로 다른 양이므로 표에 정의를 명시할 것.
+    # 재추론이 비싸므로(4 fold × 5 seed × GPU) 꼬리 지표를 한 번에 다 담는다.
     uw_by_origin = cum0.min(axis=2)                                       # (n_orig, n_sim)
+    mdd_by_origin = (cum0 - np.maximum.accumulate(cum0, axis=2)).min(axis=2)
+    term_by_origin = cum[:, :, -1]
     n_orig = uw_by_origin.shape[0]
-    k10 = max(1, int(0.10 * uw_by_origin.shape[1]))
+
+    def _org(mat, alphas=(0.10, 0.05, 0.01), with_var=True):
+        """원점 축을 유지한 채 하위꼬리 통계.  VaR=분위, CVaR=그 아래 평균."""
+        srt = np.sort(mat, axis=1)                                        # 오름차순 = 손실 큰 쪽 앞
+        n = srt.shape[1]
+        out = {"mean": mat.mean(axis=1), "std": mat.std(axis=1, ddof=1)}
+        for a in alphas:
+            k = max(1, int(a * n))
+            out[f"cvar{int(a*100)}"] = srt[:, :k].mean(axis=1)
+            if with_var:
+                out[f"var{int(a*100)}"] = srt[:, k - 1]
+        return {k: [float(x) for x in v] for k, v in out.items()}
+
+    uw_org = _org(uw_by_origin)
+    mdd_org = _org(mdd_by_origin, alphas=(0.10, 0.01), with_var=False)
+    term_org = _org(term_by_origin, alphas=(0.10, 0.01), with_var=False)
     return dict(std=float(f.std(ddof=1)), skew=_skew(f), exkurt=_exkurt(f),
                 cvar5=compute_cvar(f, 0.05), cvar1=compute_cvar(f, 0.01),
                 uw_mean=float(underw.mean()), uw_cvar1=compute_cvar(underw, 0.01),
                 uw_cvar5=compute_cvar(underw, 0.05), uw_cvar10=compute_cvar(underw, 0.10),
                 mdd_mean=float(mdd.mean()), mdd_cvar1=compute_cvar(mdd, 0.01),
                 term_mean=float(term.mean()), term_cvar1=compute_cvar(term, 0.01),
-                # 원점별: 평균 IHL 과 원점 내 하위 10% 평균 (전역 uw_* 와 같은 정의)
-                uw_mean_by_origin=[float(v) for v in uw_by_origin.mean(axis=1)],
-                uw_cvar10_by_origin=[
-                    float(v) for v in
-                    np.sort(uw_by_origin, axis=1)[:, :k10].mean(axis=1)],
+                # 원점별 (전역 uw_*/mdd_*/term_* 와 같은 정의를 원점 안에서 계산)
+                uw_mean_by_origin=uw_org["mean"],
+                uw_std_by_origin=uw_org["std"],
+                uw_cvar10_by_origin=uw_org["cvar10"],
+                uw_cvar5_by_origin=uw_org["cvar5"],
+                uw_cvar1_by_origin=uw_org["cvar1"],
+                uw_var10_by_origin=uw_org["var10"],
+                uw_var5_by_origin=uw_org["var5"],
+                uw_var1_by_origin=uw_org["var1"],
+                mdd_mean_by_origin=mdd_org["mean"],
+                mdd_cvar10_by_origin=mdd_org["cvar10"],
+                mdd_cvar1_by_origin=mdd_org["cvar1"],
+                term_mean_by_origin=term_org["mean"],
+                term_cvar10_by_origin=term_org["cvar10"],
                 n_origin=int(n_orig))
 
 
