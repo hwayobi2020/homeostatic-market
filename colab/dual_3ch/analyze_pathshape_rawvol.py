@@ -264,11 +264,17 @@ def load_fold_seed(fold, seed, device):
     _s2 = _gsig[_orow] ** 2
     _e2 = (_gz[_orow] * _gsig[_orow]) ** 2
 
+    # 원점 조건 시점(마지막 관측 행)의 날짜.  원점별 Δ 를 시간축·국면축에 놓으려면
+    # 필요하다.  train_garch_flow.evaluate_test 와 같은 규약(_orow 행)이다.
+    _dcol = df_te["date"].values if "date" in df_te.columns else None
+    _odate = (np.array([str(_dcol[int(r)])[:10] for r in _orow])
+              if _dcol is not None else np.array([str(int(r)) for r in _orow]))
+
     if n_orig > N_ORIGIN_MAX:
         idx = np.linspace(0, n_orig - 1, N_ORIGIN_MAX).astype(int)
         Xte_dev = Xte_dev[idx]; Xte_extra_dev = Xte_extra_dev[idx]
         last_sp_dev = last_sp_dev[idx]; _s2 = _s2[idx]; _e2 = _e2[idx]
-        _fut_tb = _fut_tb[idx]; _fut_mb = _fut_mb[idx]
+        _fut_tb = _fut_tb[idx]; _fut_mb = _fut_mb[idx]; _odate = _odate[idx]
 
     rescale = dict(tmu=tmu, tsd=tsd, s2=_s2, e2=_e2, om=_om, al=_al, be=_be, mu=_mu)
     real_tb_mean = _fut_tb.mean(axis=1) * csd[ti] + cmu[ti]   # raw 연주간금리 (binning 용, per origin)
@@ -277,6 +283,7 @@ def load_fold_seed(fold, seed, device):
                 rescale=rescale, tb_z=tb_z, mb_z=mb_z,
                 real_tb_fut=_fut_tb, real_mb_fut=_fut_mb,       # (n_orig, FUTURE_LEN) z 경로
                 real_tb_mean=real_tb_mean, real_mb_mean=real_mb_mean,
+                origin_dates=_odate,
                 csd=csd, cmu=cmu, ti=ti, mi=mi)
 
 
@@ -294,12 +301,23 @@ def sim_metrics(sim_z, rescale):
     underw = cum0.min(axis=2).ravel()                                     # intra-horizon loss (진입 대비, ≤0) ★주
     mdd = (cum0 - np.maximum.accumulate(cum0, axis=2)).min(axis=2).ravel()  # peak-to-trough MDD (보조)
     term = cum[:, :, -1].ravel()                                          # terminal 누적수익 (끝점)
+    # 원점별 IHL — 리뷰어 1 #1 이 요구한 "1,000 draws" 성분을 내려면 집계 전
+    # 원점 단위가 있어야 한다.  Diff 셀의 원점 부트스트랩 구간이 여기서 나온다.
+    uw_by_origin = cum0.min(axis=2)                                       # (n_orig, n_sim)
+    n_orig = uw_by_origin.shape[0]
+    k10 = max(1, int(0.10 * uw_by_origin.shape[1]))
     return dict(std=float(f.std(ddof=1)), skew=_skew(f), exkurt=_exkurt(f),
                 cvar5=compute_cvar(f, 0.05), cvar1=compute_cvar(f, 0.01),
                 uw_mean=float(underw.mean()), uw_cvar1=compute_cvar(underw, 0.01),
                 uw_cvar5=compute_cvar(underw, 0.05), uw_cvar10=compute_cvar(underw, 0.10),
                 mdd_mean=float(mdd.mean()), mdd_cvar1=compute_cvar(mdd, 0.01),
-                term_mean=float(term.mean()), term_cvar1=compute_cvar(term, 0.01))
+                term_mean=float(term.mean()), term_cvar1=compute_cvar(term, 0.01),
+                # 원점별: 평균 IHL 과 원점 내 하위 10% 평균 (전역 uw_* 와 같은 정의)
+                uw_mean_by_origin=[float(v) for v in uw_by_origin.mean(axis=1)],
+                uw_cvar10_by_origin=[
+                    float(v) for v in
+                    np.sort(uw_by_origin, axis=1)[:, :k10].mean(axis=1)],
+                n_origin=int(n_orig))
 
 
 def run_fold_seed(fold, seed, device):
@@ -315,12 +333,22 @@ def run_fold_seed(fold, seed, device):
                            tbill_path, metab_path, device)
         return sim_metrics(sim, ctx["rescale"])
 
+    # 원점 축 메타 — 원점별 Δ 를 시간·국면축에 놓으려면 필요하다.
+    #   dates      : x 축(원점 시점)
+    #   tb/mb_mean : 국면 분류(저금리·고유동성 등) → 조건부 반응
+    res["origin_dates"] = [str(d) for d in ctx.get("origin_dates", [])]
+    res["origin_tbill"] = [float(v) for v in ctx.get("real_tb_mean", [])]
+    res["origin_metab"] = [float(v) for v in ctx.get("real_mb_mean", [])]
+
     # [A] LEVEL 9-grid (flat)
-    for pt in PCTLS:
-        for pm in PCTLS:
-            key = f"{PCTL_LABEL[pt]}_{PCTL_LABEL[pm]}"
-            res["level"][key] = _run(np.full(FUTURE_LEN, ctx["tb_z"][pt]),
-                                     np.full(FUTURE_LEN, ctx["mb_z"][pm]))
+    #   PS_SKIP_LEVEL=1 이면 건너뛴다.  §4.2(레벨)는 구간 간 차이가 %p 단위라
+    #   이번 불확실성 작업 대상이 아니고, 9/25 시나리오를 빼면 그만큼 빨라진다.
+    if os.environ.get("PS_SKIP_LEVEL") != "1":
+        for pt in PCTLS:
+            for pm in PCTLS:
+                key = f"{PCTL_LABEL[pt]}_{PCTL_LABEL[pm]}"
+                res["level"][key] = _run(np.full(FUTURE_LEN, ctx["tb_z"][pt]),
+                                         np.full(FUTURE_LEN, ctx["mb_z"][pm]))
 
     # [B] SHAPE — 평균=z(p50) 고정, 진폭=z(p90)-z(p10), 모양만
     tb_c = ctx["tb_z"][50]; tb_rng = ctx["tb_z"][90] - ctx["tb_z"][10]
@@ -377,17 +405,20 @@ def _summarize():
             print(f"\n=== {fold}: (결과 없음)"); continue
         print(f"\n=== {fold}  ({len(loaded)} seed) " + "=" * 60)
 
-        # LEVEL 9-grid
-        print("  [LEVEL 9-grid]  tbill×metab  skew / UWcvar1 / MDDcvar1 (seed mean)")
-        for pt in PCTLS:
-            row = []
-            for pm in PCTLS:
-                key = f"{PCTL_LABEL[pt]}_{PCTL_LABEL[pm]}"
-                sk, _, _ = _agg([d["level"][key]["skew"] for d in loaded])
-                uw, _, _ = _agg([d["level"][key]["uw_cvar1"] for d in loaded])
-                md, _, _ = _agg([d["level"][key]["mdd_cvar1"] for d in loaded])
-                row.append(f"{PCTL_LABEL[pm]}:{sk:+.2f}/{uw:+.4f}/{md:+.4f}")
-            print(f"    tbill={PCTL_LABEL[pt]:>3}  " + "   ".join(row))
+        # LEVEL 9-grid  (PS_SKIP_LEVEL=1 로 건너뛴 캐시면 이 절이 비어 있다)
+        if all(d.get("level") for d in loaded):
+            print("  [LEVEL 9-grid]  tbill×metab  skew / UWcvar1 / MDDcvar1 (seed mean)")
+            for pt in PCTLS:
+                row = []
+                for pm in PCTLS:
+                    key = f"{PCTL_LABEL[pt]}_{PCTL_LABEL[pm]}"
+                    sk, _, _ = _agg([d["level"][key]["skew"] for d in loaded])
+                    uw, _, _ = _agg([d["level"][key]["uw_cvar1"] for d in loaded])
+                    md, _, _ = _agg([d["level"][key]["mdd_cvar1"] for d in loaded])
+                    row.append(f"{PCTL_LABEL[pm]}:{sk:+.2f}/{uw:+.4f}/{md:+.4f}")
+                print(f"    tbill={PCTL_LABEL[pt]:>3}  " + "   ".join(row))
+        else:
+            print("  [LEVEL 9-grid]  건너뜀 (PS_SKIP_LEVEL=1)")
 
         # SHAPE (평균 고정) — skew/cvar1/std mean±std, shape 간 차이 vs seed 노이즈
         for var, label in [("shape_tbill", "tbill-shape (metab flat)"),
