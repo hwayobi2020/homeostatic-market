@@ -56,6 +56,12 @@ from train_garch_x import crps_pooled, crps_ensemble, cvar, var_q, emd1d  # noqa
 # (sp_return 은 y 자체라 제외, sp_std_13w 는 GARCH 가 σ 재귀로 내생 추정한다).
 XCOLS = ["tbill_wr", "metab_13w", "ads_lag", "wti_wr", "sp_skew_13w"]
 NG = len(XCOLS)                                   # γ 개수
+# GX_FUTURE=1 : 시뮬레이션에 미래 실현 거시 *경로* 를 매 스텝 주입한다.
+#   기본 0 은 원점 값 13 주 고정(=§4.1.2 의 정보 일치 설정).
+#   1 은 MAC-Flow 가 fpath 요약으로 받는 미래 경로를 기준선에도 주는 판이며,
+#   결과 파일은 `_fut` 접미사로 분리해 기존 산출물과 섞이지 않게 한다.
+USE_FUTURE = os.environ.get("GX_FUTURE", "0") == "1"
+TAGSFX = "_fut" if USE_FUTURE else ""
 FIT_SCALE = 100.0                                 # 퍼센트 스케일 (refit 과 동일)
 OPTS = dict(maxiter=5000, maxfun=100000, ftol=1e-14, gtol=1e-12)
 LAM0_GRID = [-0.4, -0.2, 0.0, 0.2]                # λ 다중 출발 (refit 과 동일)
@@ -148,14 +154,26 @@ def fit(y, X):
     return p, float(best.fun), int(best.nit)
 
 
-def simulate(p, eps_orig, s2_orig, X_o, n_sim, rng):
-    """origin 에서 13 주 forward.  거시는 origin 값 고정(미래 미주입)."""
+def simulate(p, eps_orig, s2_orig, X_path, n_sim, rng):
+    """origin 에서 13 주 forward.
+
+    `X_path` 가 (NG,) 면 원점 값을 13 주 내내 고정한다 (GX_FUTURE=0, 기본).
+    (FUT, NG) 면 **미래 실현 거시 경로**를 매 스텝 주입한다 (GX_FUTURE=1) —
+    MAC-Flow 가 fpath 요약으로 받는 그 경로를 GARCH 에도 주는 판이다.
+    GARCH 는 경로 전체를 한 번에 요약하지 못하고 한 스텝씩만 받을 수 있으므로,
+    이것이 이 모형 부류가 미래 경로를 쓸 수 있는 최대치다.
+    """
     mu, om, al, be, g, nu, lam = _unpack(p)
-    macro = float(np.exp(_exp_arg(g, np.nan_to_num(X_o, nan=0.0))))
+    Xp = np.atleast_2d(np.nan_to_num(np.asarray(X_path, float), nan=0.0))
+    if Xp.shape[0] == 1:
+        Xp = np.repeat(Xp, FUT, axis=0)                 # 원점 고정
+    if Xp.shape != (FUT, NG):
+        raise ValueError(f"X_path shape {Xp.shape} != {(FUT, NG)} or {(NG,)}")
     s2 = np.full(n_sim, s2_orig)
     e2prev = np.full(n_sim, eps_orig ** 2)
     out = np.empty((n_sim, FUT))
     for h in range(FUT):
+        macro = float(np.exp(_exp_arg(g, Xp[h])))
         s2 = np.maximum((om + al * e2prev + be * s2) * macro, 1e-12)
         eps = np.sqrt(s2) * hansen_sample(nu, lam, n_sim, rng)
         out[:, h] = mu + eps
@@ -174,7 +192,7 @@ def _ek(a):
 
 
 def run_fold(fold):
-    sp = os.path.join(RESULT_DIR, f"garch_xpast_matched_{fold}_summary.json")
+    sp = os.path.join(RESULT_DIR, f"garch_xpast_matched{TAGSFX}_{fold}_summary.json")
     if os.path.exists(sp):
         print(f"[skip] {os.path.basename(sp)}")
         return
@@ -215,7 +233,9 @@ def run_fold(fold):
     sim = np.empty((len(origins), N_SIM, FUT), dtype=np.float32)
     act = np.empty((len(origins), FUT), dtype=np.float32)
     for i, t in enumerate(origins):
-        sim[i] = simulate(p, eps_te[t], s2_te[t], Xte[t], N_SIM, rng)
+        # GX_FUTURE=1 이면 t+1..t+FUT 의 실현 거시 경로를 주입한다.
+        Xarg = Xte[t + 1: t + 1 + FUT] if USE_FUTURE else Xte[t]
+        sim[i] = simulate(p, eps_te[t], s2_te[t], Xarg, N_SIM, rng)
         act[i] = yte[t + 1:t + 1 + FUT]
 
     crps_m, crps_s = crps_pooled(sim, act)
@@ -230,7 +250,7 @@ def run_fold(fold):
     per_oc = np.array([[crps_ensemble(sim[i, :, w], act[i, w]) for w in range(FUT)]
                        for i in range(len(origins))])
     dates = np.array([str(te["date"].values[t]) for t in origins])
-    pref = os.path.join(RESULT_DIR, f"garch_xpast_matched_{fold}")
+    pref = os.path.join(RESULT_DIR, f"garch_xpast_matched{TAGSFX}_{fold}")
     np.save(f"{pref}_crps_per_origin.npy", per_oc)
     np.save(f"{pref}_origin_dates.npy", dates)
 
@@ -266,6 +286,8 @@ def main():
     print("# GARCH-X(past)-skewt — 입력 채널을 MAC-Flow 와 일치 (리뷰어 4 #5a)")
     print(f"#  분산식 외생: {XCOLS}   모수 {4 + NG + 2} 개")
     print("#  λ 는 그대로 상수다 (정보를 맞추되 구조는 안 바꾼다)")
+    print("#  미래 거시 = " + ("실현 경로 매 스텝 주입 (GX_FUTURE=1)"
+                              if USE_FUTURE else "원점 값 13 주 고정 (기본)"))
     print("#" * 92)
     for fold in FOLDS:
         try:
