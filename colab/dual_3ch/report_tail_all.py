@@ -84,7 +84,15 @@ def pinball_per_origin(sim, act, tau):
 
 
 def ihl_loss_per_origin(sim, act, alpha=0.10):
-    """|모형 IHL CVaRα(원점 내 n_sim) − 실측 IHL|."""
+    """|모형 IHL CVaRα(원점 내 n_sim) − 실측 IHL|.
+
+    **주의: 이 손실은 좁은 분포를 편든다.**  실측 IHL 은 그 원점의 한 번 실현값
+    이라 대개 중앙 근처인데, 10% 꼬리 분위를 거기에 맞추라고 하면 중앙을
+    예측하는 모형이 이긴다.  실제로 CondGAN(std_ratio 0.38~0.50, 심한 과소분산)
+    이 이 지표에서 이기면서 전역 IHL CVaR10 오차에서는 두 배로 진다.
+    proper scoring rule 이 아니므로 결론 근거로 쓰지 마라 — 참고로만 찍는다.
+    꼬리는 핀볼(VaR)과 전역 수준 비교로 판단한다.
+    """
     s = ihl_paths(sim)                                   # (n_orig, n_sim)
     a = ihl_paths(act)                                   # (n_orig,)
     k = max(1, int(alpha * s.shape[1]))
@@ -302,13 +310,53 @@ def main():
                   f"{r['se']:>11.6f}{r['dm_hln']:>10.3f}{r['p_two_sided']:>9.4f}")
         print()
 
+    # ---------------- 출력 3b: 4 폴드 통합 · 비중첩 ----------------
+    #   위 통합은 원점 전수라 이웃 구간이 최대 12 주 겹친다 (리뷰어 1 #2).
+    #   같은 오프셋을 4 폴드에서 이어붙이면 폴드 안에서는 13 주 간격이라
+    #   예측 구간이 겹치지 않는다.  13 개 오프셋을 각각 검정한다.
+    print("=" * w)
+    print(f"[4 폴드 통합 · 비중첩] 오프셋별로 4 폴드를 이어붙여 검정 (HAC lag=0)")
+    print("=" * w)
+    print(f"{'손실':<11}{'비교':<12}{'n/오프셋':>9}{'mean diff':>12}"
+          f"{'DM 평균':>10}{'p 중앙':>9}{'p<.05':>7}{'양수':>7}")
+    for lname, _ in LOSSES:
+        base_f = pooled[lname]["MAC-Flow"]
+        if not base_f:
+            continue
+        for m in ORDER[1:]:
+            if not pooled[lname][m] or len(pooled[lname][m]) != len(base_f):
+                continue
+            per_off = []
+            for off in range(STRIDE):
+                b = np.concatenate([x[off::STRIDE] for x in base_f])
+                y = np.concatenate([x[off::STRIDE] for x in pooled[lname][m]])
+                if b.size >= 8:
+                    per_off.append(DM.dm_test(y, b, 0))
+            if not per_off:
+                continue
+            dm_ = [r["dm_hln"] for r in per_off]
+            p_ = [r["p_two_sided"] for r in per_off]
+            res["pooled"][f"{m}|{lname}|thin"] = dict(
+                n_offset=len(per_off), n_per_offset=int(per_off[0]["n"]),
+                d_mean=float(np.mean([r["d_mean"] for r in per_off])),
+                dm_mean=float(np.mean(dm_)), p_median=float(np.median(p_)),
+                n_sig05=int(sum(1 for x in p_ if x < .05)),
+                n_pos=int(sum(1 for r in per_off if r["d_mean"] > 0)))
+            r = res["pooled"][f"{m}|{lname}|thin"]
+            print(f"{lname:<11}{'vs ' + m:<12}{r['n_per_offset']:>9}"
+                  f"{r['d_mean']:>12.6f}{r['dm_mean']:>10.3f}{r['p_median']:>9.4f}"
+                  f"{str(r['n_sig05']) + '/' + str(r['n_offset']):>7}"
+                  f"{str(r['n_pos']) + '/' + str(r['n_offset']):>7}")
+        print()
+
     # ---------------- 출력 4: 시드 t검정 (CVaR 포함) ----------------
     print("=" * w)
     print("[시드 t검정 · 4 폴드 통합] 목표 대비 |오차| 를 시드별 4 폴드 평균 → 검정")
     print("  베이스라인이 5 시드면 Welch, GARCH(1 판)면 그 상수에 대한 1 표본")
     print("=" * w)
     keys = list(global_metrics(np.zeros((1, 2, 2)), np.zeros((1, 2))).keys())
-    print(f"{'지표':<16}{'MAC-Flow':>20}{'비교':<12}{'베이스라인':>20}{'t':>8}{'p':>9}")
+    print(f"{'지표':<18}{'MAC-Flow':>22}  {'비교':<12}{'베이스라인':>22}"
+          f"{'t':>8}{'p':>9}")
     for k in keys:
         def seed_means(model):
             n = min((len(gm_store[model][f]) for f in gm_store[model]), default=0)
@@ -325,19 +373,25 @@ def main():
             if Y is None:
                 continue
             if Y.size == 1:
-                t, p = stats.ttest_1samp(X, Y[0]); btxt = f"{Y[0]:>20.6f}"
+                t, p = stats.ttest_1samp(X, Y[0]); btxt = f"{Y[0]:>22.6f}"
             else:
                 t, p = stats.ttest_ind(X, Y, equal_var=False)
-                btxt = f"{Y.mean():>12.6f}±{Y.std(ddof=1) / np.sqrt(Y.size):.6f}"
+                btxt = f"{Y.mean():>14.6f}±{Y.std(ddof=1) / np.sqrt(Y.size):.6f}"
             mark = "***" if p < .01 else "**" if p < .05 else "*" if p < .10 else ""
             res["seed_t"][f"{m}|{k}"] = dict(mac=float(X.mean()),
                                              base=float(Y.mean()),
                                              t=float(t), p=float(p))
-            print(f"{k:<16}{X.mean():>12.6f}±{X.std(ddof=1) / np.sqrt(X.size):.6f}"
-                  f"{'vs ' + m:<12}{btxt}{t:>8.2f}{p:>9.4f} {mark}")
+            print(f"{k:<18}{X.mean():>14.6f}±{X.std(ddof=1) / np.sqrt(X.size):.6f}"
+                  f"  {'vs ' + m:<12}{btxt}{t:>8.2f}{p:>9.4f} {mark}")
         print()
     print("  *** p<.01  ** p<.05  * p<.10")
-    print("  CVaR 은 단독 elicitable 이 아니라 DM 이 아니라 이 표로만 본다.")
+    print("  CVaR 은 단독 elicitable 이 아니라 DM 대신 이 표로만 본다.")
+    print()
+    print("  [경고] DM 표의 'IHL' 행은 결론 근거로 쓰지 마라.  실측 IHL 이 원점당")
+    print("         한 번 실현값이라 10% 꼬리 분위를 거기 맞추라는 손실이 되고,")
+    print("         좁은 분포를 편든다 (CondGAN std_ratio 0.38~0.50 이 그 지표에서")
+    print("         이기면서 전역 IHL CVaR10 오차는 두 배로 진다).  꼬리는 핀볼")
+    print("         (proper scoring rule)과 이 시드 t검정 표로 판단한다.")
 
     out = os.path.join(RESULT_DIR, f"tail_report_{FLOW_TAG}_{GARCH_PREFIX}.json")
     with open(out, "w", encoding="utf-8") as fh:
