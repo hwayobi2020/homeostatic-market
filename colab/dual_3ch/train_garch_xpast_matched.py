@@ -62,28 +62,32 @@ NG = len(XCOLS)                                   # γ 개수
 #   결과 파일은 `_fut` 접미사로 분리해 기존 산출물과 섞이지 않게 한다.
 USE_FUTURE = os.environ.get("GX_FUTURE", "0") == "1"
 TAGSFX = "_fut" if USE_FUTURE else ""
+# 미래 주입에서 제외하고 원점 값으로 고정할 채널.
+#   sp_skew_13w 는 sp_return 의 13 주 롤링 왜도라, t+h 행의 창이 예측 대상
+#   r_{t+1}..r_{t+h} 를 담는다.  shift 로는 한 주밖에 못 막으므로 아예 뺀다.
+#   MAC-Flow 도 이 값을 원점 고정 스칼라로만 받으므로 이게 정보 일치다.
+FROZEN_X = {"sp_skew_13w"}
+FROZEN_IDX = [i for i, c in enumerate(XCOLS) if c in FROZEN_X]
 FIT_SCALE = 100.0                                 # 퍼센트 스케일 (refit 과 동일)
 OPTS = dict(maxiter=5000, maxfun=100000, ftol=1e-14, gtol=1e-12)
 LAM0_GRID = [-0.4, -0.2, 0.0, 0.2]                # λ 다중 출발 (refit 과 동일)
 
 
 def _skew13(dfs):
-    """13 주 rolling skew (date → 값).  **`.shift(1)` 을 건다.**
+    """13 주 rolling skew (date → 값).  `rawstd_preprocess_fold` 와 **같은 정의**.
 
-    `rawstd_preprocess_fold` 는 shift 없이 계산하지만, 거기서는 MAC-Flow 가 이
-    값을 *원점 행 하나*만 뽑아 13 주 내내 고정해 쓰므로 r_origin 이 포함돼도
-    관측된 값이라 문제가 없다.
+    shift 를 걸지 않는다.  MAC-Flow 가 이 값을 원점 행 하나만 뽑아 13 주 내내
+    고정해 쓰므로(`train_garch_flow.py:321`) r_origin 이 포함돼도 관측치이고,
+    여기서 shift 를 걸면 기준선만 1 주 낡아 채널 일치가 깨진다.
 
-    여기서는 다르다.  GX_FUTURE=1 이면 t+1..t+13 행의 값을 매 스텝 조건으로
-    넣는데, shift 가 없으면 t+h 행의 왜도가 **예측 대상인 r_{t+h} 를 포함**한다
-    — 정답을 보고 예측하는 셈이다.  `sp_std_13w` 는 원래부터
-    `rolling(13).std(ddof=1).shift(1)` 이라(`data/extend_to_1971.py:396`) 왜도만
-    빠져 있던 것이므로, 같은 규약으로 맞춘다.
+    미래 주입 시의 누수는 shift 로 못 막는다 — t+h 행의 창은 r_{t+1}..r_{t+h}
+    를 담아 shift 를 걸어도 h-1 주가 남는다.  그래서 `sp_skew_13w` 는 아예
+    **미래 주입 대상에서 제외**하고 원점 값으로 고정한다 (`FROZEN_X` 참조).
     """
     full = (pd.concat(list(dfs.values()), ignore_index=True)
               .drop_duplicates("date").sort_values("date").reset_index(drop=True))
     sk = (full["sp_return"].astype(float)
-          .rolling(window=13, min_periods=13).skew().shift(1).fillna(0.0))
+          .rolling(window=13, min_periods=13).skew().fillna(0.0))
     return dict(zip(full["date"], sk.to_numpy(dtype=float)))
 
 
@@ -257,8 +261,14 @@ def run_fold(fold):
     sim = np.empty((len(origins), N_SIM, FUT), dtype=np.float32)
     act = np.empty((len(origins), FUT), dtype=np.float32)
     for i, t in enumerate(origins):
-        # GX_FUTURE=1 이면 t+1..t+FUT 의 실현 거시 경로를 주입한다.
-        Xarg = Xte[t + 1: t + 1 + FUT] if USE_FUTURE else Xte[t]
+        # GX_FUTURE=1 이면 t+1..t+FUT 의 실현 거시 경로를 주입하되,
+        # FROZEN_X 채널은 원점 값으로 덮어써 in-horizon 누수를 막는다.
+        if USE_FUTURE:
+            Xarg = Xte[t + 1: t + 1 + FUT].copy()
+            for j in FROZEN_IDX:
+                Xarg[:, j] = Xte[t, j]
+        else:
+            Xarg = Xte[t]
         sim[i] = simulate(p, eps_te[t], s2_te[t], Xarg, N_SIM, rng)
         act[i] = yte[t + 1:t + 1 + FUT]
 

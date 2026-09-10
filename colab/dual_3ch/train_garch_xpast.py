@@ -199,7 +199,10 @@ def run_fold(fold):
     print(f"  params: mu={mu:+.5f} om={om:.2e} al={al:.3f} be={be:.3f} "
           f"g_tbill={g1:+.3f} g_metab={g2:+.3f} nu={nu:.1f} lam(skew)={lam:+.3f}")
 
-    s2_te, eps_te = filter_var(p, yte, x1te, x2te)
+    # 시험 필터 초기 분산 = **학습 구간** 잔차 분산 (시험 전체 분산은 누수).
+    _eps_tr = yf - mu
+    s2_te, eps_te = filter_var(p, yte, x1te, x2te,
+                               s2_init=float(np.nanvar(_eps_tr[np.isfinite(_eps_tr)])))
     rng = np.random.default_rng(SEED)
     origins = [t for t in range(PAST_LEN, len(yte) - FUT)
                if np.isfinite(yte[t]) and np.isfinite(s2_te[t])
