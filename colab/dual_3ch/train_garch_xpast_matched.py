@@ -292,6 +292,11 @@ def run_fold(fold):
     # IHL(§4.2·§4.3 과 같은 정의) — 논문 주제가 꼬리위험이므로 §4.1 도 같은 축으로 잰다.
     ihl = ihl_metrics(sim, act)
     np.save(f"{pref}_ihl_per_origin.npy", ihl_per_origin(sim, act))
+    # 시뮬 배열 캐시.  네 모형을 한 리포트에서 같은 원점으로 검정하려면
+    # 요약값이 아니라 배열이 필요하다 (pred_start 는 예측 첫 주의 test CSV 행).
+    np.savez_compressed(f"{pref}_arrays.npz",
+                        sim=sim.astype(np.float32), act=act.astype(np.float32),
+                        pred_start=np.asarray(origins, dtype=int) + 1)
 
     print(f"  origins={len(origins)}  CRPS={crps_m:.5f}  "
           f"std ratio={std_s / std_a:.3f}  "
