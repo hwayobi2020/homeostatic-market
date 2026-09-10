@@ -549,6 +549,18 @@ def run_fold(model_kind, fold, args, device):
                       f"{model_kind}_baseline{tag}_{fold}_summary.json")
     json.dump(summ, open(sp, "w"), indent=2, default=str)
     print(f"    saved {os.path.basename(sp)}")
+    # 체크포인트를 남긴다.  지금까지 저장을 안 해서 지표를 하나 추가할 때마다
+    # 250 에폭 재학습이 필요했다.  MAC-Flow 와 같은 규약(meta + state)으로 둔다.
+    bp = os.path.join(args.out_dir,
+                      f"{model_kind}_baseline{tag}_{fold}_best.pt")
+    torch.save({"state": gen.state_dict(),
+                "meta": dict(model=model_kind, fold=fold, seed=args.seed,
+                             cond_stats=cond_stats, target_stats=target_stats,
+                             extra_stats=extra_stats, cond_cols=list(COND_COLS),
+                             extra_cols=list(EXTRA_COLS), d_ctx=D_CTX,
+                             hid=HID, latent=LATENT, lr=args.lr,
+                             best_epoch=best["epoch"], epochs_max=EPOCHS)}, bp)
+    print(f"    saved {os.path.basename(bp)}")
     # pred_start = 예측 대상 첫 주의 test CSV 행 번호 (창 w 의 past 52 주 다음).
     return dict(sim=sim_paths_raw, act=actual_raw,
                 pred_start=oidx + PAST_LEN, summary=summ)
