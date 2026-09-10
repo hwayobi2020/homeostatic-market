@@ -68,11 +68,22 @@ LAM0_GRID = [-0.4, -0.2, 0.0, 0.2]                # λ 다중 출발 (refit 과 
 
 
 def _skew13(dfs):
-    """rawstd_preprocess_fold 와 같은 방식의 13 주 rolling skew (date → 값)."""
+    """13 주 rolling skew (date → 값).  **`.shift(1)` 을 건다.**
+
+    `rawstd_preprocess_fold` 는 shift 없이 계산하지만, 거기서는 MAC-Flow 가 이
+    값을 *원점 행 하나*만 뽑아 13 주 내내 고정해 쓰므로 r_origin 이 포함돼도
+    관측된 값이라 문제가 없다.
+
+    여기서는 다르다.  GX_FUTURE=1 이면 t+1..t+13 행의 값을 매 스텝 조건으로
+    넣는데, shift 가 없으면 t+h 행의 왜도가 **예측 대상인 r_{t+h} 를 포함**한다
+    — 정답을 보고 예측하는 셈이다.  `sp_std_13w` 는 원래부터
+    `rolling(13).std(ddof=1).shift(1)` 이라(`data/extend_to_1971.py:396`) 왜도만
+    빠져 있던 것이므로, 같은 규약으로 맞춘다.
+    """
     full = (pd.concat(list(dfs.values()), ignore_index=True)
               .drop_duplicates("date").sort_values("date").reset_index(drop=True))
     sk = (full["sp_return"].astype(float)
-          .rolling(window=13, min_periods=13).skew().fillna(0.0))
+          .rolling(window=13, min_periods=13).skew().shift(1).fillna(0.0))
     return dict(zip(full["date"], sk.to_numpy(dtype=float)))
 
 
