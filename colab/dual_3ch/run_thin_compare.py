@@ -57,7 +57,8 @@ os.environ.setdefault("VG_EXTRA_COLS", "sp_skew_13w")
 os.environ.setdefault("VG_FUTURE_UNMASK", "metab_13w")
 
 from rawvol_helpers import (patch_rawvol, rawstd_preprocess_fold,        # noqa: E402
-                            forward_rawvol_rescale, ihl_metrics)
+                            forward_rawvol_rescale, ihl_metrics,
+                            ihl_per_origin)
 patch_rawvol()                                   # MAC-Flow 와 동일 파이프라인
 
 import analyze_pathshape_rawvol as PS                                    # noqa: E402
@@ -266,6 +267,7 @@ def main():
     dm_out = {f: {} for f in FOLDS}
     thin_out = {f: {} for f in FOLDS}
     pooled_loss = {}
+    pooled_loss_ihl = {}
 
     for fold in FOLDS:
         print(f"\n===== {fold}")
@@ -337,16 +339,21 @@ def main():
               " ".join(f"{k}:{len(v)}시드" for k, v in per_model.items()))
 
         # 시드별 원점 CRPS → 시드 평균 (세 모델 동일 처리)
+        # DM 검정용 원점별 손실.  CRPS 하나만 재면 분포 전체 적합만 보게 되므로,
+        # 논문 주제인 꼬리위험도 같은 방식으로 잰다 (IHL CVaR10% 절대오차).
         loss = {}
+        loss_ihl = {}
         for name, runs in per_model.items():
-            per_seed = []
+            per_seed, per_seed_ihl = [], []
             for d in runs:
                 ps = np.asarray(d["pred_start"], int)
                 pos = {int(v): i for i, v in enumerate(ps)}
                 sel = np.array([pos[v] for v in common], int)
-                per_seed.append(crps_per_origin(np.asarray(d["sim"])[sel],
-                                                np.asarray(d["act"])[sel]))
+                s_, a_ = np.asarray(d["sim"])[sel], np.asarray(d["act"])[sel]
+                per_seed.append(crps_per_origin(s_, a_))
+                per_seed_ihl.append(ihl_per_origin(s_, a_))
             loss[name] = np.mean(per_seed, axis=0)[order]
+            loss_ihl[name] = np.mean(per_seed_ihl, axis=0)[order]
 
         # 요약 지표 (시드 평균, 전 원점)
         for name, runs in per_model.items():
@@ -369,11 +376,14 @@ def main():
             m["n_seed"] = len(ms)
             out[fold][name] = m
 
-        # DM 검정
+        # DM 검정 — CRPS 와 IHL 두 축.
         base = loss["MAC-Flow"]
+        base_ihl = loss_ihl["MAC-Flow"]
         for name in ("CondVAE", "CondGAN"):
             if name in loss:
                 dm_out[fold][name] = DM.dm_test(loss[name], base, DM_LAG)
+                dm_out[fold][name + "|IHL"] = DM.dm_test(
+                    loss_ihl[name], base_ihl, DM_LAG)
 
         # 비중첩(STRIDE 간격) 검정 — 리뷰어 1 #2.
         #   원점을 13 주 간격으로 솎으면 예측 구간이 겹치지 않는다.  오프셋 하나만
@@ -382,17 +392,20 @@ def main():
         for name in ("CondVAE", "CondGAN"):
             if name not in loss:
                 continue
-            per_off = []
-            for off in range(STRIDE):
-                idx = np.arange(off, len(base), STRIDE)
-                if idx.size < 8:                    # 표본이 너무 적으면 건너뛴다
+            for lab, L_, B_ in ((name, loss[name], base),
+                                (name + "|IHL", loss_ihl[name], base_ihl)):
+                per_off = []
+                for off in range(STRIDE):
+                    idx = np.arange(off, len(B_), STRIDE)
+                    if idx.size < 8:                # 표본이 너무 적으면 건너뛴다
+                        continue
+                    # 부분표본 안에서는 겹침이 없으므로 HAC lag 0
+                    per_off.append(DM.dm_test(L_[idx], B_[idx], 0))
+                if not per_off:
                     continue
-                # 부분표본 안에서는 겹침이 없으므로 HAC lag 0
-                per_off.append(DM.dm_test(loss[name][idx], base[idx], 0))
-            if per_off:
                 dm_ = [r["dm_hln"] for r in per_off]
                 p_ = [r["p_two_sided"] for r in per_off]
-                thin_out[fold][name] = dict(
+                thin_out[fold][lab] = dict(
                     n_offset=len(per_off), n_per_offset=int(per_off[0]["n"]),
                     d_mean=float(np.mean([r["d_mean"] for r in per_off])),
                     dm_mean=float(np.mean(dm_)),
@@ -402,21 +415,25 @@ def main():
                     n_pos=int(sum(1 for r in per_off if r["d_mean"] > 0)))
 
         pooled_loss[fold] = loss
+        pooled_loss_ihl[fold] = loss_ihl
 
     # ---------- 4 폴드 통합 ----------
     #   폴드를 이어붙여 한 번만 검정한다.  폴드 경계에서 시간이 끊기고 폴드마다
     #   변동성 수준이 다르므로(F_gfc CRPS ~0.019 vs F_long_A ~0.009) 차이 계열이
     #   이질적이다.  폴드별 결과와 같이 봐야 한다.
     pooled_dm = {}
-    if pooled_loss:
-        names = set.intersection(*[set(v) for v in pooled_loss.values()])
-        if "MAC-Flow" in names:
-            cat = {k: np.concatenate([pooled_loss[f][k] for f in FOLDS
-                                      if f in pooled_loss]) for k in names}
-            for name in ("CondVAE", "CondGAN"):
-                if name in cat:
-                    pooled_dm[name] = DM.dm_test(cat[name], cat["MAC-Flow"],
-                                                 DM_LAG)
+    for suffix, store in (("", pooled_loss), ("|IHL", pooled_loss_ihl)):
+        if not store:
+            continue
+        names = set.intersection(*[set(v) for v in store.values()])
+        if "MAC-Flow" not in names:
+            continue
+        cat = {k: np.concatenate([store[f][k] for f in FOLDS if f in store])
+               for k in names}
+        for name in ("CondVAE", "CondGAN"):
+            if name in cat:
+                pooled_dm[name + suffix] = DM.dm_test(cat[name],
+                                                      cat["MAC-Flow"], DM_LAG)
 
     json.dump(dict(summary=out, dm=dm_out, thin=thin_out, pooled=pooled_dm),
               open(OUT, "w"), indent=2, default=str)
@@ -474,7 +491,8 @@ def main():
             print(f"{fold:<18}{'MAC-Flow vs ' + name:<24}{r['n']:>5}"
                   f"{r['d_mean']:>12.5f}{r['se']:>11.5f}"
                   f"{r['dm_hln']:>10.3f}{r['p_two_sided']:>9.4f}")
-    print("  (mean diff > 0 이면 MAC-Flow 의 CRPS 가 낮다 = 우위)")
+    print("  (mean diff > 0 이면 MAC-Flow 의 손실이 낮다 = 우위)")
+    print("  '|IHL' 행은 손실이 CRPS 가 아니라 원점별 |IHL CVaR10% − 실측 IHL| 이다.")
 
     print("\n" + "=" * 104)
     print(f"[비중첩 검정] 원점 {STRIDE} 간격 · 오프셋 {STRIDE} 개 각각 검정 "
