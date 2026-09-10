@@ -94,6 +94,15 @@ OUT_SUFFIX = os.environ.get("OUT_SUFFIX", "")
 # PS.TAG_PREFIX 이므로 여기서 같이 덮지 않으면 FLOW_TAG 를 바꿔도 게재판 모델이
 # 그대로 쓰인다 (정규화 통계만 바뀌는데 그건 폴드 train 에서 나와 동일하다).
 PS.TAG_PREFIX = FLOW_TAG
+
+# 베이스라인 시뮬 배열 캐시.  MAC-Flow 설정만 바꿔 비교할 때 VAE/GAN 40 회를
+# 매번 다시 학습하지 않게 한다.  시드가 고정이라 재학습해도 결과가 같다.
+# 셀당 sim (원점 x 1000 x 13) float32 ≈ 9MB, 40 셀 ≈ 380MB.
+# VG_CACHE=0 으로 끈다.
+VG_CACHE = os.environ.get("VG_CACHE", "1") == "1"
+VG_CACHE_DIR = os.path.join(PS.RESULT_DIR, "thin_vg_cache")
+if VG_CACHE:
+    os.makedirs(VG_CACHE_DIR, exist_ok=True)
 OUT = os.path.join(PS.RESULT_DIR,
                    f"dm_compare{PS.CACHE_SUFFIX}{OUT_SUFFIX}.json")
 
@@ -257,11 +266,20 @@ def main():
             for sd in SEEDS:
                 try:
                     sp = VG_SPEC[mk]
-                    # run_tuning_all.baseline_cell 과 같은 태그 규약.  같으면
-                    # 이미 학습된 결과를 그대로 쓰고, 다르면 새로 학습한다.
+                    # run_tuning_all.baseline_cell 과 같은 태그 규약.
                     tag = (f"_t3skfu_c{sp['dctx']}h{sp['hid']}"
                            f"_lr{('%g' % sp['lr']).replace('-', 'm').replace('.', 'd')}"
                            f"_s{sd}")
+                    # 베이스라인 시뮬 배열 캐시.  MAC-Flow 설정만 바꿔 비교할 때
+                    # 베이스라인 40 회를 매번 다시 학습하는 낭비를 막는다.
+                    # 시드가 고정이라 재학습해도 같은 결과가 나온다.
+                    cp = os.path.join(VG_CACHE_DIR, f"{mk}{tag}_{fold}.npz")
+                    if VG_CACHE and os.path.exists(cp):
+                        z = np.load(cp)
+                        runs.append(dict(sim=z["sim"], act=z["act"],
+                                         pred_start=z["pred_start"]))
+                        print(f"  [cache] {os.path.basename(cp)}")
+                        continue
                     args = SimpleNamespace(model=mk, fold=fold, folds_dir=PS.FOLDS_DIR,
                                            out_dir=PS.RESULT_DIR, n_sim=N_SIM, seed=sd,
                                            lr=sp["lr"], tag=tag)
@@ -272,7 +290,12 @@ def main():
                     VG.SP_CH, VG.TBILL_CH = T.SP_CH, T.TBILL_CH
                     VG.D_CTX, VG.HID = sp["dctx"], sp["hid"]
                     try:
-                        runs.append(VG.run_fold(mk, fold, args, device))
+                        r = VG.run_fold(mk, fold, args, device)
+                        runs.append(r)
+                        if VG_CACHE:
+                            np.savez(cp, sim=np.asarray(r["sim"], np.float32),
+                                     act=np.asarray(r["act"], np.float32),
+                                     pred_start=np.asarray(r["pred_start"], int))
                     finally:
                         PS.set_cond_cols(_saved)
                         VG.D_CTX, VG.HID = _saved_cap
