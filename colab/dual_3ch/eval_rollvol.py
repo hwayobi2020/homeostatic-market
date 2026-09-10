@@ -60,7 +60,9 @@ SEEDS = [int(s) for s in os.environ.get(
     "RV_SEEDS", "2026,2027,2028,2029,2030").split(",") if s.strip()]
 N_SIM = int(os.environ.get("RV_NSIM", str(PS.N_SIM)))
 CHUNK = PS.CHUNK
-OUT = os.path.join(RESULT_DIR, f"rollvol_compare_{PS.TAG_PREFIX}.json")
+# 앞선 2-arm 실행 결과를 덮지 않도록 파일명을 분리한다 (RV_OUT_SUFFIX 로 재지정 가능).
+OUT = os.path.join(RESULT_DIR, "rollvol_compare_%s%s.json"
+                   % (PS.TAG_PREFIX, os.environ.get("RV_OUT_SUFFIX", "_3arm")))
 
 
 # ---------------------------------------------------------------- 지표
@@ -182,27 +184,45 @@ def rollout_realized(ctx, device, seed):
 def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print("#" * 100)
-    print("# 자기회귀 롤링 변동성 vs 원점 고정 — 같은 체크포인트·같은 z 표본, 역변환만 다름")
+    print("# 역변환 3 판 — 같은 체크포인트·같은 z 표본, 곱하는 σ 만 다름")
+    print("#  원점고정   : σ = garch_sigma[원점]  = std(r_{o-13..o-1})   (게재판)")
+    print("#  고정(신선) : σ = std(r_{o-12..o})   를 13 주 상수            (정보집합만 맞춤)")
+    print("#  롤링       : σ_h = std(직전 13 주), 생성분으로 갱신")
+    print("#  → (고정↔고정신선) = 한 주 신선도 효과, (고정신선↔롤링) = 동학 효과")
     print(f"#  tag={PS.TAG_PREFIX}  folds={FOLDS}  seeds={SEEDS}  n_sim={N_SIM}")
     print(f"#  device={device}")
     print("#" * 100)
 
     res = {}
     for fold in FOLDS:
-        per = {"frozen": [], "rolling": []}
+        per = {"frozen": [], "frozen_fresh": [], "rolling": []}
         for seed in SEEDS:
             ctx = load_fold_seed(fold, seed, device)
             if ctx is None:
                 continue
             z = rollout_realized(ctx, device, seed)                # (n_orig, n_sim, T)
             zt = z * ctx["tsd"] + ctx["tmu"]                       # 표준화 수익률
+
+            # (1) 게재판: σ = garch_sigma[원점] = std(r_{o-13..o-1}).  원점 수익률
+            #     r_o 를 아직 안 쓴 값이라 롤링의 첫 창보다 한 주 낡았다.
             sig = np.sqrt(np.maximum(ctx["s2_orig"], 0.0))
             frozen = zt * sig[:, None, None] + ctx["mu"]
+
+            # (2) 같은 정보로 고정: σ = std(꼬리 13주) = std(r_{o-12..o}) 를 13주 내내 상수.
+            #     (3) 과 첫 스텝 정보집합이 같으므로, (2)↔(3) 차이가 순수한 *동학* 효과이고
+            #     (1)↔(2) 차이가 *한 주 신선도* 효과다.  둘을 섞으면 해석이 오염된다.
+            sig_fresh = ctx["tail"].std(axis=1, ddof=1)
+            frozen_fresh = zt * sig_fresh[:, None, None] + ctx["mu"]
+
+            # (3) 자기회귀 롤링
             rolling = forward_rollvol_rescale(zt, ctx["tail"], ctx["mu"])
+
             per["frozen"].append(metrics(frozen, ctx["act"]))
+            per["frozen_fresh"].append(metrics(frozen_fresh, ctx["act"]))
             per["rolling"].append(metrics(rolling, ctx["act"]))
-            print(f"  {fold} s{seed}  n_orig={ctx['n_orig']}  "
-                  f"CRPS 고정={per['frozen'][-1]['crps_pooled']:.5f} "
+            print(f"  {fold} s{seed}  n_orig={ctx['n_orig']}  CRPS "
+                  f"고정={per['frozen'][-1]['crps_pooled']:.5f} "
+                  f"고정(신선)={per['frozen_fresh'][-1]['crps_pooled']:.5f} "
                   f"롤링={per['rolling'][-1]['crps_pooled']:.5f}")
         if not per["frozen"]:
             continue
@@ -220,7 +240,8 @@ def main():
     print(hdr)
     print("=" * len(hdr))
     for fold, r in res.items():
-        for lab, key in (("원점고정", "frozen"), ("롤링", "rolling")):
+        for lab, key in (("원점고정", "frozen"), ("고정(신선)", "frozen_fresh"),
+                         ("롤링", "rolling")):
             d = r[key]
             print(f"{fold:<17}{lab:<10}{d['n_seed']:>3}{d['crps_pooled']:>10.5f}"
                   f"{d['emd']:>10.6f}{d['std_ratio']:>8.3f}{d['coverage_80']:>8.3f}"
