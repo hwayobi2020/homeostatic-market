@@ -75,7 +75,11 @@ def eval_fold(fold, params):
     p = np.array([float(params[k]) for k in PKEYS], dtype=float)
     lam = p[7]
 
-    s2_te, eps_te = filter_var(p, yte, x1te, x2te)
+    # 시험 필터 초기 분산 = **학습 구간** 잔차 분산.  시험 전체 분산으로
+    # 시작하면 그 기간의 평균 변동성이 초기값에 들어가 누수가 된다.
+    _eps_tr = ytr - p[0]
+    s2_init_te = float(np.nanvar(_eps_tr[np.isfinite(_eps_tr)]))
+    s2_te, eps_te = filter_var(p, yte, x1te, x2te, s2_init=s2_init_te)
     rng = np.random.default_rng(SEED)
     origins = [t for t in range(PAST_LEN, len(yte) - FUT)
                if np.isfinite(yte[t]) and np.isfinite(s2_te[t])

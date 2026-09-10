@@ -136,12 +136,19 @@ def fit_garch_xpast(y, x1, x2):
     return res.x
 
 
-def filter_var(p, y, x1, x2):
+def filter_var(p, y, x1, x2, s2_init=None):
+    """σ² 재귀 필터.
+
+    `s2_init` 이 None 이면 계열 전체 분산으로 시작한다 — 학습 구간에서는 맞지만
+    **시험 구간에 쓰면 그 기간의 평균 변동성(=예측 대상의 일부)이 초기값으로
+    들어가 누수**가 된다.  시험 필터에는 학습 구간 분산을 명시로 넘겨라.
+    """
     mu, om, al, be, g1, g2, nu, lam = p
     eps = y - mu; n = len(y); s2 = np.empty(n)
-    s2[0] = np.nanvar(eps[~np.isnan(eps)])
+    _fallback = np.nanvar(eps[~np.isnan(eps)]) if s2_init is None else float(s2_init)
+    s2[0] = _fallback
     for t in range(1, n):
-        prev = s2[t - 1] if np.isfinite(s2[t - 1]) else np.nanvar(eps)
+        prev = s2[t - 1] if np.isfinite(s2[t - 1]) else _fallback
         e2 = eps[t - 1] ** 2 if np.isfinite(eps[t - 1]) else prev
         a1 = x1[t] if np.isfinite(x1[t]) else 0.0
         a2 = x2[t] if np.isfinite(x2[t]) else 0.0

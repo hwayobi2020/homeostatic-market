@@ -115,13 +115,23 @@ def _unpack(p):
     return mu, om, al, be, g, nu, lam
 
 
-def filter_var(p, y, X):
+def filter_var(p, y, X, s2_init=None):
+    """σ² 재귀 필터.
+
+    `s2_init` 을 주지 않으면 계열 전체 분산으로 시작한다 — **학습 구간에서만
+    허용된다.**  시험 구간을 그렇게 필터하면 미래 수익률이 초기값에 들어가
+    누수가 된다 (β≈0.88 이라 수십 주에 걸쳐 감쇠하지만 0 은 아니다).
+    그래서 시험 필터링에는 학습 구간 분산을 명시로 넘긴다.
+    """
     mu, om, al, be, g, nu, lam = _unpack(p)
     eps = y - mu
     n = len(y)
     s2 = np.empty(n)
-    fin = eps[np.isfinite(eps)]
-    s2[0] = float(np.var(fin)) if fin.size else 1.0
+    if s2_init is not None:
+        s2[0] = float(s2_init)
+    else:
+        fin = eps[np.isfinite(eps)]
+        s2[0] = float(np.var(fin)) if fin.size else 1.0
     Xc = np.nan_to_num(X, nan=0.0)
     for t in range(1, n):
         prev = s2[t - 1] if np.isfinite(s2[t - 1]) else s2[0]
@@ -236,7 +246,10 @@ def run_fold(fold):
     print(f"  mu={mu:+.6f} om={om:.3e} al={al:.4f} be={be:.4f} nu={nu:.2f} lam={lam:+.5f}")
     print(f"  gamma: {gtxt}")
 
-    s2_te, eps_te = filter_var(p, yte, Xte)
+    # 시험 필터의 초기 분산 = **학습 구간** 잔차 분산 (시험 전체 분산을 쓰면 누수).
+    _eps_tr = ytr[m] - _unpack(p)[0]
+    s2_init_te = float(np.var(_eps_tr[np.isfinite(_eps_tr)]))
+    s2_te, eps_te = filter_var(p, yte, Xte, s2_init=s2_init_te)
     rng = np.random.default_rng(SEED)
     origins = [t for t in range(PAST_LEN, len(yte) - FUT)
                if np.isfinite(yte[t]) and np.isfinite(s2_te[t])
