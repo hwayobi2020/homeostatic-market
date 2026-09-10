@@ -57,7 +57,7 @@ os.environ.setdefault("VG_EXTRA_COLS", "sp_skew_13w")
 os.environ.setdefault("VG_FUTURE_UNMASK", "metab_13w")
 
 from rawvol_helpers import (patch_rawvol, rawstd_preprocess_fold,        # noqa: E402
-                            forward_rawvol_rescale)
+                            forward_rawvol_rescale, ihl_metrics)
 patch_rawvol()                                   # MAC-Flow 와 동일 파이프라인
 
 import analyze_pathshape_rawvol as PS                                    # noqa: E402
@@ -120,12 +120,23 @@ def metrics(sim, act):
         x = np.asarray(x, float)
         return float(np.mean(((x - x.mean()) / (x.std() + 1e-12)) ** 3))
 
+    def _ek(x):
+        x = np.asarray(x, float)
+        return float(np.mean(((x - x.mean()) / (x.std() + 1e-12)) ** 4) - 3.0)
+
+    from train_garch_x import cvar as _cv, var_q as _vq
     return dict(n_origin=int(np.shape(act)[0]), n_obs=int(af.size),
                 crps=float(T.crps_pooled(sim, act)[0]),
                 crps_per_origin=crps_per_origin(sim, act),
                 cov50=cov[50], cov80=cov[80], cov95=cov[95],
                 skew_actual=_sk(af), skew_sim=_sk(sf),
-                std_actual=float(af.std(ddof=1)), std_sim=float(sf.std(ddof=1)))
+                exkurt_actual=_ek(af), exkurt_sim=_ek(sf),
+                std_actual=float(af.std(ddof=1)), std_sim=float(sf.std(ddof=1)),
+                # 꼬리위험 축 — 논문 주제이고 §4.2·§4.3 이 쓰는 지표다.
+                cvar1_actual=_cv(af, .01), cvar1_sim=_cv(sf, .01),
+                cvar5_actual=_cv(af, .05), cvar5_sim=_cv(sf, .05),
+                var1_actual=_vq(af, .01), var1_sim=_vq(sf, .01),
+                **ihl_metrics(sim, act))
 
 
 def crps_per_origin(sim, act):
@@ -414,7 +425,11 @@ def main():
     order_m = ["MAC-Flow", "CondVAE", "CondGAN"]
     cols = [("n_origin", "원점"), ("crps", "CRPS"), ("cov50", "cov50"),
             ("cov80", "cov80"), ("cov95", "cov95"),
-            ("skew_actual", "skew실측"), ("skew_sim", "skew모형")]
+            ("skew_actual", "skew실측"), ("skew_sim", "skew모형"),
+            # 꼬리위험 축 — 논문 주제이고 §4.2·§4.3 이 쓰는 지표다.
+            ("cvar1_actual", "CVaR1실측"), ("cvar1_sim", "CVaR1모형"),
+            ("ihl_mean_actual", "IHL평실측"), ("ihl_mean_sim", "IHL평모형"),
+            ("ihl_cvar10_actual", "IHLcv실측"), ("ihl_cvar10_sim", "IHLcv모형")]
     print(f"\n{'='*104}\n[요약] 원점 전수 · 시드 {len(SEEDS)}개 평균 · 미래=실현 경로\n{'='*104}")
     print(f"{'fold':<18}{'model':<11}" + "".join(f"{c[1]:>11}" for c in cols))
     for fold in FOLDS:
@@ -430,7 +445,8 @@ def main():
 
     # 시드 성분 표준오차 — 리뷰어 1 #1 이 요구한 불확실성 표시.
     se_cols = [("crps", "CRPS"), ("cov80", "cov80"), ("cov95", "cov95"),
-               ("skew_sim", "skew모형")]
+               ("skew_sim", "skew모형"), ("cvar1_sim", "CVaR1모형"),
+               ("ihl_mean_sim", "IHL평균모형"), ("ihl_cvar10_sim", "IHLcv10모형")]
     print(f"{'='*104}\n[시드 표준오차] 시드 {len(SEEDS)}개 · 평균 ± SE "
           f"(DM 의 HAC se 는 원점 성분이라 별개)\n{'='*104}")
     print(f"{'fold':<18}{'model':<11}" +

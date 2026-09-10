@@ -558,7 +558,7 @@ def run_fold(model_kind, fold, args, device):
                              cond_stats=cond_stats, target_stats=target_stats,
                              extra_stats=extra_stats, cond_cols=list(COND_COLS),
                              extra_cols=list(EXTRA_COLS), d_ctx=D_CTX,
-                             hid=HID, latent=LATENT, lr=args.lr,
+                             hid=HID, latent=LATENT, lr=float(lr),
                              best_epoch=best["epoch"], epochs_max=EPOCHS)}, bp)
     print(f"    saved {os.path.basename(bp)}")
     # pred_start = 예측 대상 첫 주의 test CSV 행 번호 (창 w 의 past 52 주 다음).
