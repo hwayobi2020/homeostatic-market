@@ -40,6 +40,7 @@ from train_garch_flow import (  # noqa: E402
     crps_pooled, crps_ensemble_sample, compute_var, compute_cvar, compute_emd_1d,
     forward_garch_rescale,
 )
+from rawvol_helpers import ihl_metrics                              # noqa: E402
 
 N_CH = len(COND_COLS)
 L = PAST_LEN + FUTURE_LEN
@@ -361,11 +362,14 @@ def evaluate_split(gen, model_kind, fold, split_csv, cond_stats, target_stats,
         cov[lvl] = float(((af >= L_) & (af <= H_)).mean())
     cv1a, cv1s = compute_cvar(af, 0.01), compute_cvar(sf, 0.01)
 
+    cv5a, cv5s = compute_cvar(af, 0.05), compute_cvar(sf, 0.05)
     m = dict(crps_pooled=crps_m, emd=emd, std_ratio=std_s / std_a,
              coverage_50=cov[50], coverage_80=cov[80], coverage_95=cov[95],
-             cvar_1pct_diff=cv1s - cv1a,
+             cvar_1pct_diff=cv1s - cv1a, cvar_5pct_diff=cv5s - cv5a,
+             var_1pct_diff=float(np.quantile(sf, .01) - np.quantile(af, .01)),
              skew_actual=_sk(af), skew_sim=_sk(sf),
-             exkurt_actual=_ek(af), exkurt_sim=_ek(sf))
+             exkurt_actual=_ek(af), exkurt_sim=_ek(sf),
+             **ihl_metrics(sim_paths_raw, actual_raw))
 
     print(f"\n[{model_kind.upper()} {label}]  fold={fold}  (n_sim={n_sim}, "
           f"origins={n_orig})")

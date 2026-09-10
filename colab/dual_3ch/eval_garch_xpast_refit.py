@@ -43,6 +43,7 @@ from train_garch_xpast import (  # noqa: E402
     FOLDS, FOLDS_DIR, RESULT_DIR, PAST_LEN, FUT, N_SIM, SEED,
 )
 from train_garch_x import crps_ensemble                            # noqa: E402
+from rawvol_helpers import ihl_metrics, ihl_per_origin             # noqa: E402
 
 REFIT = os.path.join(RESULT_DIR, "refit_garch_xpast.json")
 PKEYS = ("mu", "omega", "alpha", "beta", "gamma_tbill", "gamma_metab",
@@ -106,7 +107,8 @@ def eval_fold(fold, params):
                    cvar_5pct_diff=cv5s - cv5a, cvar_1pct_diff=cv1s - cv1a,
                    var_1pct_diff=var_q(sf, .01) - var_q(af, .01),
                    skew_actual=_sk(af), skew_sim=_sk(sf),
-                   exkurt_actual=_ek(af), exkurt_sim=_ek(sf))
+                   exkurt_actual=_ek(af), exkurt_sim=_ek(sf),
+                   **ihl_metrics(sim, act))
 
     # DM 검정용: 원점×주 CRPS 와 조건 시점 날짜.  MAC-Flow 의
     # garch_flow_ar_*_crps_per_origin.npy / *_origin_dates.npy 와 같은 규약이다
@@ -120,6 +122,7 @@ def eval_fold(fold, params):
     pref = os.path.join(RESULT_DIR, f"garch_xpast_refit_{fold}")
     np.save(f"{pref}_crps_per_origin.npy", per_oc)
     np.save(f"{pref}_origin_dates.npy", dates)
+    np.save(f"{pref}_ihl_per_origin.npy", ihl_per_origin(sim, act))
 
     print(f"  origins={len(origins)}  n_sim={N_SIM}  lam={lam:+.5f}")
     print(f"  saved per-origin CRPS: {os.path.basename(pref)}_crps_per_origin.npy "

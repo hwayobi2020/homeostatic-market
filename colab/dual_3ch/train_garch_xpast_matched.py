@@ -51,6 +51,7 @@ from train_garch_xpast import (                                    # noqa: E402
     PAST_LEN, FUT, N_SIM, SEED,
 )
 from train_garch_x import crps_pooled, crps_ensemble, cvar, var_q, emd1d  # noqa: E402
+from rawvol_helpers import ihl_metrics, ihl_per_origin                   # noqa: E402
 
 # 분산식 외생 채널.  MAC-Flow 의 과거 채널 + 원점 고정 스칼라와 같은 집합이다
 # (sp_return 은 y 자체라 제외, sp_std_13w 는 GARCH 가 σ 재귀로 내생 추정한다).
@@ -288,11 +289,17 @@ def run_fold(fold):
     np.save(f"{pref}_crps_per_origin.npy", per_oc)
     np.save(f"{pref}_origin_dates.npy", dates)
 
+    # IHL(§4.2·§4.3 과 같은 정의) — 논문 주제가 꼬리위험이므로 §4.1 도 같은 축으로 잰다.
+    ihl = ihl_metrics(sim, act)
+    np.save(f"{pref}_ihl_per_origin.npy", ihl_per_origin(sim, act))
+
     print(f"  origins={len(origins)}  CRPS={crps_m:.5f}  "
           f"std ratio={std_s / std_a:.3f}  "
           f"cov 50/80/95={cov[50]:.3f}/{cov[80]:.3f}/{cov[95]:.3f}")
     print(f"  skew a/s={_sk(af):+.4f}/{_sk(sf):+.4f}  "
           f"exkurt a/s={_ek(af):+.3f}/{_ek(sf):+.3f}")
+    print(f"  IHL mean a/s={ihl['ihl_mean_actual']:+.5f}/{ihl['ihl_mean_sim']:+.5f}  "
+          f"CVaR10 a/s={ihl['ihl_cvar10_actual']:+.5f}/{ihl['ihl_cvar10_sim']:+.5f}")
 
     summ = dict(
         fold=fold,
@@ -308,7 +315,7 @@ def run_fold(fold):
                        cvar_1pct_diff=cvar(sf, .01) - cvar(af, .01),
                        var_1pct_diff=var_q(sf, .01) - var_q(af, .01),
                        skew_actual=_sk(af), skew_sim=_sk(sf),
-                       exkurt_actual=_ek(af), exkurt_sim=_ek(sf)))
+                       exkurt_actual=_ek(af), exkurt_sim=_ek(sf), **ihl))
     os.makedirs(RESULT_DIR, exist_ok=True)
     with open(sp, "w", encoding="utf-8") as fh:
         json.dump(summ, fh, indent=2, default=str)

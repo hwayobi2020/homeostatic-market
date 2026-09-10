@@ -136,6 +136,56 @@ def forward_rollvol_rescale(sim_paths_zt, tail_raw, mu):
     return out
 
 
+# ---------------------------------------------------------------------------
+# IHL (intra-horizon loss) — §4.2·§4.3 과 같은 정의
+# ---------------------------------------------------------------------------
+# 진입점(누적 0)을 앞에 붙인 13 주 누적수익의 **최저점**.  보유기간 중 최악
+# underwater 이고 peak-to-trough MDD 가 아니다 ("이익 토해냄"은 위험으로 안 셈).
+# 정의 출처: analyze_pathshape_rawvol.sim_metrics.
+def ihl_paths(paths):
+    """(..., T) 수익률 경로 → (...,) 진입 대비 최저 누적수익 (≤0)."""
+    a = np.asarray(paths, dtype=np.float64)
+    cum = np.cumsum(a, axis=-1)
+    z0 = np.zeros(cum.shape[:-1] + (1,), dtype=cum.dtype)
+    return np.concatenate([z0, cum], axis=-1).min(axis=-1)
+
+
+def _cvar(x, alpha):
+    s = np.sort(np.asarray(x, dtype=np.float64).ravel())
+    k = max(1, int(alpha * s.size))
+    return float(s[:k].mean())
+
+
+def ihl_metrics(sim_raw, act_raw):
+    """모형 IHL 분포 vs 실측 IHL 의 평균·CVaR10% 와 그 차이.
+
+    sim_raw : (n_orig, n_sim, T)   act_raw : (n_orig, T)
+    실측은 원점당 경로가 하나라 IHL 도 원점당 하나다.
+    """
+    s = ihl_paths(sim_raw).ravel()          # (n_orig*n_sim,)
+    a = ihl_paths(act_raw).ravel()          # (n_orig,)
+    out = dict(ihl_mean_sim=float(s.mean()), ihl_mean_actual=float(a.mean()),
+               ihl_cvar10_sim=_cvar(s, 0.10), ihl_cvar10_actual=_cvar(a, 0.10),
+               ihl_cvar5_sim=_cvar(s, 0.05), ihl_cvar5_actual=_cvar(a, 0.05))
+    out["ihl_mean_diff"] = out["ihl_mean_sim"] - out["ihl_mean_actual"]
+    out["ihl_cvar10_diff"] = out["ihl_cvar10_sim"] - out["ihl_cvar10_actual"]
+    out["ihl_cvar5_diff"] = out["ihl_cvar5_sim"] - out["ihl_cvar5_actual"]
+    return out
+
+
+def ihl_per_origin(sim_raw, act_raw, alpha=0.10):
+    """DM 검정용 원점별 손실: |모형 IHL CVaRα(원점 내 n_sim) − 실측 IHL|.
+
+    원점마다 시뮬 n_sim 개의 IHL 분포에서 CVaRα 를 내고, 그 원점의 실측 IHL
+    과의 절대오차를 손실로 삼는다.  원점별 시계열이라 DM 에 바로 쓴다.
+    """
+    s = ihl_paths(sim_raw)                  # (n_orig, n_sim)
+    a = ihl_paths(act_raw)                  # (n_orig,)
+    k = max(1, int(alpha * s.shape[1]))
+    q = np.sort(s, axis=1)[:, :k].mean(axis=1)
+    return np.abs(q - a)
+
+
 def patch_rawvol():
     """train_garch_flow 의 GARCH 함수들을 raw-vol 버전으로 monkey-patch.
 

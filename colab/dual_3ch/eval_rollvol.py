@@ -66,7 +66,7 @@ from train_garch_flow import (                                     # noqa: E402
     cached_load_windows_seq, load_extra_context, compute_valid_mask,
     PAST_LEN, FUTURE_LEN,
 )
-from rawvol_helpers import forward_rollvol_rescale                 # noqa: E402
+from rawvol_helpers import forward_rollvol_rescale, ihl_metrics     # noqa: E402
 
 RESULT_DIR = PS.RESULT_DIR
 FOLDS_DIR = PS.FOLDS_DIR
@@ -113,11 +113,16 @@ def metrics(sim_raw, act_raw):
     for lvl, lo, hi in [(50, 25, 75), (80, 10, 90), (95, 2.5, 97.5)]:
         L, H = np.percentile(sf, lo), np.percentile(sf, hi)
         cov[lvl] = float(((af >= L) & (af <= H)).mean())
+    from train_garch_x import cvar as _cv, var_q as _vq
     return dict(crps_pooled=_crps_pooled(sim_raw, act_raw), emd=_emd(sf, af),
                 std_actual=std_a, std_sim=std_s, std_ratio=std_s / std_a,
                 coverage_50=cov[50], coverage_80=cov[80], coverage_95=cov[95],
+                cvar_1pct_diff=_cv(sf, .01) - _cv(af, .01),
+                cvar_5pct_diff=_cv(sf, .05) - _cv(af, .05),
+                var_1pct_diff=_vq(sf, .01) - _vq(af, .01),
                 skew_actual=_sk(af), skew_sim=_sk(sf),
-                exkurt_actual=_ek(af), exkurt_sim=_ek(sf))
+                exkurt_actual=_ek(af), exkurt_sim=_ek(sf),
+                **ihl_metrics(sim_raw, act_raw))
 
 
 # ---------------------------------------------------------------- 로딩
