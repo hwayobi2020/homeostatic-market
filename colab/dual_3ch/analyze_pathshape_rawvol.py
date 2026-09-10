@@ -161,9 +161,16 @@ def _exkurt(a):
 
 def rebuild_model(ckpt, device):
     cls = fpath_model.MambaFlowARFpath if BASE_MODEL == "fpath_novol" else MambaFlowAR
+    # 흐름 헤드 크기는 체크포인트 meta 에서 읽는다.  예전에는 LK_FLOW_LAYERS /
+    # LK_FLOW_HIDDEN 상수를 써서, 게재판(4/128) 이 아닌 체크포인트를 넣으면
+    # load_state_dict 가 shape mismatch 로 터졌다.  meta 에 없으면 상수로 돌아간다.
+    meta = ckpt.get("meta") or {}
+    fl = int(meta.get("n_flow_layers") or LK_FLOW_LAYERS)
+    fh = int(meta.get("n_flow_hidden") or LK_FLOW_HIDDEN)
+    dm = int(meta.get("d_model") or LK_D_MODEL)
     model = cls(
-        d_input=len(ENC_COLS), d_model=LK_D_MODEL,
-        n_flow_layers=LK_FLOW_LAYERS, n_flow_hidden=LK_FLOW_HIDDEN,
+        d_input=len(ENC_COLS), d_model=dm,
+        n_flow_layers=fl, n_flow_hidden=fh,
         dropout=LK_DROPOUT, extra_context_dim=len(DC_COLS_LIST),
         encoder_type="mlp", mlp_num_layers=LK_MLP_LAYERS,
         direct_prev_return=True, use_past_summary=True,

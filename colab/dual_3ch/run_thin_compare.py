@@ -90,6 +90,10 @@ VG_SPEC = {"vae": dict(lr=1e-4, dctx=128, hid=192),
 #     FLOW_TAG=rvAbl_full_fpath_novol_lr0d0001_fh32_fl8_d2 OUT_SUFFIX=_fl8fh32
 FLOW_TAG = os.environ.get("FLOW_TAG", PS.TAG_PREFIX)
 OUT_SUFFIX = os.environ.get("OUT_SUFFIX", "")
+# macflow_arrays 는 PS.load_fold_seed 로 모델을 만든다.  거기서 읽는 것은
+# PS.TAG_PREFIX 이므로 여기서 같이 덮지 않으면 FLOW_TAG 를 바꿔도 게재판 모델이
+# 그대로 쓰인다 (정규화 통계만 바뀌는데 그건 폴드 train 에서 나와 동일하다).
+PS.TAG_PREFIX = FLOW_TAG
 OUT = os.path.join(PS.RESULT_DIR,
                    f"dm_compare{PS.CACHE_SUFFIX}{OUT_SUFFIX}.json")
 
