@@ -312,6 +312,14 @@ def main():
                 ms.append(metrics(np.asarray(d["sim"])[sel], np.asarray(d["act"])[sel]))
             keys = [k for k in ms[0] if k != "crps_per_origin"]
             m = {k: float(np.mean([r[k] for r in ms])) for k in keys}
+            # 시드 성분 표준편차·표준오차 (리뷰어 1 #1: "1,000 draws and five
+            # seeds, you have the ingredients for standard errors. Report them.").
+            # DM 의 HAC se 는 원점 표본변동이라 성분이 다르다.
+            if len(ms) > 1:
+                for k in keys:
+                    v = np.array([r[k] for r in ms], float)
+                    m[k + "_sd"] = float(v.std(ddof=1))
+                    m[k + "_se"] = float(v.std(ddof=1) / np.sqrt(len(v)))
             m["n_seed"] = len(ms)
             out[fold][name] = m
 
@@ -382,6 +390,28 @@ def main():
             cells = [f"{r[k]:>11.1f}" if k == "n_origin"
                      else f"{r[k]:>11.5f}" if k == "crps" else f"{r[k]:>11.4f}"
                      for k, _ in cols]
+            print(f"{fold:<18}{name:<11}" + "".join(cells))
+        print()
+
+    # 시드 성분 표준오차 — 리뷰어 1 #1 이 요구한 불확실성 표시.
+    se_cols = [("crps", "CRPS"), ("cov80", "cov80"), ("cov95", "cov95"),
+               ("skew_sim", "skew모형")]
+    print(f"{'='*104}\n[시드 표준오차] 시드 {len(SEEDS)}개 · 평균 ± SE "
+          f"(DM 의 HAC se 는 원점 성분이라 별개)\n{'='*104}")
+    print(f"{'fold':<18}{'model':<11}" +
+          "".join(f"{c[1]:>22}" for c in se_cols))
+    for fold in FOLDS:
+        for name in order_m:
+            r = out[fold].get(name)
+            if r is None:
+                continue
+            cells = []
+            for k, _ in se_cols:
+                se = r.get(k + "_se")
+                fmt = "{:.5f}" if k == "crps" else "{:.4f}"
+                cells.append("{:>22}".format(
+                    (fmt + " ± " + fmt).format(r[k], se) if se is not None
+                    else fmt.format(r[k])))
             print(f"{fold:<18}{name:<11}" + "".join(cells))
         print()
 
