@@ -232,6 +232,8 @@ def main():
     import dm_test as DM
     out = {f: {} for f in FOLDS}
     dm_out = {f: {} for f in FOLDS}
+    thin_out = {f: {} for f in FOLDS}
+    pooled_loss = {}
 
     for fold in FOLDS:
         print(f"\n===== {fold}")
@@ -319,7 +321,51 @@ def main():
             if name in loss:
                 dm_out[fold][name] = DM.dm_test(loss[name], base, DM_LAG)
 
-    json.dump(dict(summary=out, dm=dm_out), open(OUT, "w"), indent=2, default=str)
+        # 비중첩(STRIDE 간격) 검정 — 리뷰어 1 #2.
+        #   원점을 13 주 간격으로 솎으면 예측 구간이 겹치지 않는다.  오프셋 하나만
+        #   쓰면 어느 14 개를 골랐느냐에 좌우되므로 13 개 오프셋을 각각 검정하고
+        #   DM 통계량·p 를 요약한다 (합치면 겹침이 되살아난다).
+        for name in ("CondVAE", "CondGAN"):
+            if name not in loss:
+                continue
+            per_off = []
+            for off in range(STRIDE):
+                idx = np.arange(off, len(base), STRIDE)
+                if idx.size < 8:                    # 표본이 너무 적으면 건너뛴다
+                    continue
+                # 부분표본 안에서는 겹침이 없으므로 HAC lag 0
+                per_off.append(DM.dm_test(loss[name][idx], base[idx], 0))
+            if per_off:
+                dm_ = [r["dm_hln"] for r in per_off]
+                p_ = [r["p_two_sided"] for r in per_off]
+                thin_out[fold][name] = dict(
+                    n_offset=len(per_off), n_per_offset=int(per_off[0]["n"]),
+                    d_mean=float(np.mean([r["d_mean"] for r in per_off])),
+                    dm_mean=float(np.mean(dm_)),
+                    dm_min=float(np.min(dm_)), dm_max=float(np.max(dm_)),
+                    p_median=float(np.median(p_)),
+                    n_sig05=int(sum(1 for x in p_ if x < 0.05)),
+                    n_pos=int(sum(1 for r in per_off if r["d_mean"] > 0)))
+
+        pooled_loss[fold] = loss
+
+    # ---------- 4 폴드 통합 ----------
+    #   폴드를 이어붙여 한 번만 검정한다.  폴드 경계에서 시간이 끊기고 폴드마다
+    #   변동성 수준이 다르므로(F_gfc CRPS ~0.019 vs F_long_A ~0.009) 차이 계열이
+    #   이질적이다.  폴드별 결과와 같이 봐야 한다.
+    pooled_dm = {}
+    if pooled_loss:
+        names = set.intersection(*[set(v) for v in pooled_loss.values()])
+        if "MAC-Flow" in names:
+            cat = {k: np.concatenate([pooled_loss[f][k] for f in FOLDS
+                                      if f in pooled_loss]) for k in names}
+            for name in ("CondVAE", "CondGAN"):
+                if name in cat:
+                    pooled_dm[name] = DM.dm_test(cat[name], cat["MAC-Flow"],
+                                                 DM_LAG)
+
+    json.dump(dict(summary=out, dm=dm_out, thin=thin_out, pooled=pooled_dm),
+              open(OUT, "w"), indent=2, default=str)
     print(f"\nsaved {OUT}")
 
     order_m = ["MAC-Flow", "CondVAE", "CondGAN"]
@@ -348,6 +394,37 @@ def main():
                   f"{r['d_mean']:>12.5f}{r['se']:>11.5f}"
                   f"{r['dm_hln']:>10.3f}{r['p_two_sided']:>9.4f}")
     print("  (mean diff > 0 이면 MAC-Flow 의 CRPS 가 낮다 = 우위)")
+
+    print("\n" + "=" * 104)
+    print(f"[비중첩 검정] 원점 {STRIDE} 간격 · 오프셋 {STRIDE} 개 각각 검정 "
+          f"(부분표본 안에서는 예측구간 겹침 없음, HAC lag=0)")
+    print("=" * 104)
+    print(f"{'fold':<18}{'비교':<24}{'오프셋':>6}{'n/오프셋':>9}"
+          f"{'mean diff':>12}{'DM 평균':>10}{'DM 범위':>18}"
+          f"{'p 중앙값':>10}{'p<.05':>7}{'양수':>6}")
+    for fold in FOLDS:
+        for name, r in thin_out[fold].items():
+            rng = "[{:.2f}, {:.2f}]".format(r["dm_min"], r["dm_max"])
+            sig = "{}/{}".format(r["n_sig05"], r["n_offset"])
+            pos = "{}/{}".format(r["n_pos"], r["n_offset"])
+            print("{:<18}{:<24}{:>6}{:>9}{:>12.5f}{:>10.3f}{:>18}"
+                  "{:>10.4f}{:>7}{:>6}".format(
+                      fold, "MAC-Flow vs " + name, r["n_offset"],
+                      r["n_per_offset"], r["d_mean"], r["dm_mean"], rng,
+                      r["p_median"], sig, pos))
+    print("  각 오프셋은 독립 부분표본이다.  '양수' 는 MAC-Flow 가 이긴 오프셋 수.")
+
+    if pooled_dm:
+        print("\n" + "=" * 104)
+        print(f"[4 폴드 통합] 폴드를 이어붙여 한 번 검정 · HAC lag={DM_LAG}")
+        print("=" * 104)
+        print(f"{'비교':<24}{'n':>6}{'mean diff':>12}{'HAC se':>11}"
+              f"{'DM(HLN)':>10}{'p':>9}")
+        for name, r in pooled_dm.items():
+            print(f"{'MAC-Flow vs ' + name:<24}{r['n']:>6}{r['d_mean']:>12.5f}"
+                  f"{r['se']:>11.5f}{r['dm_hln']:>10.3f}{r['p_two_sided']:>9.4f}")
+        print("  폴드 경계에서 시간이 끊기고 폴드마다 변동성 수준이 다르다.")
+        print("  폴드별 표와 같이 봐야 한다.")
 
 
 if __name__ == "__main__":
