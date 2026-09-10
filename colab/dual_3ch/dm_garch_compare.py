@@ -71,7 +71,11 @@ def _load(prefix):
     arr = np.load(c)
     if arr.ndim == 2:
         arr = arr.mean(axis=1)
-    return np.asarray(arr, float), np.load(d, allow_pickle=True).astype(str)
+    # 날짜 형식 정규화: 스크립트마다 CSV 를 parse_dates 로 읽기도 하고 문자열로
+    # 두기도 해서 '2006-01-06' 과 '2006-01-06T00:00:00.000000000' 가 섞인다.
+    # 앞 10 자(YYYY-MM-DD)만 남겨 교집합이 형식 때문에 비지 않게 한다.
+    dates = np.array([str(x)[:10] for x in np.load(d, allow_pickle=True)])
+    return np.asarray(arr, float), dates
 
 
 def flow_losses(fold):
