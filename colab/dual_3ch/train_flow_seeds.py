@@ -161,6 +161,8 @@ def make_tag(seed):
         sfx += "_crps"
     if not RAWVOL:
         sfx += "_grec"                       # GARCH recursive vol (게재판과 다른 판본)
+    # 재현 확인용 등 설정이 같은데도 기존 체크포인트와 분리하고 싶을 때.
+    sfx += os.environ.get("TF_TAG_SUFFIX", "")
     return f"rvAbl_full_fpath_novol{sfx}_d{fpath_model.FUTURE_SUMMARY_DIM}_s{seed}"
 
 
