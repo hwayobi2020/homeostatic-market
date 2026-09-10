@@ -83,7 +83,15 @@ VG_SPEC = {"vae": dict(lr=1e-4, dctx=128, hid=192),
            "gan": dict(lr=3e-4, dctx=192, hid=128)}
 # 세 모델 모두 같은 시드 집합을 쓴다.  한쪽만 여러 시드를 평균하면 그쪽 학습
 # 잡음이 √k 배 줄어 차이 d 의 분산이 과소평가되고 유의성이 과장된다.
-OUT = os.path.join(PS.RESULT_DIR, f"dm_compare{PS.CACHE_SUFFIX}.json")
+# MAC-Flow 체크포인트 태그.  기본은 게재판(PS.TAG_PREFIX).  다른 설정을
+# 비교해 보려면 FLOW_TAG 로 바꾸고 OUT_SUFFIX 로 결과 파일을 분리한다
+# (게재판 결과를 덮지 않는다).
+#   예) 8층/hidden 32 를 따로 저장:
+#     FLOW_TAG=rvAbl_full_fpath_novol_lr0d0001_fh32_fl8_d2 OUT_SUFFIX=_fl8fh32
+FLOW_TAG = os.environ.get("FLOW_TAG", PS.TAG_PREFIX)
+OUT_SUFFIX = os.environ.get("OUT_SUFFIX", "")
+OUT = os.path.join(PS.RESULT_DIR,
+                   f"dm_compare{PS.CACHE_SUFFIX}{OUT_SUFFIX}.json")
 
 
 def metrics(sim, act):
@@ -188,7 +196,7 @@ def macflow_arrays(fold, seed, device):
         return None
 
     ckpt = torch.load(os.path.join(
-        PS.RESULT_DIR, f"garch_flow_ar_{PS.TAG_PREFIX}_s{seed}_{fold}_best.pt"),
+        PS.RESULT_DIR, f"garch_flow_ar_{FLOW_TAG}_s{seed}_{fold}_best.pt"),
         map_location="cpu")
     meta = ckpt["meta"]
     cond_stats, target_stats = meta["cond_stats"], meta["target_stats"]
@@ -226,7 +234,7 @@ def main():
     print("#" * 112)
     print(f"# 원점 전수(시간순) · 지평 13주 · 미래=실현 거시 경로 · 구간=전역 풀링")
     print(f"# 세 모델 모두 시드 {SEEDS} (시드 비대칭 제거).  DM 검정 HAC lag={DM_LAG}")
-    print(f"# device={device}  n_sim={N_SIM}  MAC-Flow={PS.TAG_PREFIX}")
+    print(f"# device={device}  n_sim={N_SIM}  MAC-Flow={FLOW_TAG}")
     print("#" * 112)
 
     import dm_test as DM
