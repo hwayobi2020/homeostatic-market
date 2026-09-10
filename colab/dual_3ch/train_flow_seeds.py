@@ -29,6 +29,7 @@
     TF_FOLDS   폴드 목록       (기본 4 폴드 전부)
     TF_MAX_EPOCH  최대 에폭    (기본 60 = 게재판)
     FLOW_VAL_CRPS  1 이면 체크포인트를 val CRPS 로 고른다 (기본 0 = val NLL)
+    TF_RAWVOL  1(기본)=원점 고정 σ (게재판) / 0=GARCH 재귀 변동성 (태그에 _grec)
 
 기본값은 게재판 그대로다.  인자 없이 돌리면 논문 설정 5 시드가 만들어진다.
 """
@@ -49,8 +50,15 @@ except Exception:
 
 os.environ.setdefault("FPATH_DIM", "2")
 
+# TF_RAWVOL=0 이면 patch 를 걸지 않는다 = train_garch_flow 원본의 GARCH 재귀 변동성
+# (σ²_h = ω + α·ε²_{h-1} + β·σ²_{h-1}) 을 그대로 쓴다.  §4.1.2 공정성 점검용이고
+# 게재판(§4.2·§4.3)은 TF_RAWVOL=1 (기본, 원점 고정 σ) 이다.
+RAWVOL = os.environ.get("TF_RAWVOL", "1") == "1"
 from rawvol_helpers import patch_rawvol                            # noqa: E402
-patch_rawvol()
+if RAWVOL:
+    patch_rawvol()
+else:
+    print("[TF_RAWVOL=0] patch_rawvol 미적용 — GARCH 재귀 변동성 판으로 학습한다")
 import train_garch_flow as T                                       # noqa: E402
 import fpath_model                                                 # noqa: E402
 
@@ -118,6 +126,8 @@ def make_tag(seed):
         sfx += f"_ep{MAX_EPOCH}"
     if os.environ.get("FLOW_VAL_CRPS") == "1":
         sfx += "_crps"
+    if not RAWVOL:
+        sfx += "_grec"                       # GARCH recursive vol (게재판과 다른 판본)
     return f"rvAbl_full_fpath_novol{sfx}_d{fpath_model.FUTURE_SUMMARY_DIM}_s{seed}"
 
 

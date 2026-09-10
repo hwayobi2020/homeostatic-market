@@ -46,9 +46,15 @@ from dm_test import dm_test                                        # noqa: E402
 
 RESULT_DIR = os.path.join(HERE, "result")
 FOLDS = ["F_gfc", "F_long_A", "F_long_B_origin", "F_long"]
+# maskall 어블리션(`run_ablations_rawvol.py`)의 기본 시드는 2026~2028 3 개다.
+# 5 개를 기본으로 두면 없는 시드가 조용히 빠진 채 meta 에는 5 개로 기록된다.
 SEEDS = [int(s) for s in os.environ.get(
-    "DMG_SEEDS", "2026,2027,2028,2029,2030").split(",") if s.strip()]
-FLOW_TAG = os.environ.get("FLOW_TAG", "rvAbl_full_fpath_novol_d2")
+    "DMG_SEEDS", "2026,2027,2028").split(",") if s.strip()]
+# §4.1.2 는 "we excluded MAC-Flow's future path" 라고 쓴다.  즉 표 12 의 MAC-Flow 는
+# 미래 경로를 받지 않는 maskall 판이고, GARCH-X(past) 와 정보가 맞다.
+# full 판(`rvAbl_full_fpath_novol_d2`)을 넣으면 MAC-Flow 만 미래 거시 경로를 보는
+# 불공정 비교가 된다 — 그건 표 13(§4.1.3) 의 설정이다.
+FLOW_TAG = os.environ.get("FLOW_TAG", "rvAbl_maskall")
 GARCH_PREFIX = os.environ.get("GARCH_PREFIX", "garch_xpast_refit")
 HAC_LAG = 12
 STRIDE = 13
@@ -192,9 +198,18 @@ def main():
     print("  폴드 경계에서 시간이 끊기고 폴드마다 변동성 수준이 다르다.")
     print("  폴드별 표와 같이 봐야 한다.")
 
+    # 요청 시드가 아니라 **실제로 쓴 시드**를 폴드별로 적는다.  없는 시드가
+    # 조용히 빠진 채 meta 만 요청값으로 남으면 나중에 시드 수를 오독한다.
     res["meta"] = dict(flow_tag=FLOW_TAG, garch_prefix=GARCH_PREFIX,
-                       seeds=SEEDS, hac_lag=HAC_LAG, stride=STRIDE,
+                       seeds_requested=SEEDS, hac_lag=HAC_LAG, stride=STRIDE,
+                       seeds_used={f: a["seeds"] for f, a in data.items()},
+                       n_seed_used={f: a["n_seed"] for f, a in data.items()},
                        n_origin={f: len(a["dates"]) for f, a in data.items()})
+    missing = {f: sorted(set(SEEDS) - set(a["seeds"]))
+               for f, a in data.items() if set(SEEDS) - set(a["seeds"])}
+    if missing:
+        print(f"\n[주의] 요청했으나 없어서 빠진 시드: {missing}")
+        res["meta"]["seeds_missing"] = missing
     with open(OUT, "w", encoding="utf-8") as fh:
         json.dump(res, fh, indent=1, default=float)
     print(f"\nsaved {OUT}")
