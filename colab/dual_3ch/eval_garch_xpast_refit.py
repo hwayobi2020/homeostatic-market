@@ -42,6 +42,7 @@ from train_garch_xpast import (  # noqa: E402
     build, filter_var, simulate, crps_pooled, cvar, var_q, emd1d,
     FOLDS, FOLDS_DIR, RESULT_DIR, PAST_LEN, FUT, N_SIM, SEED,
 )
+from train_garch_x import crps_ensemble                            # noqa: E402
 
 REFIT = os.path.join(RESULT_DIR, "refit_garch_xpast.json")
 PKEYS = ("mu", "omega", "alpha", "beta", "gamma_tbill", "gamma_metab",
@@ -103,7 +104,22 @@ def eval_fold(fold, params):
                    skew_actual=_sk(af), skew_sim=_sk(sf),
                    exkurt_actual=_ek(af), exkurt_sim=_ek(sf))
 
+    # DM 검정용: 원점×주 CRPS 와 조건 시점 날짜.  MAC-Flow 의
+    # garch_flow_ar_*_crps_per_origin.npy / *_origin_dates.npy 와 같은 규약이다
+    # (원점 t 의 조건 시점 = te 의 t 행, 예측 구간 = t+1 .. t+FUT).
+    per_oc = np.array([[crps_ensemble(sim[i, :, w], act[i, w])
+                        for w in range(FUT)]
+                       for i in range(len(origins))])
+    date_col = te["date"].values if "date" in te.columns else None
+    dates = (np.array([str(date_col[t]) for t in origins]) if date_col is not None
+             else np.array([str(t) for t in origins]))
+    pref = os.path.join(RESULT_DIR, f"garch_xpast_refit_{fold}")
+    np.save(f"{pref}_crps_per_origin.npy", per_oc)
+    np.save(f"{pref}_origin_dates.npy", dates)
+
     print(f"  origins={len(origins)}  n_sim={N_SIM}  lam={lam:+.5f}")
+    print(f"  saved per-origin CRPS: {os.path.basename(pref)}_crps_per_origin.npy "
+          f"{per_oc.shape}")
     print(f"  CRPS={crps_m:.5f}  cov 50/80/95="
           f"{cov[50]:.3f}/{cov[80]:.3f}/{cov[95]:.3f}  "
           f"skew a/s={te_eval['skew_actual']:+.4f}/{te_eval['skew_sim']:+.4f}")
