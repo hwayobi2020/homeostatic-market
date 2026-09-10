@@ -93,6 +93,49 @@ def forward_rawvol_rescale(sim_paths_zt, s2_orig, e2_orig, om, al, be, mu):
     return sim_paths_zt * sigma_orig[:, None, None] + float(mu)
 
 
+# ---------------------------------------------------------------------------
+# 자기회귀 변동성 역변환 (GARCH 모수를 쓰지 않는다)
+# ---------------------------------------------------------------------------
+# 학습 표준화는 이미 시점별이다:
+#   data/extend_to_1971.py:396  df["sp_std_13w"] = rolling(13).std(ddof=1).shift(1)
+# 즉 σ_t 는 r_{t-13..t-1} 만 쓰고 한 주 시프트돼 있어 인과적이다.  그래서 생성
+# 경로를 그대로 이어 붙여 σ 를 갱신할 수 있다 — 원점에서 얼리는 것은 역변환의
+# 단순화일 뿐 학습의 제약이 아니다.
+#
+# 이 함수를 쓰면 지평 안에서 변동성이 움직이되 GARCH(ω, α, β)를 빌리지 않는다.
+_ROLL_W = 13
+
+
+def forward_rollvol_rescale(sim_paths_zt, tail_raw, mu):
+    """자기회귀 롤링 변동성 역변환.
+
+    σ_{h} = std(직전 13 주 수익률, ddof=1) 로 매 스텝 갱신한다.  첫 스텝의 창은
+    실측 꼬리(원점까지 13 주)이고, 이후로는 그 창이 생성 수익률로 한 칸씩
+    밀린다.  학습 때의 표준화와 같은 정의(직전 13 주, 한 주 시프트)다.
+
+    Args:
+      sim_paths_zt : (n_orig, n_sim, T)  표준화 수익률 z
+      tail_raw     : (n_orig, 13)        원점까지의 실측 수익률 (raw, μ 포함)
+      mu           : 상수 평균 (raw 단위)
+    Returns: (n_orig, n_sim, T) raw return.
+    """
+    z = np.asarray(sim_paths_zt, dtype=np.float64)
+    n_orig, n_sim, T = z.shape
+    tail = np.asarray(tail_raw, dtype=np.float64)
+    if tail.shape != (n_orig, _ROLL_W):
+        raise ValueError(f"tail_raw shape {tail.shape} != {(n_orig, _ROLL_W)}")
+    out = np.empty_like(z)
+    for i in range(n_orig):
+        win = np.repeat(tail[i][None, :], n_sim, axis=0)       # (n_sim, 13)
+        for h in range(T):
+            sig = win.std(axis=1, ddof=1)                      # (n_sim,)
+            sig = np.maximum(sig, 1e-12)
+            r = z[i, :, h] * sig + float(mu)
+            out[i, :, h] = r
+            win = np.concatenate([win[:, 1:], r[:, None]], axis=1)
+    return out
+
+
 def patch_rawvol():
     """train_garch_flow 의 GARCH 함수들을 raw-vol 버전으로 monkey-patch.
 
