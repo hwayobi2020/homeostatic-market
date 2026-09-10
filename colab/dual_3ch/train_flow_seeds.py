@@ -55,11 +55,44 @@ os.environ.setdefault("FPATH_DIM", "2")
 # 게재판(§4.2·§4.3)은 TF_RAWVOL=1 (기본, 원점 고정 σ) 이다.
 RAWVOL = os.environ.get("TF_RAWVOL", "1") == "1"
 from rawvol_helpers import patch_rawvol                            # noqa: E402
+import train_garch_flow as T                                       # noqa: E402
+
 if RAWVOL:
     patch_rawvol()
 else:
     print("[TF_RAWVOL=0] patch_rawvol 미적용 — GARCH 재귀 변동성 판으로 학습한다")
-import train_garch_flow as T                                       # noqa: E402
+
+    # garch_preprocess_fold 는 sp_skew_13w 를 만들지 않는다 (rawstd 판만 만든다).
+    # 그대로 두면 extra context 가 하나 빠져 게재판과 채널이 달라진다 — 변동성
+    # 처리만 바꾸려는 대조가 2 요인이 돼버린다.  그래서 원본 fold CSV 의
+    # sp_return 으로 rawstd_preprocess_fold 와 **같은 방식**의 13 주 rolling
+    # skew 를 계산해 전처리 결과 CSV 에 덧붙인다.
+    import pandas as _pd                                           # noqa: E402
+    _orig_prep = T.garch_preprocess_fold
+
+    def _garch_prep_with_skew(folds_dir, fold, out_dir, scale=100.0):
+        out = _orig_prep(folds_dir, fold, out_dir, scale=scale)
+        src = {sp: os.path.join(folds_dir, f"{fold}_{sp}.csv")
+               for sp in ("train", "val", "test")}
+        raw = {sp: _pd.read_csv(p, parse_dates=["date"])
+               for sp, p in src.items() if os.path.exists(p)}
+        full = (_pd.concat(list(raw.values()), ignore_index=True)
+                   .drop_duplicates("date").sort_values("date")
+                   .reset_index(drop=True))
+        sk = (full["sp_return"].astype(float)
+              .rolling(window=13, min_periods=13).skew().fillna(0.0))
+        skew_map = dict(zip(full["date"], sk.to_numpy(dtype=float)))
+        for sp, path in out.items():
+            d = _pd.read_csv(path, parse_dates=["date"])
+            d["sp_skew_13w"] = d["date"].map(skew_map).astype(float)
+            if d["sp_skew_13w"].isna().any():
+                sys.exit(f"[FATAL] sp_skew_13w 미매핑 in {path}")
+            d.to_csv(path, index=False)
+        print("  [grec] sp_skew_13w 를 GARCH 전처리 CSV 에 추가했다 "
+              "(원본 sp_return 의 13 주 rolling skew)")
+        return out
+
+    T.garch_preprocess_fold = _garch_prep_with_skew
 import fpath_model                                                 # noqa: E402
 
 fpath_model.FUTURE_SUMMARY_DIM = int(os.environ.get("FPATH_DIM", "2"))
