@@ -64,20 +64,54 @@ ALPHAS = [0.10, 0.05, 0.01]
 PP = 100.0                    # %p 표기
 QUIET = os.environ.get("TAU_QUIET", "") == "1"
 
-CACHES = [("zero-mean", AG.CACHE_ZM + OSF), ("anchored", AG.CACHE_AN + OSF)]
-CHANNELS = ["shape_tbill", "shape_metab"]
+CACHES = [("zero-mean", AG.CACHE_ZM + OSF),
+          ("anchored", AG.CACHE_AN + OSF),
+          ("joint", AG.CACHE_JT + OSF)]        # §4.3.3 결합 경로도 같은 지표로 정렬한다
 KS = ["k1"]                       # k=3 은 학습분포 밖이라 논문에서 뺀다
 
 
+def channels_of(sample):
+    """캐시마다 상위 키 구성이 다르다.  zero-mean·anchored 는 shape_tbill/shape_metab 이고
+    joint 는 rate_only(금리 step↑ 단독)와 joint(금리 step↑ × 유동성 형태) 다.
+    구조를 가정하지 말고 캐시에서 찾아낸다."""
+    out = []
+    for k, v in sample.items():
+        if k in ("flat", "_origin") or not isinstance(v, dict):
+            continue
+        out.append(k)
+    return sorted(out)
+
+
+def leaves_of(sample, ch):
+    """(k, name) 목록.  joint 는 k 층이 없어 바로 시나리오 이름이 온다."""
+    node = sample.get(ch)
+    if not isinstance(node, dict):
+        return []
+    if "uw_mean_by_origin" in node:                  # rate_only 처럼 잎이 바로 오는 경우
+        return [(None, None)]
+    out = []
+    for k, v in node.items():
+        if not isinstance(v, dict):
+            continue
+        if "uw_mean_by_origin" in v:                 # joint: 층이 하나
+            out.append((None, k))
+        elif k in KS:                                # zero-mean/anchored: k 층이 있다
+            out.extend((k, n) for n, w in v.items() if isinstance(w, dict))
+    return out
+
+
 def _node(d, ch, k, name):
+    """k 나 name 이 None 이면 그 층을 건너뛴다 (캐시마다 깊이가 다르다)."""
     cur = d.get(ch)
     if not isinstance(cur, dict):
         return None
-    cur = cur.get(k)
-    if not isinstance(cur, dict):
-        return None
-    n = cur.get(name)
-    return n if isinstance(n, dict) else None
+    if k is not None:
+        cur = cur.get(k)
+        if not isinstance(cur, dict):
+            return None
+    if name is not None:
+        cur = cur.get(name)
+    return cur if isinstance(cur, dict) and "uw_mean_by_origin" in cur else None
 
 
 def tau_e_of(node, a):
@@ -141,10 +175,9 @@ def main():
                 print(f"\n  [{LABELS.get(fold, fold)}]  seeds={sorted(per_seed)}")
                 print(f"    {'axis':<8}{'shape':<11}{'α':>6}{'e(flat)':>10}{'e(shape)':>11}"
                       f"{'Δe':>10}{'±SE':>9}{'t':>7}{'p':>9}{'τ(shape)':>10}{'Δτ':>10}")
-            names = list(((sample.get(CHANNELS[0]) or {}).get("k1") or {}).keys())
-            for ch in CHANNELS:
-                for k in KS:
-                    for name in names:
+            for ch in channels_of(sample):
+                for k, name in leaves_of(sample, ch):
+                    if True:
                         if _node(sample, ch, k, name) is None:
                             continue
                         for a in ALPHAS:
@@ -169,7 +202,7 @@ def main():
                                 continue
                             m, se, t, p = _t_p(de)                 # 검정은 expectile 값에 건다
                             mt, set_, tt, pt = _t_p(dt)
-                            rows.append([title, fold, ch.replace("shape_", ""), k, name,
+                            rows.append([title, fold, ch.replace("shape_", ""), k or "-", name or ch,
                                          f"{a:.2f}",
                                          f"{np.mean(e0s):.4f}", f"{np.mean(e1s):.4f}",
                                          f"{m:.4f}", f"{se:.4f}", f"{t:.2f}", f"{p:.4f}",
@@ -177,7 +210,7 @@ def main():
                                          f"{mt:.6f}", f"{pt:.4f}", len(de)])
                             if not QUIET:
                                 mk = "***" if p < .01 else "**" if p < .05 else "*" if p < .10 else ""
-                                print(f"    {ch.replace('shape_',''):<8}{name:<11}{a:>6.2f}"
+                                print(f"    {ch.replace('shape_',''):<8}{(name or ch):<11}{a:>6.2f}"
                                       f"{np.mean(e0s):>10.3f}{np.mean(e1s):>11.3f}"
                                       f"{m:>10.3f}{se:>9.3f}{t:>7.2f}{p:>9.4f}"
                                       f"{np.mean(t1s):>10.5f}{mt:>10.5f} {mk}")
