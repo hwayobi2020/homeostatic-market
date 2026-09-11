@@ -26,6 +26,7 @@
 ----
     !PS_BASE=fpath_novol FPATH_DIM=2 python colab/dual_3ch/shift_vs_shape_pathshape.py
 """
+import math
 import os
 import sys
 
@@ -76,8 +77,8 @@ def _org(node, point):
     return np.asarray(node[key], float) * PP if key in node else None
 
 
-def _delta(per_seed, ch, k, name, point):
-    """시드평균 원점평균 Δ.  없으면 nan."""
+def _delta_seeds(per_seed, ch, k, name, point):
+    """시드별 (원점평균 Δ) 목록.  없으면 빈 리스트."""
     vals = []
     for s in sorted(per_seed):
         d = per_seed[s]
@@ -88,7 +89,26 @@ def _delta(per_seed, ch, k, name, point):
         if a is None or b is None:
             continue
         vals.append(float((a - b).mean()))
+    return vals
+
+
+def _delta(per_seed, ch, k, name, point):
+    """시드평균 원점평균 Δ.  없으면 nan."""
+    vals = _delta_seeds(per_seed, ch, k, name, point)
     return float(np.mean(vals)) if vals else float("nan")
+
+
+def _delta_t(per_seed, ch, k, name, point):
+    """Δ 의 시드 축 (평균, SE, t).  판정 규칙이 t 를 쓰므로 함께 낸다."""
+    a = np.asarray(_delta_seeds(per_seed, ch, k, name, point), float)
+    a = a[np.isfinite(a)]
+    if a.size == 0:
+        return float("nan"), float("nan"), float("nan")
+    if a.size == 1:
+        return float(a[0]), float("nan"), float("nan")
+    m = float(a.mean())
+    se = float(a.std(ddof=1) / math.sqrt(a.size))
+    return m, se, (m / se if se > 1e-12 else float("nan"))
 
 
 def _flat_level(per_seed, point):
@@ -128,7 +148,9 @@ def run_cache(title, cache_dir):
             for p in have))
         print("    Δ (%p) 과 비 = Δ_x / Δ_mean.  비가 전부 1 근처면 평행이동,"
               " 수준비 근처면 비례 확대.")
-        print(f"      {'시나리오':<28}{'Δstd':>8}  " +
+        print("    판정 규칙(데이터 보기 전에 고정): |t| = |Δstd/SE| < 2 → 퍼짐 불변 = 평행이동,")
+        print("      |t| ≥ 2 이고 부호가 폴드·채널에 걸쳐 일관 → 형태 변화.")
+        print(f"      {'시나리오':<28}{'Δstd':>8}{'±SE':>8}{'t':>7}{'판정':>7}  " +
               "".join(f"{SHORT[p]:>9}" for p in have) + "   |  " +
               "".join(f"{SHORT[p]:>7}" for p in have[1:]))
         names = []
@@ -142,14 +164,17 @@ def run_cache(title, cache_dir):
                     if _node(sample, ch, k, name) is None:
                         continue
                     d = {p: _delta(per_seed, ch, k, name, p) for p in have}
-                    dstd = _delta(per_seed, ch, k, name, "uw_std")
+                    dstd, sstd, tstd = _delta_t(per_seed, ch, k, name, "uw_std")
+                    verdict = "?" if not np.isfinite(tstd) else \
+                        ("형태" if abs(tstd) >= 2.0 else "이동")
                     dm = d["uw_mean"]
                     if not np.isfinite(dm) or abs(dm) < 1e-9:
                         ratios = ["    n/a" for _ in have[1:]]
                     else:
                         ratios = [f"{d[p] / dm:>7.2f}" for p in have[1:]]
                     lab = f"{ch.replace('shape_', '')}/{k}/{name}"
-                    print(f"      {lab:<28}{dstd:>8.3f}  " +
+                    print(f"      {lab:<28}{dstd:>8.3f}{sstd:>8.3f}{tstd:>7.2f}"
+                          f"{verdict:>7}  " +
                           "".join(f"{d[p]:>9.3f}" for p in have) + "   |  " +
                           "".join(ratios))
 
