@@ -172,11 +172,14 @@ def main():
                     continue
                 if mc is not None:
                     sk, sd = _agg_seed(per_seed, axis, b, "skew")
-                    um, _ = _agg_seed(per_seed, axis, b, "uw_mean")
-                    ih, _ = _agg_seed(per_seed, axis, b, "ihl10")
+                    # R1#1: 지표 자체의 seed 산포를 버리지 않는다.  칸이 보여주는 값은
+                    #   uw_mean 과 ihl10 이므로 ± 도 그 둘에 붙어야 읽는 사람이 오해하지 않는다.
+                    um, um_sd = _agg_seed(per_seed, axis, b, "uw_mean")
+                    ih, ih_sd = _agg_seed(per_seed, axis, b, "ihl10")
                     nm = mc["n_origin"]
                     star = "*" if nm < N_STAR else ""
-                    mstr = f"{sk:+.2f}(±{sd:.2f})/{um:+.3f}/{ih:+.3f} (n{nm}{star})"
+                    mstr = (f"{sk:+.2f}(±{sd:.2f})/{um:+.3f}(±{um_sd:.3f})"
+                            f"/{ih:+.3f}(±{ih_sd:.3f}) (n{nm}{star})")
                 else:
                     mstr = "—"
                 if fc is not None:
