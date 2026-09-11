@@ -93,6 +93,7 @@ def main():
     for fold in RT.FOLDS:
         # RT.collect 는 VAE/GAN/GARCH 까지 불러온다.  여기서는 MAC-Flow 만 쓰므로
         # 그 로드를 건너뛴다 — 재샘플링 비용이 대부분 거기서 난다.
+        print(f"[loading] {LABEL.get(fold, fold)} ...", flush=True)
         fl = []
         for sd in RT.SEEDS:
             try:
