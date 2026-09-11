@@ -91,7 +91,15 @@ def main():
     print("-" * 108)
 
     for fold in RT.FOLDS:
-        runs = RT.collect(fold)
+        # RT.collect 는 VAE/GAN/GARCH 까지 불러온다.  여기서는 MAC-Flow 만 쓰므로
+        # 그 로드를 건너뛴다 — 재샘플링 비용이 대부분 거기서 난다.
+        fl = []
+        for sd in RT.SEEDS:
+            try:
+                fl.append(RT.load_flow(fold, sd))
+            except Exception as e:                                    # noqa: BLE001
+                print(f"  [MAC-Flow s{sd}] {e!r}")
+        runs = {"MAC-Flow": fl} if fl else {}
         if not runs:
             print(f"{LABEL.get(fold, fold):<28}(no data)")
             continue
