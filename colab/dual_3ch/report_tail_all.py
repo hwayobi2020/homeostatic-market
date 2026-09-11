@@ -16,13 +16,18 @@
 
 검정
 ----
-  원점별 손실 4 종 → DM(Diebold-Mariano, HAC lag 12) · 비중첩(stride 13) · 4 폴드 통합
+  원점별 손실 6 종 → DM(Diebold-Mariano, HAC lag 12) · 비중첩(stride 13) · 4 폴드 통합
     CRPS      : 원점별 13 주 평균 CRPS
     pinball1  : τ=0.01 핀볼 손실 (VaR 1% 의 proper scoring rule)
     pinball5  : τ=0.05
+    expec.01  : τ=0.01 expectile 의 비대칭 제곱손실 (리뷰어 3 #6)
+    expec.05  : τ=0.05
     IHL       : |모형 IHL CVaR10%(원점 내) − 실측 IHL|
   CVaR 은 단독으로 elicitable 이 아니라 DM 을 걸지 않는다.  대신 시드 t검정으로
   전역 CVaR 오차를 비교한다 (MAC-Flow·VAE·GAN 은 5 시드, GARCH 는 상수 1 판).
+  expectile 은 일관성과 유도가능성을 동시에 만족해 고유 점수함수가 있으므로
+  CVaR 과 달리 DM 을 정당하게 걸 수 있다.  τ 는 분위 수준 α 와 같은 수준이
+  아니라 모형 공통 상수로 고정한다 (expectile_per_origin 주석 참고).
 
 사용
 ----
@@ -83,6 +88,44 @@ def pinball_per_origin(sim, act, tau):
     return np.mean(np.where(d >= 0, tau * d, (tau - 1.0) * d), axis=1)
 
 
+def expectile_sample(x, tau, axis=1, iters=200, tol=1e-12):
+    """표본 τ-expectile (Newey & Powell 1987 의 비대칭 최소제곱).
+
+    e 는 min_e E[|τ − 1{X ≤ e}| (X − e)²] 의 해.  1 차 조건이
+    e = Σ w_i x_i / Σ w_i,  w_i = τ (x_i > e) / 1−τ (x_i ≤ e)
+    라 가중평균 갱신(IRLS)을 돌리면 단조 수렴한다.  axis 를 따라 벡터화.
+    """
+    x = np.asarray(x, float)
+    e = x.mean(axis=axis, keepdims=True)
+    for _ in range(iters):
+        w = np.where(x > e, tau, 1.0 - tau)
+        new = (w * x).sum(axis=axis, keepdims=True) / w.sum(axis=axis, keepdims=True)
+        if np.max(np.abs(new - e)) < tol:
+            e = new
+            break
+        e = new
+    return np.squeeze(e, axis=axis)
+
+
+def expectile_per_origin(sim, act, tau):
+    """τ-expectile 의 비대칭 제곱손실.  원점별 13 주 평균.
+
+    CVaR 은 단독 elicitable 이 아니라 DM 에 걸 손실이 없다.  expectile 은
+    τ ≥ 1/2 에서 일관(coherent)하면서 동시에 유도가능(elicitable)해 고유
+    점수함수 S(e, y) = |τ − 1{y ≤ e}| (y − e)² 를 가진다.  핀볼이 VaR 에
+    대해 하는 역할을 expectile 에 대해 하는 것이 이 손실이다 (리뷰어 3 #6).
+
+    **주의: τ 와 분위 수준 α 는 같은 수준이 아니다.**  같은 값을 주는 τ 는
+    분포마다 다르다 (표준정규에서 α=5% ↔ τ=0.0124, 표준화 t(3) 에서는
+    τ=0.0303 으로 2.4 배 차이).  모형마다 τ 를 맞추면 비교가 깨지므로
+    τ 를 모형 공통으로 고정하고, VaR 수준의 대응물이라 부르지 않는다.
+    """
+    e = expectile_sample(sim, tau, axis=1)               # (n_orig, T)
+    d = act - e
+    w = np.where(act > e, tau, 1.0 - tau)
+    return np.mean(w * d * d, axis=1)
+
+
 def ihl_loss_per_origin(sim, act, alpha=0.10):
     """|모형 IHL CVaRα(원점 내 n_sim) − 실측 IHL|.
 
@@ -102,6 +145,8 @@ def ihl_loss_per_origin(sim, act, alpha=0.10):
 LOSSES = [("CRPS", crps_per_origin),
           ("pinball1%", lambda s, a: pinball_per_origin(s, a, 0.01)),
           ("pinball5%", lambda s, a: pinball_per_origin(s, a, 0.05)),
+          ("expec.01", lambda s, a: expectile_per_origin(s, a, 0.01)),
+          ("expec.05", lambda s, a: expectile_per_origin(s, a, 0.05)),
           ("IHL", ihl_loss_per_origin)]
 
 
@@ -115,9 +160,14 @@ def global_metrics(sim, act):
         y = np.sort(x)
         return float(y[:max(1, int(0.10 * y.size))].mean())
 
+    def _ex(x, tau):
+        return float(expectile_sample(x, tau, axis=0))
+
     return {"CVaR1%오차": abs(_cv(sf, .01) - _cv(af, .01)),
             "CVaR5%오차": abs(_cv(sf, .05) - _cv(af, .05)),
             "VaR1%오차": abs(_vq(sf, .01) - _vq(af, .01)),
+            "expec.01오차": abs(_ex(sf, .01) - _ex(af, .01)),
+            "expec.05오차": abs(_ex(sf, .05) - _ex(af, .05)),
             "IHL평균오차": abs(s_ihl.mean() - a_ihl.mean()),
             "IHL CVaR10오차": abs(_cv10(s_ihl) - _cv10(a_ihl))}
 
