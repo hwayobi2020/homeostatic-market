@@ -138,8 +138,10 @@ def run_cache(title, cache_dir):
     print("\n" + "=" * 132)
     print(f"[{title}]   metric={METRIC}   cache={os.path.basename(cache_dir)}")
     print("  C = B − A (원점별).  음수면 B 가 더 깊다.  flat 은 양쪽에서 소거된다.")
-    print("  [상쇄] = 쌍대 C 의 시드SE ÷ (A,B 각각 Δ 시드SE 의 평균).  1 보다 뚜렷이 작아야")
-    print("          시드 공통 이동이 실제로 소거된 것이다.  1 근처면 상쇄가 안 된 것.")
+    print("  [상쇄] = 쌍대 C 의 시드SE ÷ (A,B 각각 Δ 시드SE 의 평균).")
+    print("          두 팔이 시드 축에서 독립이면 SE(Δb−Δa)=√2·SE 이므로 중립값은 1 이 아니라")
+    print("          √2≈1.414 다.  그보다 뚜렷이 작아야 공통 이동이 소거된 것이고,")
+    print("          넘으면 두 팔이 서로 반대로 움직여 차분이 잡음을 키운 것이다.")
     for fold in FOLDS:
         per_seed = AG._load(cache_dir, fold)
         if not per_seed:
@@ -199,8 +201,10 @@ def main():
         csv.writer(fh).writerows(ROWS)
     print(f"\n[csv] {len(ROWS)-1} 행 → {out}")
     print("\n  *** p<.01  ** p<.05  * p<.10")
-    print("\n[읽는 법] [상쇄] 가 1 근처면 쌍대로도 잡음이 안 줄었다는 뜻이고, 그 행의 t·p 는")
-    print("          Δ 단독과 같은 한계를 그대로 갖는다.  상쇄가 작동한 행만 코어 근거로 쓸 것.")
+    print("\n[읽는 법] [상쇄] 가 √2≈1.414 근처면 쌍대로도 잡음이 안 줄었다는 뜻이고, 그 행의")
+    print("          t·p 는 Δ 단독과 같은 한계를 그대로 갖는다.  1.414 를 넘으면 차분이 오히려")
+    print("          잡음을 키운 것이다 (두 팔이 시드 축에서 서로 반대로 움직인다).")
+    print("          상쇄가 작동한 행만 코어 근거로 쓸 것.")
 
 
 if __name__ == "__main__":
