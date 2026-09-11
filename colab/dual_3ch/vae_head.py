@@ -38,8 +38,11 @@ VAEHead 는 같은 두 메서드를 제공한다.  log_prob 은 단일 표본 EL
     분산 붕괴 방지 장치).  흐름 헤드에는 이 제약이 없다.
   · 학습 로그의 train_nll 에는 free-bits 바닥(최대 0.5×LATENT×13 nat/origin)이 얹혀 있어 val_nll 과 같은
     축에서 읽으면 안 된다.
-  · VH_LATENT / VH_HID 는 체크포인트 meta 에 안 남고 버퍼 head_hparams 에만 기록된다.  학습과 평가에서
-    값이 다르면 load_state_dict 가 모양 불일치로 실패한다 (free_bits 는 값만 기록).
+  · VH_LATENT / VH_HID / VH_FREE_BITS 는 체크포인트 meta 에 안 남고 버퍼 head_hparams 에 기록되며,
+    MambaVAEARFpath.load_state_dict 가 그 값으로 헤드를 다시 만들어 적재한다 (평가 쪽 env 불필요).
+
+한 번에 다 돌리기 (튜닝 → 5시드 학습 → MAC-Flow 대 MAC-VAE 짝 비교표 → §4.3 경로형태):
+  python colab/dual_3ch/run_macvae_all.py
 
 사용
 ----
@@ -68,11 +71,16 @@ _LOG2PI = math.log(2.0 * math.pi)
 class VAEHead(nn.Module):
     """스텝별 스칼라 y | context 의 조건부 가우시안 VAE.  nflows.Flow 의 log_prob/sample 호환."""
 
-    def __init__(self, context_dim, latent=LATENT, hidden=HID, free_bits=FREE_BITS,
+    def __init__(self, context_dim, latent=None, hidden=None, free_bits=None,
                  dropout=0.0):
         super().__init__()
+        # None 이면 *호출 시점* 의 모듈 전역을 쓴다 (튜닝 루프가 vae_head.LATENT/HID 를 바꿔 가며 돈다).
+        latent = LATENT if latent is None else latent
+        hidden = HID if hidden is None else hidden
+        free_bits = FREE_BITS if free_bits is None else free_bits
         self.context_dim = int(context_dim)
         self.latent = int(latent)
+        self.hidden = int(hidden)
         self.free_bits = float(free_bits)
         drop = [nn.Dropout(dropout)] if dropout > 0 else []
         self.q = nn.Sequential(nn.Linear(1 + self.context_dim, hidden), nn.ReLU(), *drop,
@@ -125,3 +133,17 @@ class MambaVAEARFpath(fpath_model.MambaFlowARFpath):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.flow = VAEHead(self.flow_context_dim, dropout=self._fp_dropout)
+
+    def load_state_dict(self, state_dict, strict=True):
+        """체크포인트의 head_hparams 로 헤드를 다시 만든 뒤 적재.
+
+        analyze_pathshape_rawvol.rebuild_model 은 흐름 인자(meta)만 알고 VAE 헤드 크기는
+        모르므로, 튜닝으로 고른 latent/hidden 이 모듈 기본값과 다르면 여기서 맞춘다.
+        """
+        hp = state_dict.get("flow.head_hparams")
+        if hp is not None:
+            lat, hid, fb = int(round(float(hp[0]))), int(round(float(hp[1]))), float(hp[2])
+            if (lat, hid) != (self.flow.latent, self.flow.hidden) or fb != self.flow.free_bits:
+                self.flow = VAEHead(self.flow_context_dim, latent=lat, hidden=hid,
+                                    free_bits=fb, dropout=self._fp_dropout).to(hp.device)
+        return super().load_state_dict(state_dict, strict=strict)
