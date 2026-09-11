@@ -123,6 +123,14 @@ def eval_fold(fold, params):
     np.save(f"{pref}_crps_per_origin.npy", per_oc)
     np.save(f"{pref}_origin_dates.npy", dates)
     np.save(f"{pref}_ihl_per_origin.npy", ihl_per_origin(sim, act))
+    # report_tail_all.py 는 원점별 손실(핀볼·expectile)을 직접 계산하므로
+    # 요약이 아니라 경로 배열이 필요하다.  없으면 load_garch 가 None 을 돌려주고
+    # GARCH-ST 가 리포트에서 통째로 빠진다.  pred_start 는 예측 첫 주의 test 행
+    # (원점 t 의 예측 구간이 t+1..t+FUT 이므로 t+1) — 다른 모형과 같은 규약이다.
+    # 정렬이 맞는지는 리포트가 찍는 '원점 교집합 N 개' 로 확인한다.
+    np.savez_compressed(f"{pref}_arrays.npz", sim=sim, act=act,
+                        pred_start=np.asarray(origins, dtype=int) + 1,
+                        origin_dates=dates)
 
     print(f"  origins={len(origins)}  n_sim={N_SIM}  lam={lam:+.5f}")
     print(f"  saved per-origin CRPS: {os.path.basename(pref)}_crps_per_origin.npy "
