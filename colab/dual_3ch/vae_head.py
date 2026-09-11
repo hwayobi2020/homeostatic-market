@@ -25,9 +25,21 @@ VAEHead 는 같은 두 메서드를 제공한다.  log_prob 은 단일 표본 EL
   q(z | y_t, c_t) : MLP([y, c]) -> (mu, logvar), z ∈ R^LATENT
   p(y_t | z, c_t) : MLP([z, c]) -> (mean, logvar), logvar ∈ [-2, 2]   (CondVAE 의 DEC_LOGVAR_CLAMP)
   prior N(0, I).  학습 시 free-bits 0.5 nat/dim (CondVAE 와 동일, posterior collapse 방지).
-  평가(eval) 시에는 free-bits 없이 진짜 ELBO 를 돌려준다 (val NLL 이 실제 하한이 되도록).
+  평가(eval) 시에는 free-bits 없이 진짜 ELBO 를 돌려주고(val NLL 이 실제 하한이 되도록),
+  z 잡음은 고정 시드라 흐름 헤드처럼 결정적이다(에폭 간 val NLL 비교가 같은 draw 위에서 됨).
   CondVAE 의 KL β 램프(60 에폭)는 train() 이 에폭을 헤드에 넘기지 않아 넣지 않았다.
-  hidden 192 = 튜닝된 CondVAE(t3skfu_c128h192) 의 HID.   LATENT 16 = CondVAE 와 동일.
+  hidden 192 = 튜닝된 CondVAE(run_thin_compare.VG_SPEC["vae"] hid=192) 의 HID.   LATENT 16 = CondVAE 와 동일.
+
+논문에 적어야 할 두 가지 (흐름 헤드와 같지 않은 점)
+--------------------------------------------------
+  · 이 헤드의 log_prob 은 단일 표본 ELBO 라 −ELBO ≥ 진짜 NLL.  MAC-Flow 의 test NLL 은 정확값이므로
+    두 모형의 NLL 을 직접 비교하면 안 된다 — 비교는 표본 기반 지표(CRPS·커버리지·왜도·IHL)로 한다.
+  · 디코더 logvar 를 [-2, 2] 로 묶어 표준화 공간에서 σ ≥ exp(-1) = 0.37 바닥이 있다 (CondVAE 와 동일한
+    분산 붕괴 방지 장치).  흐름 헤드에는 이 제약이 없다.
+  · 학습 로그의 train_nll 에는 free-bits 바닥(최대 0.5×LATENT×13 nat/origin)이 얹혀 있어 val_nll 과 같은
+    축에서 읽으면 안 된다.
+  · VH_LATENT / VH_HID 는 체크포인트 meta 에 안 남고 버퍼 head_hparams 에만 기록된다.  학습과 평가에서
+    값이 다르면 load_state_dict 가 모양 불일치로 실패한다 (free_bits 는 값만 기록).
 
 사용
 ----
@@ -49,6 +61,7 @@ LATENT = int(os.environ.get("VH_LATENT", "16"))
 HID = int(os.environ.get("VH_HID", "192"))
 FREE_BITS = float(os.environ.get("VH_FREE_BITS", "0.5"))
 DEC_LOGVAR_CLAMP = (-2.0, 2.0)          # train_vae_gan_baseline.DEC_LOGVAR_CLAMP 와 동일
+VAL_EPS_SEED = 12345                     # 평가 모드 log_prob 의 z 잡음 고정 시드 (CondVAE VAL_SIM_SEED 와 같은 값)
 _LOG2PI = math.log(2.0 * math.pi)
 
 
@@ -66,6 +79,11 @@ class VAEHead(nn.Module):
                                nn.Linear(hidden, 2 * self.latent))
         self.dec = nn.Sequential(nn.Linear(self.latent + self.context_dim, hidden), nn.ReLU(), *drop,
                                  nn.Linear(hidden, 2))
+        # 체크포인트에 헤드 설정을 남긴다 (train_garch_flow 의 meta 는 흐름 인자만 적는다).
+        # latent/hidden 이 다르면 load_state_dict 가 모양 불일치로 터지지만, free_bits 는
+        # 모양이 같아 조용히 다른 목적함수가 되므로 값 자체를 기록해 사후 식별이 되게 한다.
+        self.register_buffer("head_hparams",
+                             torch.tensor([float(self.latent), float(hidden), self.free_bits]))
 
     def _decode(self, z, context):
         out = self.dec(torch.cat([z, context], dim=-1))
@@ -75,7 +93,14 @@ class VAEHead(nn.Module):
         """단일 표본 ELBO (N,).  inputs (N,1), context (N,C)."""
         h = self.q(torch.cat([inputs, context], dim=-1))
         mu, logvar = h[:, :self.latent], h[:, self.latent:].clamp(-8.0, 8.0)
-        z = mu + torch.randn_like(mu) * torch.exp(0.5 * logvar)
+        if self.training:
+            eps = torch.randn_like(mu)
+        else:
+            # 평가(val NLL 체크포인트 선택·test NLL)는 흐름 헤드처럼 결정적이어야 한다.
+            # z 재표본 잡음을 고정 시드로 묶어 에폭 간 비교가 같은 draw 위에서 되게 한다.
+            g = torch.Generator(device=mu.device).manual_seed(VAL_EPS_SEED)
+            eps = torch.randn(mu.shape, generator=g, device=mu.device, dtype=mu.dtype)
+        z = mu + eps * torch.exp(0.5 * logvar)
         ymean, ylogvar = self._decode(z, context)
         recon = -0.5 * (ylogvar + (inputs - ymean) ** 2 / torch.exp(ylogvar) + _LOG2PI)
         kl_dim = -0.5 * (1.0 + logvar - mu ** 2 - torch.exp(logvar))       # (N, latent)
