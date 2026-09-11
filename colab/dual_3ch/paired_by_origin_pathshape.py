@@ -30,6 +30,7 @@ dist_by_origin_pathshape.py 에서 여러 칸이 V_obs < V_noise 였다.  잡음
     !PS_BASE=fpath_novol FPATH_DIM=2 python colab/dual_3ch/paired_by_origin_pathshape.py
     # 지표 바꾸기: PAIR_METRIC=uw_cvar5 python ...
 """
+import csv
 import math
 import os
 import sys
@@ -168,10 +169,19 @@ def run_cache(title, cache_dir):
                     canc = se / ref if np.isfinite(ref) and ref > 1e-12 else float("nan")
                     pm = float(np.mean(pooled)) if pooled else float("nan")
                     mark = "***" if p < .01 else "**" if p < .05 else "*" if p < .10 else ""
+                    ROWS.append([title.split()[-1], fold, ch.replace("shape_", ""), k, lab,
+                                 f"{m:.6f}", f"{se:.6f}", f"{t:.2f}", f"{p:.4f}",
+                                 f"{100.0 * float((org < 0).mean()):.1f}", f"{pm:.6f}",
+                                 f"{v_obs:.4f}", f"{v_noise:.4f}", f"{v_true:.4f}",
+                                 f"{canc:.2f}"])
                     print(f"    {ch.replace('shape_', ''):<14}{k:<4}{lab:<14}"
                           f"{m:>10.3f}{se:>9.3f}{t:>7.2f}{p:>8.4f}"
                           f"{100.0 * float((org < 0).mean()):>7.1f}{pm:>9.3f}"
                           f"{v_obs:>8.3f}{v_noise:>9.3f}{v_true:>8.3f}{canc:>8.2f} {mark}")
+
+
+ROWS = [["cache", "fold", "axis", "k", "pair", "C_origin_mean", "seed_se", "t", "p",
+         "neg_pct", "C_pooled", "V_obs", "V_noise", "V_true", "cancel"]]
 
 
 def main():
@@ -184,6 +194,10 @@ def main():
     print("#" * 132)
     for title, cache in CACHES:
         run_cache(title, cache)
+    out = os.path.join(PS.RESULT_DIR, f"paired_order{PS.CACHE_SUFFIX}{OSF}.csv")
+    with open(out, "w", newline="", encoding="utf-8") as fh:
+        csv.writer(fh).writerows(ROWS)
+    print(f"\n[csv] {len(ROWS)-1} 행 → {out}")
     print("\n  *** p<.01  ** p<.05  * p<.10")
     print("\n[읽는 법] [상쇄] 가 1 근처면 쌍대로도 잡음이 안 줄었다는 뜻이고, 그 행의 t·p 는")
     print("          Δ 단독과 같은 한계를 그대로 갖는다.  상쇄가 작동한 행만 코어 근거로 쓸 것.")
