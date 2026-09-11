@@ -73,8 +73,11 @@ if BASE_MODEL == "fpath_novol":
     fpath_model.FUTURE_SUMMARY_HIDDEN = int(os.environ.get("FPATH_HIDDEN", "16"))
     fpath_model.FPATH_SUMMARY_ONLY = False
     DC_COLS_LIST = ["sp_skew_13w"]                                  # novol: sp_std 제거 (1채널)
-    TAG_PREFIX = f"rvAbl_full_fpath_novol_d{FPATH_DIM}"             # ckpt: garch_flow_ar_{TAG_PREFIX}_s{seed}_{fold}_best.pt
-    CACHE_SUFFIX = f"_fpath_novol_d{FPATH_DIM}"
+    # PS_HEAD=vae : 흐름 헤드만 VAE 로 바꾼 통제 모형(vae_head.MambaVAEARFpath, R2#3).  태그·캐시 분리.
+    HEAD = os.environ.get("PS_HEAD", "flow")
+    _hd = "_vaehead" if HEAD == "vae" else ""
+    TAG_PREFIX = f"rvAbl_full_fpath_novol{_hd}_d{FPATH_DIM}"        # ckpt: garch_flow_ar_{TAG_PREFIX}_s{seed}_{fold}_best.pt
+    CACHE_SUFFIX = f"_fpath_novol{_hd}_d{FPATH_DIM}"
 else:
     DC_COLS_LIST = ["sp_std_13w", "sp_skew_13w"]                    # LOCKED extra context (2채널)
     TAG_PREFIX = f"rvP2mainMlp_pd{LK_PD}_fl{LK_FLOW_LAYERS}_fh{LK_FLOW_HIDDEN}"
@@ -164,7 +167,11 @@ def _exkurt(a):
 
 
 def rebuild_model(ckpt, device):
-    cls = fpath_model.MambaFlowARFpath if BASE_MODEL == "fpath_novol" else MambaFlowAR
+    if BASE_MODEL == "fpath_novol" and HEAD == "vae":
+        import vae_head                                             # noqa: E402
+        cls = vae_head.MambaVAEARFpath
+    else:
+        cls = fpath_model.MambaFlowARFpath if BASE_MODEL == "fpath_novol" else MambaFlowAR
     # 흐름 헤드 크기는 체크포인트 meta 에서 읽는다.  예전에는 LK_FLOW_LAYERS /
     # LK_FLOW_HIDDEN 상수를 써서, 게재판(4/128) 이 아닌 체크포인트를 넣으면
     # load_state_dict 가 shape mismatch 로 터졌다.  meta 에 없으면 상수로 돌아간다.

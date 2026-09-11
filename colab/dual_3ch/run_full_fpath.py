@@ -33,7 +33,13 @@ fpath_model.FUTURE_SUMMARY_HIDDEN = int(os.environ.get("FPATH_HIDDEN", "16"))
 # summary_only=1: per-step 미래 마스킹 + 요약 코드로만 조건화 (데이터는 full 로 로드).
 SUMMARY_ONLY = os.environ.get("FPATH_SUMMARY_ONLY", "0") == "1"
 fpath_model.FPATH_SUMMARY_ONLY = SUMMARY_ONLY
-T.MambaFlowAR = fpath_model.MambaFlowARFpath                        # ★ monkeypatch
+# FPATH_HEAD=vae : 흐름 헤드만 조건부 VAE 헤드로 교체한 통제 모형(MAC-VAE, R2#3).  vae_head.py 참고.
+HEAD = os.environ.get("FPATH_HEAD", "flow")
+if HEAD == "vae":
+    import vae_head                                                 # noqa: E402
+    T.MambaFlowAR = vae_head.MambaVAEARFpath                        # ★ monkeypatch (VAE 헤드)
+else:
+    T.MambaFlowAR = fpath_model.MambaFlowARFpath                    # ★ monkeypatch
 
 from train_garch_flow import main_worker                            # noqa: E402
 
@@ -71,7 +77,8 @@ def main():
     _mode = "summary_only(per-step 미래 마스킹, 요약코드만)" if SUMMARY_ONLY else "full_fpath(per-step+요약)"
     print(f"# {_mode} 학습 — LOCKED full spec + 미래경로 요약(Flow context)")
     print(f"#  future_summary_dim={fpath_model.FUTURE_SUMMARY_DIM} "
-          f"hidden={fpath_model.FUTURE_SUMMARY_HIDDEN}  summary_only={SUMMARY_ONLY}  seeds={SEEDS}")
+          f"hidden={fpath_model.FUTURE_SUMMARY_HIDDEN}  summary_only={SUMMARY_ONLY}  seeds={SEEDS}"
+          f"  head={HEAD}")
     print(f"#  데이터 ENC={ENC_FULL}  unmask=[metab_13w]  mask_tbill=False (요약기엔 실제경로 공급)")
     print("#" * 96)
 
@@ -89,6 +96,8 @@ def main():
             _nm = "summary_only" if SUMMARY_ONLY else "full_fpath"
             if NOVOL:
                 _nm += "_novol"
+            if HEAD == "vae":
+                _nm += "_vaehead"
             tag = f"rvAbl_{_nm}_d{fpath_model.FUTURE_SUMMARY_DIM}_s{seed}"
             sp = os.path.join(RESULT_DIR, f"garch_flow_ar_{tag}_{fold}_summary.json")
             if os.path.exists(sp):
