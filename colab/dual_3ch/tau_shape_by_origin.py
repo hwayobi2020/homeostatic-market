@@ -61,6 +61,7 @@ FOLDS = PS.FOLDS
 LABELS = AG.LABELS
 OSF = PS.ORIGIN_SUFFIX
 ALPHAS = [0.10, 0.05, 0.01]
+PP = 100.0                    # %p 표기
 QUIET = os.environ.get("TAU_QUIET", "") == "1"
 
 CACHES = [("zero-mean", AG.CACHE_ZM + OSF), ("anchored", AG.CACHE_AN + OSF)]
@@ -79,19 +80,30 @@ def _node(d, ch, k, name):
     return n if isinstance(n, dict) else None
 
 
-def tau_of(node, a):
-    """원점별 τ(α).  분모가 0 근처면 nan 으로 둔다 (평균에 끌려가지 않게)."""
+def tau_e_of(node, a):
+    """원점별 (τ(α), e).  e 는 그 τ 의 expectile 값이고, 항등식상 VaR_α 와 같다.
+
+    expectile 1차조건에 e = VaR_α 를 넣으면 τ 가 닫힌 꼴로 떨어진다.  뒤집어 말하면
+    **저장된 VaR_α 자체가 이미 τ(α) 의 expectile 값**이다 — 역산도 보간도 필요 없다.
+    §4.3 의 평가지표는 이 e 이고, τ 는 그 expectile 이 어느 수준인지를 말해주는 라벨이다.
+    분모가 0 근처면 τ 만 nan 으로 둔다 (e 는 그대로 쓸 수 있다).
+    """
     tag = {0.10: "10", 0.05: "5", 0.01: "1"}[a]
     need = (f"uw_mean_by_origin", f"uw_var{tag}_by_origin", f"uw_cvar{tag}_by_origin")
     if any(k not in node for k in need):
-        return None
+        return None, None
     m = np.asarray(node[need[0]], float)
-    v = np.asarray(node[need[1]], float)
+    v = np.asarray(node[need[1]], float)          # = expectile 값 e
     c = np.asarray(node[need[2]], float)
     num = a * (v - c)
     den = (m - v) + 2.0 * num
-    out = np.where(np.abs(den) > 1e-12, num / np.where(den == 0, 1.0, den), np.nan)
-    return out
+    tau = np.where(np.abs(den) > 1e-12, num / np.where(den == 0, 1.0, den), np.nan)
+    return tau, v
+
+
+def tau_of(node, a):
+    """하위호환 — τ 만 필요할 때."""
+    return tau_e_of(node, a)[0]
 
 
 def _t_p(x):
@@ -108,7 +120,8 @@ def _t_p(x):
 
 def main():
     rows = [["cache", "fold", "axis", "k", "shape", "alpha",
-             "tau_flat", "tau_shape", "dtau", "se", "t", "p", "n_seed"]]
+             "e_flat_pp", "e_shape_pp", "de_pp", "se_pp", "t", "p",
+             "tau_flat", "tau_shape", "dtau", "p_tau", "n_seed"]]
     for title, cache in CACHES:
         if not QUIET:
             print("\n" + "=" * 108)
@@ -126,8 +139,8 @@ def main():
                 continue
             if not QUIET:
                 print(f"\n  [{LABELS.get(fold, fold)}]  seeds={sorted(per_seed)}")
-                print(f"    {'axis':<8}{'shape':<11}{'α':>6}{'τ(flat)':>10}{'τ(shape)':>11}"
-                      f"{'Δτ':>10}{'±SE':>9}{'t':>7}{'p':>9}")
+                print(f"    {'axis':<8}{'shape':<11}{'α':>6}{'e(flat)':>10}{'e(shape)':>11}"
+                      f"{'Δe':>10}{'±SE':>9}{'t':>7}{'p':>9}{'τ(shape)':>10}{'Δτ':>10}")
             names = list(((sample.get(CHANNELS[0]) or {}).get("k1") or {}).keys())
             for ch in CHANNELS:
                 for k in KS:
@@ -135,30 +148,39 @@ def main():
                         if _node(sample, ch, k, name) is None:
                             continue
                         for a in ALPHAS:
-                            per, flats, shapes = [], [], []
+                            de, e0s, e1s = [], [], []          # 지표: expectile 값
+                            dt, t0s, t1s = [], [], []          # 라벨: 그 expectile 의 수준 τ
                             for s in sorted(per_seed):
                                 d = per_seed[s]
                                 nd = _node(d, ch, k, name)
                                 if nd is None:
                                     continue
-                                t0, t1 = tau_of(d["flat"], a), tau_of(nd, a)
-                                if t0 is None or t1 is None:
+                                tf, ef = tau_e_of(d["flat"], a)
+                                ts, es = tau_e_of(nd, a)
+                                if ef is None or es is None:
                                     continue
-                                flats.append(float(np.nanmean(t0)))
-                                shapes.append(float(np.nanmean(t1)))
-                                per.append(float(np.nanmean(t1 - t0)))
-                            if not per:
+                                e0s.append(float(np.nanmean(ef)) * PP)
+                                e1s.append(float(np.nanmean(es)) * PP)
+                                de.append(float(np.nanmean(es - ef)) * PP)
+                                t0s.append(float(np.nanmean(tf)))
+                                t1s.append(float(np.nanmean(ts)))
+                                dt.append(float(np.nanmean(ts - tf)))
+                            if not de:
                                 continue
-                            m, se, t, p = _t_p(per)
+                            m, se, t, p = _t_p(de)                 # 검정은 expectile 값에 건다
+                            mt, set_, tt, pt = _t_p(dt)
                             rows.append([title, fold, ch.replace("shape_", ""), k, name,
-                                         f"{a:.2f}", f"{np.mean(flats):.6f}",
-                                         f"{np.mean(shapes):.6f}", f"{m:.6f}",
-                                         f"{se:.6f}", f"{t:.2f}", f"{p:.4f}", len(per)])
+                                         f"{a:.2f}",
+                                         f"{np.mean(e0s):.4f}", f"{np.mean(e1s):.4f}",
+                                         f"{m:.4f}", f"{se:.4f}", f"{t:.2f}", f"{p:.4f}",
+                                         f"{np.mean(t0s):.6f}", f"{np.mean(t1s):.6f}",
+                                         f"{mt:.6f}", f"{pt:.4f}", len(de)])
                             if not QUIET:
                                 mk = "***" if p < .01 else "**" if p < .05 else "*" if p < .10 else ""
                                 print(f"    {ch.replace('shape_',''):<8}{name:<11}{a:>6.2f}"
-                                      f"{np.mean(flats):>10.5f}{np.mean(shapes):>11.5f}"
-                                      f"{m:>10.5f}{se:>9.5f}{t:>7.2f}{p:>9.4f} {mk}")
+                                      f"{np.mean(e0s):>10.3f}{np.mean(e1s):>11.3f}"
+                                      f"{m:>10.3f}{se:>9.3f}{t:>7.2f}{p:>9.4f}"
+                                      f"{np.mean(t1s):>10.5f}{mt:>10.5f} {mk}")
 
     out = os.path.join(PS.RESULT_DIR, f"tau_shape{PS.CACHE_SUFFIX}{OSF}.csv")
     with open(out, "w", newline="", encoding="utf-8") as fh:
