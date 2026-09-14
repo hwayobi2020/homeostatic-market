@@ -46,6 +46,7 @@ OSF = PS.ORIGIN_SUFFIX
 CACHES = TS.CACHES
 PP = 100.0
 METRICS = [m for m in os.environ.get("WO_METRICS", "uw_cvar10,uw_cvar5,uw_cvar1").split(",") if m]
+PERSEED = {}          # (cache, fold, axis, shape, metric) → {seed: min Δ}  — 쌍 비교용
 
 
 def _t1(x):
@@ -69,7 +70,8 @@ def _dates(d):
 def main():
     rows = [["cache", "fold", "axis", "k", "shape", "metric",
              "min_mean_pp", "min_se_pp", "t0", "p0", "max_mean_pp", "tsym", "psym",
-             "argmin_dates", "argmin_modal_share", "flat_at_argmin_pp", "scen_at_argmin_pp", "mean_delta_pp", "n_seed"]]
+             "argmin_dates", "argmin_modal_share", "flat_at_argmin_pp", "scen_at_argmin_pp", "mean_delta_pp", "n_seed",
+             "min_per_seed_pp"]]
     print("#" * 124)
     print("# §4.3 최악 원점 통계 — min_i Δ_i (원점별 시나리오−flat, %p).  k=k1.  시드 축 검정 (df=n_seed−1)")
     print("#   t0/p0 : min=0 검정 (극값 편향으로 과대).   tsym/psym : min+max=0 검정 (대칭 잡음 기준, 보정).")
@@ -111,6 +113,8 @@ def main():
                         if not mins:
                             continue
                         m0, se0, t0, p0, n = _t1(mins)
+                        PERSEED[(title, fold, ch.replace("shape_", ""), name or ch, met)] = \
+                            {s: v for s, v in zip(sorted(per_seed), mins)}
                         mx = float(np.mean(maxs))
                         ms, _, ts, ps, _ = _t1([a + b for a, b in zip(mins, maxs)])
                         cnt = Counter(dates); modal = cnt.most_common(1)[0][1] / len(dates)
@@ -119,10 +123,40 @@ def main():
                         rows.append([title, fold, ax, k or "-", name or ch, met,
                                      f"{m0:.3f}", f"{se0:.3f}", f"{t0:.2f}", f"{p0:.4f}", f"{mx:.3f}",
                                      f"{ts:.2f}", f"{ps:.4f}", "|".join(dates), f"{modal:.2f}",
-                                     f"{np.mean(flat_at):.3f}", f"{np.mean(scen_at):.3f}", f"{np.mean(means):.3f}", n])
+                                     f"{np.mean(flat_at):.3f}", f"{np.mean(scen_at):.3f}", f"{np.mean(means):.3f}", n,
+                                     "|".join(f"{v:.3f}" for v in mins)])
                         print(f"    {ax:<8}{(name or ch):<11}{met:<10}{m0:>8.3f}{se0:>7.3f}{t0:>7.2f}{p0:>8.4f}"
                               f"{mx:>8.3f}{ts:>7.2f}{ps:>8.4f}{modal:>7.2f}  {'|'.join(dates):<60}"
                               f"{np.mean(flat_at):>8.2f}{np.mean(scen_at):>8.2f}{np.mean(means):>8.3f} {mk}")
+    # ── 시나리오 간 최악 Δ 비교 (짝지은 시드 t) — 선택 편향이 양쪽에 같아 차이에서 상쇄된다 ──
+    PAIRS = [("zero-mean", ("metab", "ramp_up"), ("metab", "ramp_down"), "유동성 ramp↑ − ramp↓"),
+             ("anchored", ("tbill", "step_up"), ("tbill", "ramp_up"), "금리 계단 − 연속"),
+             ("joint", ("joint", "유동성 ramp↑"), ("rate_only", "rate_only"), "결합 ramp↑ − 금리 단독"),
+             ("joint", ("joint", "유동성 ramp↓"), ("rate_only", "rate_only"), "결합 ramp↓ − 금리 단독")]
+    print("\n" + "=" * 124)
+    print("[쌍 비교] 최악 Δ(A) − 최악 Δ(B), 시드별 짝지은 1표본 t (df=n_seed−1).  음수 = A 가 최악 원점에서 더 깊다")
+    print(f"    {'fold':<4}{'쌍':<26}{'metric':<10}{'minΔ(A)':>9}{'minΔ(B)':>9}{'차이':>8}{'±SE':>7}{'t':>7}{'p':>8}")
+    prow = [["fold", "pair", "metric", "minA_pp", "minB_pp", "diff_pp", "se_pp", "t", "p", "n_seed"]]
+    for fold in FOLDS:
+        for cache_name, (axa, a), (axb, b), lab in PAIRS:
+            for met in METRICS:
+                ka, kb = (cache_name, fold, axa, a, met), (cache_name, fold, axb, b, met)
+                if ka not in PERSEED or kb not in PERSEED:
+                    continue
+                sa, sb = PERSEED[ka], PERSEED[kb]
+                seeds = sorted(set(sa) & set(sb))
+                diffs = [sa[s] - sb[s] for s in seeds]
+                m, se, t, p, n = _t1(diffs)
+                mk = "***" if p < .01 else "**" if p < .05 else "*" if p < .10 else ""
+                prow.append([fold, lab, met, f"{np.mean([sa[s] for s in seeds]):.3f}", f"{np.mean([sb[s] for s in seeds]):.3f}",
+                             f"{m:.3f}", f"{se:.3f}", f"{t:.2f}", f"{p:.4f}", n])
+                print(f"    {LABELS.get(fold, fold)[:4]:<4}{lab:<26}{met:<10}{np.mean([sa[s] for s in seeds]):>9.2f}"
+                      f"{np.mean([sb[s] for s in seeds]):>9.2f}{m:>8.2f}{se:>7.2f}{t:>7.2f}{p:>8.4f} {mk}")
+    outp = os.path.join(PS.RESULT_DIR, f"worst_origin_pairs{PS.CACHE_SUFFIX}{OSF}.csv")
+    with open(outp, "w", newline="", encoding="utf-8") as fh:
+        csv.writer(fh).writerows(prow)
+    print(f"[csv] {len(prow)-1} 행 → {outp}")
+
     out = os.path.join(PS.RESULT_DIR, f"worst_origin{PS.CACHE_SUFFIX}{OSF}.csv")
     with open(out, "w", newline="", encoding="utf-8") as fh:
         csv.writer(fh).writerows(rows)
