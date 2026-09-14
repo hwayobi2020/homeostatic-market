@@ -95,6 +95,38 @@ def block_boot(X, y, tau, groups, w=None, B=B):
     return np.std(np.asarray(out), axis=0, ddof=1)
 
 
+def _aloss(X, y, tau, w=None):
+    """비대칭 제곱손실 합 (expectile 의 목적함수).  절편만 있는 모형과의 비율로 의사-R² 를 만든다."""
+    b = expectile_fit(X, y, tau, w)
+    r = y - X @ b
+    a = np.where(r < 0, 1.0 - tau, tau) * (np.ones_like(r) if w is None else w)
+    return float(np.sum(a * r * r))
+
+
+def shapley_share(X, y, tau, var_idx, w=None):
+    """설명력(의사-R² = 1 − 손실/절편손실) 을 변수별 Shapley(LMG) 로 분해 → 각 변수의 몫(합 = 전체 의사-R²).
+    var_idx: 분해할 열 index 목록 (절편·폴드더미 제외).  부분집합 2^k 개 적합."""
+    from itertools import combinations
+    k = len(var_idx)
+    base_cols = [j for j in range(X.shape[1]) if j not in var_idx]     # 절편(+더미) 는 항상 포함
+    L0 = _aloss(X[:, base_cols], y, tau, w)
+    cache = {}
+    def loss(S):
+        key = tuple(sorted(S))
+        if key not in cache:
+            cols = base_cols + [var_idx[i] for i in key]
+            cache[key] = _aloss(X[:, cols], y, tau, w)
+        return cache[key]
+    shares = np.zeros(k)
+    for i in range(k):
+        others = [j for j in range(k) if j != i]
+        for r in range(k):
+            for S in combinations(others, r):
+                wgt = math.factorial(r) * math.factorial(k - r - 1) / math.factorial(k)
+                shares[i] += wgt * (loss(S) - loss(S + (i,))) / L0
+    return shares, 1.0 - loss(tuple(range(k))) / L0
+
+
 # ------------------------------------------------------------------ 데이터
 def fold_frame(fold):
     """test CSV → date, tbill(연율%), metab(13주 %), vol(연율%) per row."""
@@ -191,6 +223,12 @@ def main():
                 line += f"{b_act[j]:>+9.3f} ±{se_act[j]:<6.3f}[{b_act[j]*sd[n]:>+5.2f}]"
                 rows.append([fold, tau, "actual", n, f"{b_act[j]:.4f}", f"{se_act[j]:.4f}", f"{b_act[j]*sd[n]:.4f}", len(order), 1])
             print(line)
+            vidx = list(range(1, len(names)))
+            sh_a, r2_a = shapley_share(X, y_act, tau, vidx)
+            tot = max(sh_a.sum(), 1e-12)
+            print(f"    {'':>5} {'  share':<7}" + "".join(f"{100*sh_a[j-1]/tot:>20.0f}% " for j in vidx) + f"  (actual 의사-R² {r2_a:.3f})")
+            for j in vidx:
+                rows.append([fold, tau, "actual", names[j] + " share%", f"{100*sh_a[j-1]/tot:.1f}", "", f"{r2_a:.4f}", len(order), 1])
             bs, ses = [], []
             for s in SEEDS:
                 if s not in sim_y:
@@ -204,6 +242,15 @@ def main():
                 line += f"{bm[j]:>+9.3f} ±{bsd[j]:<6.3f}[{bm[j]*sd[n]:>+5.2f}]"
                 rows.append([fold, tau, "MAC-Flow", n, f"{bm[j]:.4f}", f"{bsd[j]:.4f}", f"{bm[j]*sd[n]:.4f}", len(order), len(bs)])
             print(line + f"   (블록부트 SE 평균: " + ", ".join(f"{ses.mean(axis=0)[j]:.3f}" for j in range(1, len(names))) + ")")
+            shs, r2s = [], []
+            for s in SEEDS:
+                if s in sim_y:
+                    sh, r2 = shapley_share(sim_X[s], sim_y[s], tau, vidx); shs.append(sh); r2s.append(r2)
+            if shs:
+                sh_m = np.mean(shs, axis=0); tot = max(sh_m.sum(), 1e-12)
+                print(f"    {'':>5} {'  share':<7}" + "".join(f"{100*sh_m[j-1]/tot:>20.0f}% " for j in vidx) + f"  (MAC-Flow 의사-R² {np.mean(r2s):.3f})")
+                for j in vidx:
+                    rows.append([fold, tau, "MAC-Flow", names[j] + " share%", f"{100*sh_m[j-1]/tot:.1f}", "", f"{np.mean(r2s):.4f}", len(order), len(shs)])
 
     # ---- 폴드 통합 (폴드 더미) ----
     if len(pooled["act"]) > 1:
@@ -231,7 +278,12 @@ def main():
                 line += f"{b[j]:>+9.3f} ±{se[j]:<6.3f}[{b[j]*sd[names[j]]:>+5.2f}]"
                 rows.append(["pooled", tau, "actual", names[j], f"{b[j]:.4f}", f"{se[j]:.4f}", f"{b[j]*sd[names[j]]:.4f}", len(y_act), 1])
             print(line)
-            bs = []
+            vidx = list(range(1, kshow))
+            sh_a, r2_a = shapley_share(Xp, y_act, tau, vidx); tot = max(sh_a.sum(), 1e-12)
+            print(f"    {'':>5} {'  share':<7}" + "".join(f"{100*sh_a[j-1]/tot:>20.0f}% " for j in vidx) + f"  (actual 의사-R² {r2_a:.3f}, 폴드더미 제외 몫)")
+            for j in vidx:
+                rows.append(["pooled", tau, "actual", names[j] + " share%", f"{100*sh_a[j-1]/tot:.1f}", "", f"{r2_a:.4f}", len(y_act), 1])
+            bs = []; shs_p, r2s_p = [], []
             for s in SEEDS:
                 parts = pooled["sim"][s]
                 if len(parts) < nF:
@@ -246,6 +298,7 @@ def main():
                 dums = np.column_stack([(fid == f).astype(float) for f in range(1, nF)])
                 Xcat = np.hstack([Xcat, dums])
                 bs.append(expectile_fit(Xcat, ycat, tau))
+                sh, r2 = shapley_share(Xcat, ycat, tau, list(range(1, kshow))); shs_p.append(sh); r2s_p.append(r2)
             if bs:
                 bs = np.asarray(bs); bm = bs.mean(axis=0); bsd = bs.std(axis=0, ddof=1)
                 line = f"    {'':>5} {'MAC-Flow':<7}"
@@ -253,6 +306,10 @@ def main():
                     line += f"{bm[j]:>+9.3f} ±{bsd[j]:<6.3f}[{bm[j]*sd[names[j]]:>+5.2f}]"
                     rows.append(["pooled", tau, "MAC-Flow", names[j], f"{bm[j]:.4f}", f"{bsd[j]:.4f}", f"{bm[j]*sd[names[j]]:.4f}", len(y_act), len(bs)])
                 print(line)
+                sh_m = np.mean(shs_p, axis=0); tot = max(sh_m.sum(), 1e-12)
+                print(f"    {'':>5} {'  share':<7}" + "".join(f"{100*sh_m[j-1]/tot:>20.0f}% " for j in range(1, kshow)) + f"  (MAC-Flow 의사-R² {np.mean(r2s_p):.3f})")
+                for j in range(1, kshow):
+                    rows.append(["pooled", tau, "MAC-Flow", names[j] + " share%", f"{100*sh_m[j-1]/tot:.1f}", "", f"{np.mean(r2s_p):.4f}", len(y_act), len(bs)])
 
     out = os.path.join(PS.RESULT_DIR, f"level_regression_4_2{PS.CACHE_SUFFIX}.csv")
     with open(out, "w", newline="", encoding="utf-8") as fh:
