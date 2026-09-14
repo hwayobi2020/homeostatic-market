@@ -104,17 +104,20 @@ def _aloss(X, y, tau, w=None):
 
 
 def shapley_share(X, y, tau, var_idx, w=None):
-    """설명력(의사-R² = 1 − 손실/절편손실) 을 변수별 Shapley(LMG) 로 분해 → 각 변수의 몫(합 = 전체 의사-R²).
-    var_idx: 분해할 열 index 목록 (절편·폴드더미 제외).  부분집합 2^k 개 적합."""
+    """설명력(의사-R² = 1 − 손실/절편손실) 을 변수(또는 변수 그룹)별 Shapley(LMG) 로 분해 → 각 몫(합 = 전체 의사-R²).
+    var_idx: 분해할 열 index 목록.  원소가 list/tuple 이면 그 열들을 한 플레이어(그룹)로 묶는다.
+    절편·폴드더미(var_idx 에 없는 열)는 항상 포함.  부분집합 2^k 개 적합."""
     from itertools import combinations
-    k = len(var_idx)
-    base_cols = [j for j in range(X.shape[1]) if j not in var_idx]     # 절편(+더미) 는 항상 포함
+    groups = [list(v) if isinstance(v, (list, tuple)) else [v] for v in var_idx]
+    flat = [j for g in groups for j in g]
+    k = len(groups)
+    base_cols = [j for j in range(X.shape[1]) if j not in flat]     # 절편(+더미) 는 항상 포함
     L0 = _aloss(X[:, base_cols], y, tau, w)
     cache = {}
     def loss(S):
         key = tuple(sorted(S))
         if key not in cache:
-            cols = base_cols + [var_idx[i] for i in key]
+            cols = base_cols + [j for i in key for j in groups[i]]
             cache[key] = _aloss(X[:, cols], y, tau, w)
         return cache[key]
     shares = np.zeros(k)
@@ -229,6 +232,13 @@ def main():
             print(f"    {'':>5} {'  share':<7}" + "".join(f"{100*sh_a[j-1]/tot:>20.0f}% " for j in vidx) + f"  (actual 의사-R² {r2_a:.3f})")
             for j in vidx:
                 rows.append([fold, tau, "actual", names[j] + " share%", f"{100*sh_a[j-1]/tot:.1f}", "", f"{r2_a:.4f}", len(order), 1])
+            # 그룹: 정책(금리+유동성) 대 나머지
+            gidx = [[1, 2]] + [j for j in vidx if j > 2]
+            gnames = ["policy(tbill+metab)"] + [names[j] for j in vidx if j > 2]
+            sg_a, _ = shapley_share(X, y_act, tau, gidx); tg = max(sg_a.sum(), 1e-12)
+            print(f"    {'':>5} {'  group':<7}" + "  ".join(f"{n} {100*sg_a[i]/tg:.0f}%" for i, n in enumerate(gnames)) + "   [actual]")
+            for i, n in enumerate(gnames):
+                rows.append([fold, tau, "actual", n + " gshare%", f"{100*sg_a[i]/tg:.1f}", "", f"{r2_a:.4f}", len(order), 1])
             bs, ses = [], []
             for s in SEEDS:
                 if s not in sim_y:
@@ -251,6 +261,11 @@ def main():
                 print(f"    {'':>5} {'  share':<7}" + "".join(f"{100*sh_m[j-1]/tot:>20.0f}% " for j in vidx) + f"  (MAC-Flow 의사-R² {np.mean(r2s):.3f})")
                 for j in vidx:
                     rows.append([fold, tau, "MAC-Flow", names[j] + " share%", f"{100*sh_m[j-1]/tot:.1f}", "", f"{np.mean(r2s):.4f}", len(order), len(shs)])
+                sgs = [shapley_share(sim_X[s], sim_y[s], tau, gidx)[0] for s in SEEDS if s in sim_y]
+                sg_m = np.mean(sgs, axis=0); tg = max(sg_m.sum(), 1e-12)
+                print(f"    {'':>5} {'  group':<7}" + "  ".join(f"{n} {100*sg_m[i]/tg:.0f}%" for i, n in enumerate(gnames)) + "   [MAC-Flow]")
+                for i, n in enumerate(gnames):
+                    rows.append([fold, tau, "MAC-Flow", n + " gshare%", f"{100*sg_m[i]/tg:.1f}", "", f"{np.mean(r2s):.4f}", len(order), len(sgs)])
 
     # ---- 폴드 통합 (폴드 더미) ----
     if len(pooled["act"]) > 1:
@@ -283,7 +298,13 @@ def main():
             print(f"    {'':>5} {'  share':<7}" + "".join(f"{100*sh_a[j-1]/tot:>20.0f}% " for j in vidx) + f"  (actual 의사-R² {r2_a:.3f}, 폴드더미 제외 몫)")
             for j in vidx:
                 rows.append(["pooled", tau, "actual", names[j] + " share%", f"{100*sh_a[j-1]/tot:.1f}", "", f"{r2_a:.4f}", len(y_act), 1])
-            bs = []; shs_p, r2s_p = [], []
+            gidx = [[1, 2]] + [j for j in vidx if j > 2]
+            gnames = ["policy(tbill+metab)"] + [names[j] for j in vidx if j > 2]
+            sg_a, _ = shapley_share(Xp, y_act, tau, gidx); tg = max(sg_a.sum(), 1e-12)
+            print(f"    {'':>5} {'  group':<7}" + "  ".join(f"{n} {100*sg_a[i]/tg:.0f}%" for i, n in enumerate(gnames)) + "   [actual]")
+            for i, n in enumerate(gnames):
+                rows.append(["pooled", tau, "actual", n + " gshare%", f"{100*sg_a[i]/tg:.1f}", "", f"{r2_a:.4f}", len(y_act), 1])
+            bs = []; shs_p, r2s_p, sgs_p = [], [], []
             for s in SEEDS:
                 parts = pooled["sim"][s]
                 if len(parts) < nF:
@@ -299,6 +320,7 @@ def main():
                 Xcat = np.hstack([Xcat, dums])
                 bs.append(expectile_fit(Xcat, ycat, tau))
                 sh, r2 = shapley_share(Xcat, ycat, tau, list(range(1, kshow))); shs_p.append(sh); r2s_p.append(r2)
+                sgs_p.append(shapley_share(Xcat, ycat, tau, [[1, 2]] + [j for j in range(3, kshow)])[0])
             if bs:
                 bs = np.asarray(bs); bm = bs.mean(axis=0); bsd = bs.std(axis=0, ddof=1)
                 line = f"    {'':>5} {'MAC-Flow':<7}"
@@ -310,6 +332,11 @@ def main():
                 print(f"    {'':>5} {'  share':<7}" + "".join(f"{100*sh_m[j-1]/tot:>20.0f}% " for j in range(1, kshow)) + f"  (MAC-Flow 의사-R² {np.mean(r2s_p):.3f})")
                 for j in range(1, kshow):
                     rows.append(["pooled", tau, "MAC-Flow", names[j] + " share%", f"{100*sh_m[j-1]/tot:.1f}", "", f"{np.mean(r2s_p):.4f}", len(y_act), len(bs)])
+                sg_m = np.mean(sgs_p, axis=0); tg = max(sg_m.sum(), 1e-12)
+                gnames = ["policy(tbill+metab)"] + [names[j] for j in range(3, kshow)]
+                print(f"    {'':>5} {'  group':<7}" + "  ".join(f"{n} {100*sg_m[i]/tg:.0f}%" for i, n in enumerate(gnames)) + "   [MAC-Flow]")
+                for i, n in enumerate(gnames):
+                    rows.append(["pooled", tau, "MAC-Flow", n + " gshare%", f"{100*sg_m[i]/tg:.1f}", "", f"{np.mean(r2s_p):.4f}", len(y_act), len(bs)])
 
     out = os.path.join(PS.RESULT_DIR, f"level_regression_4_2{PS.CACHE_SUFFIX}.csv")
     with open(out, "w", newline="", encoding="utf-8") as fh:
