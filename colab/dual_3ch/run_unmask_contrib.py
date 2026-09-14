@@ -113,14 +113,54 @@ def stage_train():
 
 
 # ────────────────────────────────────────────────────────────── compare
+@torch.no_grad()
+def _rollout_realized(ctx, seed, device):
+    """실현 미래 경로로 ar_sample.  ZM.rollout_paths 는 metab 1 채널만 넘기므로, unmask 채널 전부
+    (T.FUTURE_UNMASK_MACRO_COLS 순서) 를 Xte 의 미래 구간에서 꺼내 future_macro_z 로 넘긴다."""
+    model, Xte, extra, last_sp = ctx["model"], ctx["Xte"], ctx["extra"], ctx["last_sp"]
+    um_idx = [T.COND_COLS.index(c) for c in T.FUTURE_UNMASK_MACRO_COLS if c in T.COND_COLS]
+    n = Xte.shape[0]; out = []
+    torch.manual_seed(seed)
+    for s in range(0, n, 8):
+        e = min(n, s + 8)
+        ft = Xte[s:e, T.PAST_LEN:, T.TBILL_CH]                                   # (k, FUT) 실현 tbill z
+        fm = Xte[s:e, T.PAST_LEN:, um_idx] if um_idx else None                   # (k, FUT, n_um) 실현 unmask 채널
+        ex = extra[s:e] if extra is not None else None
+        sim = model.ar_sample(Xte[s:e, :T.PAST_LEN, :], ft, last_sp[s:e], 1000,
+                              extra_context=ex, future_macro_z=fm)
+        out.append(sim.cpu())
+    return torch.cat(out, dim=0).numpy()
+
+
 def _arrays(PS, RTC, cfg, fold, seed, device):
-    """설정별로 unmask 플래그·태그를 세운 뒤 재추론 (같은 원점·같은 시드·실현 거시 경로)."""
+    """설정별로 unmask 플래그·태그를 세운 뒤 재추론 (같은 원점·같은 시드·실현 거시 경로).
+    run_thin_compare.macflow_arrays 와 같은 출력(sim, act, pred_start) 이되, unmask 채널을 전부 넘긴다."""
     _set_flags(cfg)
     PS.HEAD = "flow"
     PS.TAG_PREFIX = prefix_of(cfg)
     PS.CACHE_SUFFIX = f"_fpath_novol_d{DIM}" if cfg == "base" else f"_fpath_novol_um-{cfg}_d{DIM}"
     RTC.FLOW_TAG = PS.TAG_PREFIX
-    return RTC.macflow_arrays(fold, seed, device)
+    ctx = PS.load_fold_seed(fold, seed, device)
+    if ctx is None:
+        return None
+    ckpt = torch.load(os.path.join(PS.RESULT_DIR, f"garch_flow_ar_{PS.TAG_PREFIX}_s{seed}_{fold}_best.pt"),
+                      map_location="cpu")
+    meta = ckpt["meta"]; cond_stats, target_stats = meta["cond_stats"], meta["target_stats"]
+    gp = T.garch_preprocess_fold(PS.FOLDS_DIR, fold, PS.RESULT_DIR)
+    _, Yte, _, _, _ = T.cached_load_windows_seq(gp["test"], cond_stats=cond_stats, target_stats=target_stats)
+    valid_mask, z_te, df_te = T.compute_valid_mask(gp["test"], cond_stats)
+    sim_z = _rollout_realized(ctx, seed, device)
+    r = ctx["rescale"]
+    sim_raw = PS.forward_garch_rescale(sim_z * r["tsd"] + r["tmu"], r["s2"], r["e2"], r["om"], r["al"], r["be"], r["mu"])
+    tmu, tsd = float(target_stats["mean"]), float(target_stats["std"])
+    gsig = df_te["garch_sigma"].to_numpy(float); gmu = df_te["garch_mu"].to_numpy(float)
+    oidx = np.where(valid_mask)[0]
+    sig = np.array([[gsig[int(o) + T.PAST_LEN + t] for t in range(T.FUTURE_LEN)] for o in oidx])
+    mu = np.array([[gmu[int(o) + T.PAST_LEN + t] for t in range(T.FUTURE_LEN)] for o in oidx])
+    actual_raw = (Yte.numpy() * tsd + tmu) * sig + mu
+    if actual_raw.shape[0] != sim_raw.shape[0]:
+        raise RuntimeError(f"origin 수 불일치 {fold} s{seed}: actual {actual_raw.shape[0]} vs sim {sim_raw.shape[0]}")
+    return dict(sim=sim_raw, act=actual_raw, pred_start=oidx + T.PAST_LEN)
 
 
 def stage_compare():
