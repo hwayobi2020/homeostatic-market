@@ -27,7 +27,8 @@ CRPS 도 같은 블록 재표본으로 표본오차를 낸다(리뷰어 1 #1 의
     !git pull
     !PS_BASE=fpath_novol FPATH_DIM=2 GARCH_PREFIX=garch_xpast_refit \
         python colab/dual_3ch/block_bootstrap_4_1_1.py
-  재표본 수는 BB_N (기본 2000), 블록 길이는 BB_BLOCK (기본 13, = 지평).
+  재표본 수는 BB_N (기본 2000), 블록 길이는 BB_BLOCK (기본 13 = 지평).
+  블록 길이 민감도는 BB_BLOCK=26 으로 한 번 더 돌려 비교한다 (의존 길이의 2 배).
 """
 import json
 import math
@@ -90,7 +91,7 @@ def main():
     print(hdr); print("-" * len(hdr))
 
     out = {}
-    pooled_hits = {name: [] for name, *_ in LEVELS}   # 폴드 통합용 (폴드별 시드평균 hit)
+    pooled_pairs = []                                # 폴드 통합용 (폴드별 (sim, act) 시드 목록)
     pooled_crps = []
     for fold in RT.FOLDS:
         print(f"[loading] {LABEL.get(fold, fold)} ...", flush=True)
@@ -110,7 +111,7 @@ def main():
         rng = np.random.default_rng(SEED)
         fold_out = {"n_origin": int(n_orig), "n_boot": N_BOOT, "block": BLOCK}
 
-        # 시드별 hit 행렬을 미리 만든다: 분위 임계는 시드별 전체 시뮬 분포(=Table 12 정의)에서 한 번.
+        # 점추정용 hit 행렬 (분위 임계 = 시드별 전체 시뮬 분포, Table 12 정의).
         hits = {}
         for name, lo, hi, _ in LEVELS:
             H = []
@@ -121,12 +122,20 @@ def main():
         # CRPS 는 원점별 손실 (시드 평균)
         crps_po = np.mean([RT.crps_per_origin(sim, act) for sim, act in pairs], axis=0)
 
+        # 재표본마다 분위 임계를 다시 추정한다 — 밴드 추정오차까지 구간에 반영하기 위해서다.
+        # 고정 밴드에 실측만 재표본하면 추정 절차의 일부만 흔드는 것이라 구간이 좁게 나온다.
         boot = {name: [] for name, *_ in LEVELS}
         boot["CRPS"] = []
         for _ in range(N_BOOT):
             idx = block_indices(n_orig, rng)
-            for name, *_ in LEVELS:
-                boot[name].append(float(np.mean([h[idx].mean() for h in hits[name]])))
+            for name, lo, hi, _ in LEVELS:
+                vals = []
+                for sim, act in pairs:
+                    s = sim[idx].ravel()
+                    L, Hq = np.percentile(s, lo), np.percentile(s, hi)
+                    a = act[idx]
+                    vals.append(float(((a >= L) & (a <= Hq)).mean()))
+                boot[name].append(float(np.mean(vals)))
             boot["CRPS"].append(float(crps_po[idx].mean()))
 
         first = True
@@ -161,8 +170,7 @@ def main():
                                 boot_ci=(float(np.percentile(b, 2.5)), float(np.percentile(b, 97.5))))
         print(f"{'':<28}{'CRPS':<7}{crps_po.mean():>8.4f}{b.std(ddof=1):>9.4f}"
               f"   [{np.percentile(b, 2.5):.4f}, {np.percentile(b, 97.5):.4f}]")
-        for name, *_ in LEVELS:
-            pooled_hits[name].append(np.mean([h.astype(float) for h in hits[name]], axis=0))  # (n_orig,13)
+        pooled_pairs.append(pairs)
         pooled_crps.append(crps_po)
         out[fold] = fold_out
         print("-" * len(hdr))
@@ -175,14 +183,23 @@ def main():
         agg["CRPS"] = []
         for _ in range(N_BOOT):
             idxs = [block_indices(n, rng) for n in ns]
-            for name, *_ in LEVELS:
-                agg[name].append(float(np.average([h[i].mean() for h, i in zip(pooled_hits[name], idxs)], weights=ns)))
+            for name, lo, hi, _ in LEVELS:
+                per_fold = []
+                for prs, i in zip(pooled_pairs, idxs):
+                    vals = []
+                    for sim, act in prs:
+                        s_ = sim[i].ravel()
+                        L, Hq = np.percentile(s_, lo), np.percentile(s_, hi)
+                        a = act[i]
+                        vals.append(float(((a >= L) & (a <= Hq)).mean()))
+                    per_fold.append(float(np.mean(vals)))
+                agg[name].append(float(np.average(per_fold, weights=ns)))
             agg["CRPS"].append(float(np.average([c[i].mean() for c, i in zip(pooled_crps, idxs)], weights=ns)))
         out["pooled"] = {"n_origin": int(sum(ns)), "n_boot": N_BOOT, "block": BLOCK}
         print(f"{'Pooled (4 folds)':<28}", end="")
         first = True
         for name, lo, hi, nom in LEVELS:
-            point = float(np.average([h.mean() for h in pooled_hits[name]], weights=ns))
+            point = float(np.average([out[f][name]["point"] for f in out if f != "pooled"], weights=ns))
             b = np.asarray(agg[name], float)
             ci = (float(np.percentile(b, 2.5)), float(np.percentile(b, 97.5)))
             w = wilson(point, sum(ns))
