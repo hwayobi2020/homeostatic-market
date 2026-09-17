@@ -83,14 +83,19 @@ def block_boot(d, stat, b=B, L=STRIDE):
 
 
 def nonov(d):
+    """오프셋 13개: 각 오프셋 1표본 t(df=13) 의 SE 를 제곱평균으로 합쳐 단일 t (df=13) 를 주값으로,
+    p 중앙값·p<.05 개수는 강건성 참고로 낸다."""
     ses, ps = [], []
     for o in range(STRIDE):
         x = d[o::STRIDE]
         if x.size < 3:
             continue
         _, se, _, p, _ = t1(x); ses.append(se); ps.append(p)
-    ps = np.asarray(ps)
-    return float(np.mean(ses)), float(np.median(ps)), int((ps < 0.05).sum()), len(ps)
+    ps = np.asarray(ps); se_pool = float(math.sqrt(np.mean(np.square(ses))))
+    df = min(int(d[o::STRIDE].size) for o in range(STRIDE)) - 1
+    t = float(d.mean() / se_pool) if se_pool > 0 else float("nan")
+    p_single = AG._t_sf2(t, df) if np.isfinite(t) else float("nan")
+    return se_pool, p_single, float(np.median(ps)), int((ps < 0.05).sum()), len(ps)
 
 
 def _dates(d):
@@ -116,20 +121,20 @@ def summarize(D):
     seed_means = D.mean(axis=1)                       # per seed, mean over origins
     m_s, se_s, t_s, p_s, n_s = t1(seed_means)
     d = D.mean(axis=0)                                # per origin, seed mean
-    se_no, p_med, n05, n_off = nonov(d)
+    se_no, p_no, p_med, n05, n_off = nonov(d)
     bm = block_boot(d, np.mean); se_b = float(bm.std(ddof=1)); lo, hi = np.percentile(bm, [2.5, 97.5])
     p_b = _norm_sf2(d.mean() / se_b) if se_b > 0 else float("nan")
     mn = float(d.min()); se_mn = float(block_boot(d, np.min).std(ddof=1))
     q10 = float(np.quantile(d, Q)); se_q = float(block_boot(d, lambda x: np.quantile(x, Q)).std(ddof=1))
     return dict(mean_pp=m_s, seed_se=se_s, seed_p=p_s, n_seed=n_s, n_orig=int(d.size),
-                nonov_se=se_no, nonov_p_med=p_med, nonov_n_p05=n05, nonov_n_off=n_off,
+                nonov_se=se_no, nonov_p=p_no, nonov_p_med=p_med, nonov_n_p05=n05, nonov_n_off=n_off,
                 boot_se=se_b, boot_lo=float(lo), boot_hi=float(hi), boot_p=p_b,
                 worst_min_pp=mn, worst_min_boot_se=se_mn, q10_pp=q10, q10_boot_se=se_q)
 
 
 def fmt(r):
     return (f"{r['mean_pp']:+7.2f} ±{r['seed_se']:.2f} ({r['seed_p']:.3f}) | "
-            f"±{r['nonov_se']:.2f} med p {r['nonov_p_med']:.3f} {r['nonov_n_p05']}/{r['nonov_n_off']} | "
+            f"±{r['nonov_se']:.2f} (p {r['nonov_p']:.3f}; med {r['nonov_p_med']:.3f}, {r['nonov_n_p05']}/{r['nonov_n_off']}) | "
             f"±{r['boot_se']:.2f} [{r['boot_lo']:+.2f},{r['boot_hi']:+.2f}] p {r['boot_p']:.3f} | "
             f"min {r['worst_min_pp']:+.2f} ±{r['worst_min_boot_se']:.2f} | q10 {r['q10_pp']:+.2f} ±{r['q10_boot_se']:.2f}")
 
@@ -137,11 +142,11 @@ def fmt(r):
 def main():
     print("#" * 130)
     print(f"# §4.3 원점 축 불확실성 — metric={MET}, 블록 길이 {STRIDE}, B={B}, q={Q}.  Δ = 시나리오 − flat (%p)")
-    print("#  열: seed 평균 ±SE(p, df=4) | 비중첩 오프셋 SE평균, p 중앙값, p<.05 수 | 블록부트 SE [95%] p | 최악원점 min ±bootSE | q10 ±bootSE")
+    print("#  열: seed 평균 ±SE(p, df=4) | 원점축 비중첩 SE, 단일 t p(df=13); (오프셋 p 중앙값, p<.05 수) | 블록부트 SE [95%] p | 최악원점 min ±bootSE | q10 ±bootSE")
     print("#" * 130)
     rows = [["cache", "fold", "axis", "k", "shape",
              "mean_pp", "seed_se", "seed_p", "n_seed", "n_orig",
-             "nonov_se", "nonov_p_med", "nonov_n_p05", "nonov_n_off",
+             "nonov_se", "nonov_p", "nonov_p_med", "nonov_n_p05", "nonov_n_off",
              "boot_se", "boot_lo", "boot_hi", "boot_p",
              "worst_min_pp", "worst_min_boot_se", "q10_pp", "q10_boot_se"]]
     zm = {}
