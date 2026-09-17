@@ -54,7 +54,7 @@ SEED = int(os.environ.get("BB_SEED", "20260917"))
 LEVELS = [("cov80", 10.0, 90.0, 0.80), ("cov95", 2.5, 97.5, 0.95)]
 LABEL = {"F_gfc": "Financial crisis (2006-2010)", "F_long_A": "Recovery (2011-2015)",
          "F_long_B_origin": "COVID (2016-2020)", "F_long": "Tightening (2021-2025)"}
-OUT = os.path.join(RT.RESULT_DIR, "block_bootstrap_4_1_1.json")
+OUT = os.path.join(RT.RESULT_DIR, f"block_bootstrap_4_1_1_b{BLOCK}.json")   # 블록 길이별로 분리 저장
 
 
 def wilson(p, n, z=1.96):
