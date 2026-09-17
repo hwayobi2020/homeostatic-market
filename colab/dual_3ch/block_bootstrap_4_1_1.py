@@ -122,8 +122,12 @@ def main():
         # CRPS 는 원점별 손실 (시드 평균)
         crps_po = np.mean([RT.crps_per_origin(sim, act) for sim, act in pairs], axis=0)
 
-        # 재표본마다 분위 임계를 다시 추정한다 — 밴드 추정오차까지 구간에 반영하기 위해서다.
-        # 고정 밴드에 실측만 재표본하면 추정 절차의 일부만 흔드는 것이라 구간이 좁게 나온다.
+        # 재표본마다 분위 임계를 다시 추정한다 — 밴드도 같은 표본에서 나온 추정량이므로
+        # 추정 절차 전체를 재표본에 반복하는 것이 부트스트랩의 정석이다.  밴드를 고정하면
+        # 추정 절차의 일부만 흔드는 셈이지만, 밴드와 실측이 같은 인덱스를 쓰면 공분산 때문에
+        # 구간이 반드시 넓어진다는 보장은 없다(합성 자료 1 건에서는 약간 넓어졌다).
+        # 또한 점추정은 전체표본 밴드, 복제는 재표본 밴드라 부트스트랩 분포 중심이 점추정과
+        # 어긋날 수 있다(구간이 넓어지는 것이 아니라 이동할 수 있다).
         boot = {name: [] for name, *_ in LEVELS}
         boot["CRPS"] = []
         for _ in range(N_BOOT):
@@ -150,20 +154,25 @@ def main():
             offs = []
             for o in range(BLOCK):
                 sel = np.arange(o, n_orig, BLOCK)
-                if sel.size >= 8:
+                if sel.size >= 4:                     # BLOCK=26 이면 오프셋당 원점 7 개 → 임계 8 이면 전부 탈락(NaN)
                     offs.append(float(np.mean([h[sel].mean() for h in hits[name]])))
             offs = np.asarray(offs, float)
-            tse = offs.std(ddof=1) / math.sqrt(offs.size)
-            tci = (float(offs.mean() - t975(offs.size - 1) * tse), float(offs.mean() + t975(offs.size - 1) * tse))
+            if offs.size >= 2:
+                tse = offs.std(ddof=1) / math.sqrt(offs.size)
+                tci = (float(offs.mean() - t975(offs.size - 1) * tse), float(offs.mean() + t975(offs.size - 1) * tse))
+            else:
+                tse, tci = float("nan"), (None, None)
             head = LABEL.get(fold, fold) if first else ""
             first = False
+            tci_txt = "        (n/a)" if tci[0] is None else f"   [{tci[0]:.3f}, {tci[1]:.3f}]"
             print(f"{head:<28}{name:<7}{point:>8.4f}{se:>9.4f}"
                   f"   [{ci[0]:.3f}, {ci[1]:.3f}]{nom:>9.2f}{'O' if ci[0] <= nom <= ci[1] else 'X':>5}"
-                  f"   [{w182[0]:.3f}, {w182[1]:.3f}]   [{w14[0]:.3f}, {w14[1]:.3f}]   [{tci[0]:.3f}, {tci[1]:.3f}]")
+                  f"   [{w182[0]:.3f}, {w182[1]:.3f}]   [{w14[0]:.3f}, {w14[1]:.3f}]{tci_txt}")
             fold_out[name] = dict(point=point, boot_se=se, boot_ci=ci, nominal=nom,
                                   inside=bool(ci[0] <= nom <= ci[1]),
                                   wilson_n_all=w182, wilson_n_block=w14,
-                                  offset_mean=float(offs.mean()), offset_sd=float(offs.std(ddof=1)),
+                                  offset_mean=(float(offs.mean()) if offs.size else None),
+                                  offset_sd=(float(offs.std(ddof=1)) if offs.size >= 2 else None),
                                   offset_t_ci=tci, n_offset=int(offs.size))
         b = np.asarray(boot["CRPS"], float)
         fold_out["CRPS"] = dict(point=float(crps_po.mean()), boot_se=float(b.std(ddof=1)),
