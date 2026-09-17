@@ -90,6 +90,8 @@ def main():
     print(hdr); print("-" * len(hdr))
 
     out = {}
+    pooled_hits = {name: [] for name, *_ in LEVELS}   # 폴드 통합용 (폴드별 시드평균 hit)
+    pooled_crps = []
     for fold in RT.FOLDS:
         print(f"[loading] {LABEL.get(fold, fold)} ...", flush=True)
         runs = []
@@ -159,7 +161,43 @@ def main():
                                 boot_ci=(float(np.percentile(b, 2.5)), float(np.percentile(b, 97.5))))
         print(f"{'':<28}{'CRPS':<7}{crps_po.mean():>8.4f}{b.std(ddof=1):>9.4f}"
               f"   [{np.percentile(b, 2.5):.4f}, {np.percentile(b, 97.5):.4f}]")
+        for name, *_ in LEVELS:
+            pooled_hits[name].append(np.mean([h.astype(float) for h in hits[name]], axis=0))  # (n_orig,13)
+        pooled_crps.append(crps_po)
         out[fold] = fold_out
+        print("-" * len(hdr))
+
+    # ── 4 폴드 통합: 폴드마다 블록 재표본하고 원점 수로 가중 평균 ──
+    if pooled_crps:
+        rng = np.random.default_rng(SEED + 1)
+        ns = [c.size for c in pooled_crps]
+        agg = {name: [] for name, *_ in LEVELS}
+        agg["CRPS"] = []
+        for _ in range(N_BOOT):
+            idxs = [block_indices(n, rng) for n in ns]
+            for name, *_ in LEVELS:
+                agg[name].append(float(np.average([h[i].mean() for h, i in zip(pooled_hits[name], idxs)], weights=ns)))
+            agg["CRPS"].append(float(np.average([c[i].mean() for c, i in zip(pooled_crps, idxs)], weights=ns)))
+        out["pooled"] = {"n_origin": int(sum(ns)), "n_boot": N_BOOT, "block": BLOCK}
+        print(f"{'Pooled (4 folds)':<28}", end="")
+        first = True
+        for name, lo, hi, nom in LEVELS:
+            point = float(np.average([h.mean() for h in pooled_hits[name]], weights=ns))
+            b = np.asarray(agg[name], float)
+            ci = (float(np.percentile(b, 2.5)), float(np.percentile(b, 97.5)))
+            w = wilson(point, sum(ns))
+            print(("" if first else f"{'':<28}") + f"{name:<7}{point:>8.4f}{b.std(ddof=1):>9.4f}"
+                  f"   [{ci[0]:.3f}, {ci[1]:.3f}]{nom:>9.2f}{'O' if ci[0] <= nom <= ci[1] else 'X':>5}"
+                  f"   [{w[0]:.3f}, {w[1]:.3f}]")
+            first = False
+            out["pooled"][name] = dict(point=point, boot_se=float(b.std(ddof=1)), boot_ci=ci,
+                                       nominal=nom, inside=bool(ci[0] <= nom <= ci[1]), wilson_n_all=w)
+        b = np.asarray(agg["CRPS"], float)
+        point = float(np.average([c.mean() for c in pooled_crps], weights=ns))
+        print(f"{'':<28}{'CRPS':<7}{point:>8.4f}{b.std(ddof=1):>9.4f}"
+              f"   [{np.percentile(b, 2.5):.4f}, {np.percentile(b, 97.5):.4f}]")
+        out["pooled"]["CRPS"] = dict(point=point, boot_se=float(b.std(ddof=1)),
+                                     boot_ci=(float(np.percentile(b, 2.5)), float(np.percentile(b, 97.5))))
         print("-" * len(hdr))
 
     json.dump(out, open(OUT, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
